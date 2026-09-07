@@ -128,6 +128,10 @@ export const PROFILE_TEMPLATES: Record<string, ProfileTemplate> = {
     bundles: ['@deepseek-ai/dsh-sdk-minimal'],
     patchReload: 'startup',
   },
+  chat: {
+    bundles: ['@deepseek-ai/dsh-chat-app'],
+    patchReload: 'startup',
+  },
 }
 
 /** Installation-owned bundle tuples normalized to the shipped template. */

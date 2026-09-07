@@ -1,0 +1,144 @@
+# Standalone chat application. Like sdk-minimal, this bundle does not layer
+# over dsh-base: this insert is the complete Cordis tree. User profile, home,
+# and invocation patches still apply above it.
+#
+# The goal is the tiniest useful chat surface: no shell, no filesystem, no
+# skills, no subagents, no settings surface — one DeepSeek adapter, one tiny
+# web_search tool, JSONL sessions, and the minimal web UI. The initial model
+# context is exactly one persona line plus the single tool schema.
+
+- insert:
+    # The web flag family (--host, --port, --no-open) and its webStartup
+    # service, reused from the web-app bundle's startup plugin.
+    - id: chat-startup
+      name: '@deepseek-ai/dsh-web-app/startup'
+
+    # Plain route-registration carrier; host and port come from the app's
+    # webStartup provider, with these deployment fallbacks.
+    - id: webserver
+      name: '@deepseek-ai/dsh-host-webserver'
+      inject: [webStartup]
+      config:
+        host: !!js ctx.webStartup.host ?? '127.0.0.1'
+        port: !!js ctx.webStartup.port ?? 3095
+        compression: gzip
+        compressionLevel: 1
+        compressionThresholdBytes: 1024
+
+    - id: deepseek-llm-api-extensions
+      name: '@deepseek-ai/dsh-deepseek-llm-api-extensions'
+
+    - id: llm-deepseek
+      name: '@deepseek-ai/dsh-llm-deepseek'
+      config:
+        apiKeyEnv: DEEPSEEK_API_KEY
+        defaultContextWindow: !!js Number(process.env.DSH_CONTEXT_WINDOW ?? 1000000)
+        streamIdleTimeoutMs: 172800000
+
+    # The minimal agent kernel, explicit like sdk-minimal: every service row
+    # is owned here and optional producers it does not use are omitted.
+    - id: timer
+      name: '@deepseek-ai/cordis-plugin-timer'
+
+    - id: llm
+      name: '@deepseek-ai/dsh-llm'
+
+    - id: session
+      name: '@deepseek-ai/dsh-session'
+
+    - id: session-projection
+      name: '@deepseek-ai/dsh-session-projection'
+
+    - id: session-title
+      name: '@deepseek-ai/dsh-session-title'
+      config:
+        fallbackMaxWords: 6
+        fallbackMaxBytes: 48
+        maxTitleBytes: 80
+
+    # The chat persona is the whole system prompt: one line, overridable via
+    # DSH_CHAT_PERSONA (set it to '' for an empty system prompt).
+    - id: system-prompt
+      name: '@deepseek-ai/dsh-system-prompt'
+      config:
+        includeHarnessIdentity: false
+        includeRuntimeContext: false
+        personaPrefix: !!js process.env.DSH_CHAT_PERSONA ?? 'You are a helpful assistant.'
+
+    - id: tools
+      name: '@deepseek-ai/dsh-tools'
+
+    - id: agent
+      name: '@deepseek-ai/dsh-agent'
+
+    - id: llm-retry
+      name: '@deepseek-ai/dsh-llm-retry'
+
+    - id: invariants
+      name: '@deepseek-ai/dsh-invariants'
+
+    - id: session-invariant
+      name: '@deepseek-ai/dsh-session/invariant'
+
+    - id: agent-invariant
+      name: '@deepseek-ai/dsh-agent/invariant'
+
+    - id: scope-invariant
+      name: '@deepseek-ai/dsh-scope/invariant'
+
+    - id: agent-loop-invariant
+      name: '@deepseek-ai/dsh-agent-loop/invariant'
+
+    - id: agent-loop
+      name: '@deepseek-ai/dsh-agent-loop'
+      config:
+        agents: []
+
+    - id: sessions
+      name: '@deepseek-ai/dsh-session-persistence-jsonl'
+      config:
+        root: !!js dshHomePath('sessions')
+        compression: none
+
+    # Live-preferred listing, cold history reads, and folded titles. The FTS
+    # index stays closed (openAt: never) — this surface has no history search.
+    - id: session-query
+      name: '@deepseek-ai/dsh-session-query-sqlite'
+      config:
+        path: ':memory:'
+        openAt: never
+
+    # The web seam plus DeepSeek's native server-side search, reusing the
+    # same DEEPSEEK_API_KEY credential as the conversation adapter.
+    - id: web
+      name: '@deepseek-ai/dsh-web'
+      config:
+        searchProvider: deepseek-official
+
+    - id: web-search-deepseek
+      name: '@deepseek-ai/dsh-web-search-deepseek'
+      config:
+        apiKeyEnv: DEEPSEEK_API_KEY
+
+    # The one model-facing tool: tiny schema, internal question generator,
+    # timestamped sources.
+    - id: tool-web-search-tiny
+      name: '@deepseek-ai/dsh-tool-web-search-tiny'
+      config:
+        maxResults: 5
+        generateQuestion: true
+
+    # Enforce the tool's cooperative timeout budget.
+    - id: timeout-policy
+      name: '@deepseek-ai/dsh-tool-call-timeout-policy'
+
+    # The chat surface glue: static dist serving, the /api routes, SSE
+    # streaming, the URL line, and the default-browser handoff.
+    - id: chat-runtime
+      name: '@deepseek-ai/dsh-chat-app'
+      inject: [webStartup]
+      config:
+        openBrowser: !!js ctx.webStartup.openBrowser
+        printUrl: true
+        provider: !!js process.env.DSH_CHAT_PROVIDER ?? 'deepseek-official'
+        model: !!js process.env.DSH_CHAT_MODEL ?? 'deepseek-chat'
