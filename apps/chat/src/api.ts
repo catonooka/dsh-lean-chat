@@ -28,6 +28,8 @@ export interface SessionSummary {
 export interface AppConfig {
   provider: string
   model: string
+  reasoningEffort?: string
+  temperature?: number
 }
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {

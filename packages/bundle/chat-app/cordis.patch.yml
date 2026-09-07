@@ -142,3 +142,5 @@
         printUrl: true
         provider: !!js process.env.DSH_CHAT_PROVIDER ?? 'deepseek-official'
         model: !!js process.env.DSH_CHAT_MODEL ?? 'deepseek-chat'
+        reasoningEffort: !!js (process.env.DSH_CHAT_REASONING || undefined)
+        temperature: !!js "process.env.DSH_CHAT_TEMPERATURE ? Number(process.env.DSH_CHAT_TEMPERATURE) : undefined"

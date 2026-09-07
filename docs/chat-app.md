@@ -37,9 +37,24 @@ Environment:
 | Variable | Default | Meaning |
 |---|---|---|
 | `DEEPSEEK_API_KEY` | — | API key for the model, search, and generator |
+| `DEEPSEEK_BASE_URL` | DeepSeek official | OpenAI-compatible base URL for the conversation adapter (any gateway works) |
 | `DSH_CHAT_MODEL` | `deepseek-chat` | Conversation model |
 | `DSH_CHAT_PROVIDER` | `deepseek-official` | Conversation provider route |
+| `DSH_CHAT_REASONING` | model default | Thinking level: `off`, `low`, `high`, or `max` |
+| `DSH_CHAT_TEMPERATURE` | model default | Sampling temperature (0–2), applied to every conversation request |
 | `DSH_CHAT_PERSONA` | `You are a helpful assistant.` | The whole system prompt; `''` for none |
+
+Any OpenAI-compatible gateway can serve the conversation model this way, e.g.
+an mLLM endpoint:
+
+```sh
+DEEPSEEK_API_KEY=<gateway-key> \
+DEEPSEEK_BASE_URL=https://<gateway>/v1 \
+DSH_CHAT_MODEL=qwen3.8-flash-next \
+DSH_CHAT_REASONING=high \
+DSH_CHAT_TEMPERATURE=0.7 \
+pnpm dsh --profile chat
+```
 
 ## Layout
 

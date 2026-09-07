@@ -27,7 +27,7 @@ import { dirname, extname, join, resolve, sep } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { createUserMessage, type ContentBlock } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, ReasoningEffortId, type ContentBlock } from '@deepseek-ai/dsh-llm'
 import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import type { AgentHandle } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-session-query'
@@ -49,6 +49,10 @@ export interface Config {
   provider: string
   /** Model id for conversation agents. */
   model: string
+  /** Adapter reasoning effort for conversation agents (thinking level). */
+  reasoningEffort?: 'off' | 'low' | 'high' | 'max'
+  /** Sampling temperature applied to every conversation request. */
+  temperature?: number
 }
 
 export const Config: z<Config> = z.object({
@@ -56,6 +60,8 @@ export const Config: z<Config> = z.object({
   printUrl: z.boolean().default(true),
   provider: z.string().default('deepseek-official'),
   model: z.string().default('deepseek-chat'),
+  reasoningEffort: z.union([z.const('off'), z.const('low'), z.const('high'), z.const('max')]),
+  temperature: z.number().min(0).max(2),
 })
 
 /** Display-only loopback host for the URL line; the webserver schema is the source of truth. */
@@ -293,7 +299,11 @@ export function apply(ctx: Context, config: Config): void {
     const handle = await ctx.agents.create({
       sessionId: SessionId(sessionId),
       meta: { cwd: process.cwd() },
-      agentOptions: { provider: config.provider, model: config.model },
+      agentOptions: {
+        provider: config.provider,
+        model: config.model,
+        ...config.reasoningEffort !== undefined ? { reasoningEffort: ReasoningEffortId(config.reasoningEffort) } : {},
+      },
     })
     handles.set(sessionId, handle)
     ctx.effect(() => () => {
@@ -301,6 +311,14 @@ export function apply(ctx: Context, config: Config): void {
       handles.delete(sessionId)
     }, `chat-app.agent.${sessionId}`)
     return handle
+  }
+
+  // Sampling is request-level, not agent identity: patch the frozen call
+  // config on its way out so every conversation request carries the
+  // configured temperature (the generator's hand-built call is untouched).
+  const temperature = config.temperature
+  if (temperature !== undefined) {
+    ctx.on('agent/request', async (_payload, next) => ({ ...(await next()), temperature }))
   }
 
   ctx.on('session/event', (session, event) => {
@@ -401,7 +419,12 @@ export function apply(ctx: Context, config: Config): void {
     if (parts.length >= 1 && parts[0] === 'api') parts.shift()
 
     if (req.method === 'GET' && parts.length === 1 && parts[0] === 'config') {
-      sendJson(res, 200, { provider: config.provider, model: config.model })
+      sendJson(res, 200, {
+        provider: config.provider,
+        model: config.model,
+        ...config.reasoningEffort !== undefined ? { reasoningEffort: config.reasoningEffort } : {},
+        ...config.temperature !== undefined ? { temperature: config.temperature } : {},
+      })
       return
     }
 

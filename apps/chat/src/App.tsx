@@ -218,7 +218,11 @@ export default function App(): JSX.Element {
     stopSession(activeId).catch(() => { /* the stream ends on its own */ })
   }, [activeId])
 
-  const modelLabel = config === undefined ? 'dsh chat' : config.model
+  const modelLabel = config === undefined
+    ? 'dsh chat'
+    : config.model
+      + (config.reasoningEffort !== undefined ? ` · thinking ${config.reasoningEffort}` : '')
+      + (config.temperature !== undefined ? ` · temp ${String(config.temperature)}` : '')
 
   return (
     <div className="app">
