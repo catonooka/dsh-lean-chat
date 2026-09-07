@@ -1,0 +1,32 @@
+{
+  "name": "@deepseek-ai/dsh-chat-frontend",
+  "description": "Chat-only web application entry: a minimal ChatGPT-style Vite + React surface; dist/ served by the dsh chat profile",
+  "version": "0.1.3-alpha.2",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deepseek-ai/deepseek-harness.git",
+    "directory": "apps/chat"
+  },
+  "type": "module",
+  "exports": {
+    "./dist/*": "./dist/*",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@deepseek-ai/dsh-util-crypto": "workspace:^",
+    "@types/node": "^22.0.0",
+    "@types/react": "~18.3.1",
+    "@types/react-dom": "~18.3.0",
+    "@vitejs/plugin-react": "^4.0.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "typescript": "^6.0.3",
+    "vite": "^6.0.0"
+  }
+}
