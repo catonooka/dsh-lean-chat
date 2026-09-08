@@ -687,3 +687,44 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   /* The sidebar is force-hidden here; the toggle would be a dead button. */
   .topbar-toggle { display: none; }
 }
+
+.avatar-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.avatar-grid.small { gap: 8px; }
+
+.avatar-option {
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  background: none;
+  cursor: pointer;
+  line-height: 0;
+  transition: border-color 120ms ease, transform 120ms ease;
+}
+
+.avatar-option img {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.avatar-option:hover, .avatar-option.hovered { transform: scale(1.06); }
+
+.avatar-option.active { border-color: var(--fg); }
+
+.avatar-panel { max-width: 420px; }
+
+.user-avatar-img {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.avatar-grid.small { max-width: 360px; }

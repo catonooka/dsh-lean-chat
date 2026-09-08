@@ -17,6 +17,8 @@ import {
 } from './api.ts'
 import { renderMarkdown } from './markdown.ts'
 import { SettingsPanel, applyTheme, readStoredTheme, storeTheme, type Theme } from './Settings.tsx'
+import { AvatarModal } from './AvatarModal.tsx'
+import { avatarSrc, readStoredAvatar, storeAvatar } from './avatar.ts'
 
 const ACTIVE_KEY = 'dsh-chat-active'
 const COLLAPSED_KEY = 'dsh-chat-collapsed'
@@ -108,6 +110,8 @@ export default function App(): JSX.Element {
   const [config, setConfig] = useState<AppConfig | undefined>(undefined)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [theme, setTheme] = useState<Theme>(readStoredTheme)
+  // The avatar is a required pick: null means the chooser modal is up.
+  const [avatar, setAvatar] = useState<number | null>(readStoredAvatar)
   const [collapsed, setCollapsed] = useState<boolean>(() =>
     typeof localStorage !== 'undefined' && localStorage.getItem(COLLAPSED_KEY) === '1')
   const [error, setError] = useState<string | undefined>(undefined)
@@ -439,10 +443,14 @@ export default function App(): JSX.Element {
         <div className="sidebar-footer">
           <button type="button" className="user-row" onClick={() => { setSettingsOpen(true) }}>
             <span className="user-avatar" aria-hidden="true">
-              <svg viewBox="0 0 16 16">
-                <circle cx="8" cy="5.2" r="2.6" fill="none" stroke="currentColor" strokeWidth="1.5" />
-                <path d="M3 13.5c.9-2.7 2.8-4.1 5-4.1s4.1 1.4 5 4.1" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-              </svg>
+              {avatar !== null
+                ? <img className="user-avatar-img" src={avatarSrc(avatar)} alt="" draggable={false} />
+                : (
+                  <svg viewBox="0 0 16 16">
+                    <circle cx="8" cy="5.2" r="2.6" fill="none" stroke="currentColor" strokeWidth="1.5" />
+                    <path d="M3 13.5c.9-2.7 2.8-4.1 5-4.1s4.1 1.4 5 4.1" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                  </svg>
+                )}
             </span>
             <span className="user-name">catonooka</span>
             <svg className="user-gear" viewBox="0 0 16 16" aria-hidden="true">
@@ -584,12 +592,17 @@ export default function App(): JSX.Element {
           <div className="composer-note">dsh chat can make mistakes. It searches the web with one internal tool.</div>
         </div>
       </main>
+      {avatar === null
+        ? <AvatarModal onPick={(picked) => { storeAvatar(picked); setAvatar(picked) }} />
+        : undefined}
       {settingsOpen && config !== undefined
         ? (
           <SettingsPanel
             config={config}
             theme={theme}
             onTheme={setTheme}
+            avatar={avatar}
+            onAvatar={(picked) => { storeAvatar(picked); setAvatar(picked) }}
             onApplied={setConfig}
             onSaved={(next) => {
               setConfig(next)

@@ -1,6 +1,7 @@
 /** The settings panel: every runtime-configurable option of the chat surface. */
 
 import { useEffect, useState, type JSX } from 'react'
+import { AVATAR_COUNT, avatarSrc } from './avatar.ts'
 import {
   checkModelAbilities,
   fetchChromeStatus,
@@ -57,6 +58,9 @@ interface SettingsProps {
   config: AppConfig
   theme: Theme
   onTheme: (theme: Theme) => void
+  /** The chosen avatar (1..10); picked instantly, like the theme. */
+  avatar: number | null
+  onAvatar: (avatar: number) => void
   /** A server-applied update that keeps the panel open (profile operations). */
   onApplied: (config: AppConfig) => void
   /** The Save button's update, which also closes the panel. */
@@ -64,7 +68,7 @@ interface SettingsProps {
   onClose: () => void
 }
 
-export function SettingsPanel({ config, theme, onTheme, onApplied, onSaved, onClose }: SettingsProps): JSX.Element {
+export function SettingsPanel({ config, theme, onTheme, avatar, onAvatar, onApplied, onSaved, onClose }: SettingsProps): JSX.Element {
   const [profiles, setProfiles] = useState<ProfileInfo[]>(config.profiles ?? [])
   const [activeId, setActiveId] = useState(config.activeProfileId ?? config.profiles?.[0]?.id ?? '')
   const [renaming, setRenaming] = useState(false)
@@ -502,6 +506,24 @@ export function SettingsPanel({ config, theme, onTheme, onApplied, onSaved, onCl
             </div>
           )
           : undefined}
+
+        <div className="settings-row">
+          <span className="settings-label">Avatar</span>
+          <div className="avatar-grid small">
+            {Array.from({ length: AVATAR_COUNT }, (_, index) => index + 1).map(option => (
+              <button
+                key={option}
+                type="button"
+                className={avatar === option ? 'avatar-option active' : 'avatar-option'}
+                aria-label={`Avatar ${String(option)}`}
+                aria-pressed={avatar === option}
+                onClick={() => { onAvatar(option) }}
+              >
+                <img src={avatarSrc(option)} alt="" draggable={false} />
+              </button>
+            ))}
+          </div>
+        </div>
 
         <div className="settings-row">
           <span className="settings-label">Theme</span>
