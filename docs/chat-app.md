@@ -37,8 +37,15 @@ context**.
   and a composer with Enter-to-send and a stop button. No visible scrollbars
   anywhere — every region still scrolls.
 - **A settings panel** on the sidebar's user row (bottom-left): model,
-  thinking level, temperature, system prompt, and theme — editable at
-  runtime, no restart needed.
+  thinking level, temperature, system prompt, theme, and the whole model
+  route — base URL (any OpenAI-compatible gateway), API key (stored
+  owner-only under the dsh home), and a model picker that loads the
+  endpoint's `/models` list. All live, no restart needed.
+- **A selectable search tool**: the built-in keyless metasearch, or **your
+  own Chrome** — start Chrome with `--remote-debugging-port=9222` and pick
+  "Your Chrome" in settings; searches then run in your logged-in browser
+  (personalized Google, and X through your account when the query is
+  prefixed `x:` or uses `site:x.com`).
 
 ## Run
 

@@ -34,6 +34,12 @@
       "path": "../../util/home-paths"
     },
     {
+      "path": "../../web/web-search-tiny"
+    },
+    {
+      "path": "../../web/web-search-chrome"
+    },
+    {
       "path": "../../session-query/session-query"
     },
     {

@@ -79,12 +79,15 @@ const baseConfig: Config = {
   provider: 'deepseek-official',
   model: 'deepseek-chat',
   persona: 'You are a helpful assistant.',
+  chromeCdpPort: 9222,
+  chromeWebEngine: 'google',
 }
 
 const baseSettings: ChatSettings = {
   provider: 'deepseek-official',
   model: 'deepseek-chat',
   persona: 'You are a helpful assistant.',
+  searchTool: 'tiny-metasearch',
 }
 
 describe('applySettingsPatch', () => {
@@ -115,6 +118,12 @@ describe('applySettingsPatch', () => {
     expect(withKey.apiKey).toBe('sk-abc')
     expect(() => applySettingsPatch(baseSettings, { apiKey: '   ' })).toThrow('non-empty')
     expect(applySettingsPatch(withKey, { apiKey: null }).apiKey).toBeUndefined()
+  })
+
+  it('switches the search tool between the two engines only', () => {
+    expect(applySettingsPatch(baseSettings, { searchTool: 'user-chrome' }).searchTool).toBe('user-chrome')
+    expect(applySettingsPatch(baseSettings, { searchTool: 'tiny-metasearch' }).searchTool).toBe('tiny-metasearch')
+    expect(() => applySettingsPatch(baseSettings, { searchTool: 'deepseek-official' })).toThrow('searchTool')
   })
 })
 

@@ -118,14 +118,15 @@
         path: ':memory:'
         openAt: first-search
 
-    # The web seam plus the search engines. The tiny keyless metasearch
-    # (DuckDuckGo HTML + Wikipedia) is the default provider — no API key, no
-    # per-search model call; DSH_WEB_SEARCH_PROVIDER=deepseek-official switches
-    # back to DeepSeek's native server-side search.
+    # The web seam plus the search engines. The pinned id is the chat-owned
+    # `chat-selector`, which dispatches each search to the engine the settings
+    # panel chose: the keyless tiny metasearch (default) or the user's own
+    # Chrome (logged-in Google/X). DSH_WEB_SEARCH_PROVIDER still pins any
+    # registered provider directly (e.g. deepseek-official).
     - id: web
       name: '@deepseek-ai/dsh-web'
       config:
-        searchProvider: !!js process.env.DSH_WEB_SEARCH_PROVIDER ?? 'tiny-metasearch'
+        searchProvider: !!js process.env.DSH_WEB_SEARCH_PROVIDER ?? 'chat-selector'
 
     - id: web-search-deepseek
       name: '@deepseek-ai/dsh-web-search-deepseek'

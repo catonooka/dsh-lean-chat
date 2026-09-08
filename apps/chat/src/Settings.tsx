@@ -20,6 +20,11 @@ const THEMES: readonly { id: Theme; label: string }[] = [
   { id: 'dark', label: 'Dark' },
 ]
 
+const SEARCH_TOOLS: readonly { id: 'tiny-metasearch' | 'user-chrome'; label: string }[] = [
+  { id: 'tiny-metasearch', label: 'Built-in' },
+  { id: 'user-chrome', label: 'Your Chrome' },
+]
+
 /** Apply one theme choice to the document root (`system` follows the OS). */
 export function applyTheme(theme: Theme): void {
   if (theme === 'system') delete document.documentElement.dataset.theme
@@ -53,6 +58,8 @@ export function SettingsPanel({ config, theme, onTheme, onSaved, onClose }: Sett
   const [persona, setPersona] = useState(config.persona)
   const [baseUrl, setBaseUrl] = useState(config.baseUrl ?? '')
   const [apiKey, setApiKey] = useState('')
+  const [searchTool, setSearchTool] = useState<'tiny-metasearch' | 'user-chrome'>(
+    config.searchTool === 'user-chrome' ? 'user-chrome' : 'tiny-metasearch')
   const [models, setModels] = useState<string[]>([])
   const [loadingModels, setLoadingModels] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -80,7 +87,7 @@ export function SettingsPanel({ config, theme, onTheme, onSaved, onClose }: Sett
   const save = async (): Promise<void> => {
     setSaving(true)
     try {
-      const patch: SettingsPatch = { provider, model, reasoningEffort: effort, persona }
+      const patch: SettingsPatch = { provider, model, reasoningEffort: effort, persona, searchTool }
       if (temperature === undefined) patch.temperature = null
       else patch.temperature = temperature
       const trimmedBase = baseUrl.trim()
@@ -237,6 +244,28 @@ export function SettingsPanel({ config, theme, onTheme, onSaved, onClose }: Sett
           />
           <span className="settings-hint">The whole system prompt. Empty means the default persona.</span>
         </label>
+
+        <div className="settings-row">
+          <span className="settings-label">Search tool</span>
+          <div className="segmented" role="radiogroup" aria-label="Search tool">
+            {SEARCH_TOOLS.map(option => (
+              <button
+                key={option.id}
+                type="button"
+                role="radio"
+                aria-checked={searchTool === option.id}
+                className={searchTool === option.id ? 'segment active' : 'segment'}
+                onClick={() => { setSearchTool(option.id) }}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <span className="settings-hint">
+            Your Chrome runs the search in your logged-in browser (start Chrome with
+            {' '}--remote-debugging-port=9222). The model can prefix a query with x: to search your X.
+          </span>
+        </div>
 
         <div className="settings-row">
           <span className="settings-label">Theme</span>

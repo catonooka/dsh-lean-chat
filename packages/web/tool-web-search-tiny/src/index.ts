@@ -318,7 +318,8 @@ export function apply(ctx: Context, config: Config): void {
   const resolved = config as ResolvedConfig
   ctx.tools.register(defineTool({
     name: 'web_search',
-    description: 'Search the web for current information. Pass one concise, self-contained search query.',
+    description: 'Search the web for current information. Pass one concise, self-contained search query. '
+      + 'When the search tool is the user\'s Chrome, prefix the query with `x:` to search the user\'s logged-in X.',
     parameters: {
       query: {
         type: 'string',

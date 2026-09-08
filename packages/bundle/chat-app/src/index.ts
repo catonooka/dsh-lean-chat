@@ -26,6 +26,8 @@ import { readFileSync } from 'node:fs'
 import { chmod, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname, extname, join, resolve, sep } from 'node:path'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
+import { TinyMetasearchProvider } from '@deepseek-ai/dsh-web-search-tiny/src/provider.ts'
+import { UserChromeSearchProvider } from '@deepseek-ai/dsh-web-search-chrome/src/provider.ts'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -66,6 +68,10 @@ export interface Config {
   temperature?: number
   /** Persona seeding the runtime system-prompt setting. */
   persona: string
+  /** Chrome DevTools port the user-chrome engine talks to. */
+  chromeCdpPort: number
+  /** General engine the user-chrome engine searches inside Chrome. */
+  chromeWebEngine: 'google' | 'bing' | 'duckduckgo'
 }
 
 export const Config: z<Config> = z.object({
@@ -76,6 +82,8 @@ export const Config: z<Config> = z.object({
   reasoningEffort: z.union([z.const('off'), z.const('low'), z.const('high'), z.const('max')]),
   temperature: z.number().min(0).max(2),
   persona: z.string().default(DEFAULT_PERSONA),
+  chromeCdpPort: z.number().default(9222),
+  chromeWebEngine: z.union([z.const('google'), z.const('bing'), z.const('duckduckgo')]).default('google'),
 })
 
 /** Everything the settings panel can change while the app runs. */
@@ -89,6 +97,8 @@ export interface ChatSettings {
   baseUrl?: string
   /** API key overriding `$DEEPSEEK_API_KEY`; persisted owner-only, never served. */
   apiKey?: string
+  /** Which engine the pinned chat-selector provider dispatches to. */
+  searchTool: 'tiny-metasearch' | 'user-chrome'
 }
 
 /** Longest accepted persona text; the persona is the whole system prompt. */
@@ -176,6 +186,13 @@ export function applySettingsPatch(current: ChatSettings, patch: Record<string, 
         next.apiKey = value.trim()
         break
       }
+      case 'searchTool': {
+        if (value !== 'tiny-metasearch' && value !== 'user-chrome') {
+          throw new Error('searchTool must be one of tiny-metasearch, user-chrome')
+        }
+        next.searchTool = value
+        break
+      }
       default:
         throw new Error(`unknown setting "${key}"`)
     }
@@ -198,6 +215,7 @@ export function parseSettingsFile(raw: string | undefined, defaults: Config): Ch
     ...defaults.reasoningEffort !== undefined ? { reasoningEffort: defaults.reasoningEffort } : {},
     ...defaults.temperature !== undefined ? { temperature: defaults.temperature } : {},
     persona: defaults.persona === '' ? DEFAULT_PERSONA : defaults.persona,
+    searchTool: 'tiny-metasearch',
   }
   if (raw === undefined) return base
   let parsed: unknown
@@ -225,6 +243,7 @@ function settingsJson(settings: ChatSettings): Record<string, unknown> {
     persona: settings.persona,
     ...settings.baseUrl !== undefined ? { baseUrl: settings.baseUrl } : {},
     apiKeySet: settings.apiKey !== undefined,
+    searchTool: settings.searchTool,
   }
 }
 
@@ -239,6 +258,7 @@ async function persistSettings(path: string, settings: ChatSettings): Promise<vo
     persona: settings.persona,
     ...settings.baseUrl !== undefined ? { baseUrl: settings.baseUrl } : {},
     ...settings.apiKey !== undefined ? { apiKey: settings.apiKey } : {},
+    searchTool: settings.searchTool,
   }, null, 2)}\n`
   await mkdir(dirname(path), { recursive: true, mode: 0o700 })
   await writeFile(path, body, { mode: 0o600, flag: 'w' })
@@ -575,6 +595,24 @@ export function apply(ctx: Context, config: Config): void {
   void applyLiveModelSettings()
   const handles = new Map<string, { handle: AgentHandle; options: ConversationOptions }>()
   const streams = new Map<string, Set<ServerResponse>>()
+
+  // The web seam pins one provider id at boot, so the pinned id is a
+  // chat-owned selector: every search dispatches to the engine the settings
+  // panel last chose — the keyless built-in, or the user's own Chrome.
+  const tinyEngine = new TinyMetasearchProvider({ timeoutMs: 10_000, wikipedia: true })
+  const chromeEngine = new UserChromeSearchProvider({
+    cdpPort: config.chromeCdpPort,
+    timeoutMs: 12_000,
+    webEngine: config.chromeWebEngine,
+  })
+  ctx.inject(['web'], (webCtx) => {
+    webCtx.web.registerSearchProvider({
+      id: 'chat-selector',
+      available: () => true,
+      search: (request, signal) =>
+        (settings.searchTool === 'user-chrome' ? chromeEngine : tinyEngine).search(request, signal),
+    })
+  })
 
   /** Send one SSE payload to every open stream of one session. */
   function broadcast(sessionId: string, payload: Record<string, unknown>): void {

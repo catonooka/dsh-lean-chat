@@ -1659,6 +1659,9 @@ importers:
       '@deepseek-ai/dsh-web-app':
         specifier: workspace:^
         version: link:../web-app
+      '@deepseek-ai/dsh-web-search-chrome':
+        specifier: workspace:^
+        version: link:../../web/web-search-chrome
       '@deepseek-ai/dsh-web-search-deepseek':
         specifier: workspace:^
         version: link:../../web/web-search-deepseek

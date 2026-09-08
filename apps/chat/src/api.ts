@@ -40,6 +40,7 @@ export interface AppConfig {
   persona: string
   baseUrl?: string
   apiKeySet?: boolean
+  searchTool?: string
 }
 
 /** One partial settings update; `null` clears an optional field. */
@@ -51,6 +52,7 @@ export interface SettingsPatch {
   persona?: string
   baseUrl?: string | null
   apiKey?: string
+  searchTool?: string
 }
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
