@@ -87,6 +87,19 @@ export interface FileBlock {
   attachment: FileAttachmentRef
 }
 
+/**
+ * A durable verbatim video reference, valid in user content. Adapters with
+ * native video input project it to an inline data part; adapters without
+ * treat it like a file block — deterministic handle text in its place.
+ */
+export interface VideoBlock {
+  type: 'video'
+  /** Immutable verbatim bytes and display metadata owned by the attachment service. */
+  attachment: FileAttachmentRef
+  /** Declared media type; the verbatim file store is media-agnostic, so the block carries it. */
+  mediaType: string
+}
+
 /** A tool invocation requested by the model. */
 export interface ToolCallBlock {
   type: 'tool-call'
@@ -114,6 +127,7 @@ export interface ContentBlockMap {
   'reasoning': ReasoningBlock
   'image': ImageBlock
   'file': FileBlock
+  'video': VideoBlock
   'tool-call': ToolCallBlock
   'tool-result': ToolResultBlock
 }

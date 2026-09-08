@@ -24,6 +24,7 @@ import type {
 import type {
   AttachmentId,
   AttachmentStore,
+  FileAttachmentRef,
   ImageAttachmentRef,
   RequestImageAttachment,
 } from '@deepseek-ai/dsh-attachment'
@@ -208,6 +209,37 @@ function collectImageRefs(
     if (block.type === 'image') refs.set(block.attachment.attachmentId, block.attachment)
     else if (block.type === 'tool-result') collectImageRefs(block.content, refs)
   }
+}
+
+function collectVideoRefs(
+  content: readonly ContentBlock[],
+  refs: Map<AttachmentId, FileAttachmentRef>,
+): void {
+  for (const block of content) {
+    if (block.type === 'video') refs.set(block.attachment.attachmentId, block.attachment)
+    else if (block.type === 'tool-result') collectVideoRefs(block.content, refs)
+  }
+}
+
+/** Read every referenced video's verbatim bytes for inline serialization. */
+async function prepareRequestVideos(
+  options: GenerateOptions,
+  attachments: AttachmentStore,
+  signal: AbortSignal,
+): Promise<Map<AttachmentId, Uint8Array>> {
+  const refs = new Map<AttachmentId, FileAttachmentRef>()
+  for (const message of options.messages) collectVideoRefs(message.content, refs)
+  const videos = new Map<AttachmentId, Uint8Array>()
+  for (const ref of refs.values()) {
+    const chunks: Uint8Array[] = []
+    let bytes = 0
+    for await (const chunk of attachments.readFileStream(ref, signal)) {
+      bytes += chunk.byteLength
+      chunks.push(chunk)
+    }
+    if (bytes > 0) videos.set(ref.attachmentId, Buffer.concat(chunks))
+  }
+  return videos
 }
 
 async function prepareRequestImages(
@@ -564,6 +596,9 @@ export class DeepSeekAdapter extends LlmAdapter {
     const requestImages = attachments === undefined
       ? new Map<AttachmentId, RequestImageAttachment>()
       : await prepareRequestImages(requestOptions, attachments, model, signal)
+    const requestVideos = attachments === undefined
+      ? new Map<AttachmentId, Uint8Array>()
+      : await prepareRequestVideos(requestOptions, attachments, signal)
     let representation: 'file' | 'base64' = 'file'
     let fileAttempt = 0
     while (true) {
@@ -575,6 +610,7 @@ export class DeepSeekAdapter extends LlmAdapter {
         body = await serializeRequestWithImages(requestOptions, {
           representation: { kind: 'base64' },
           requestImages,
+          requestVideos,
           ...imageAccessOptions,
           maxRequestImageBytes: connection.maxInlineRequestImageBytes,
           maxImagesPerRequest: connection.maxImagesPerRequest,
@@ -605,6 +641,7 @@ export class DeepSeekAdapter extends LlmAdapter {
                 return resolved.record.fileId
               },
             },
+            requestVideos,
             requestImages,
             ...imageAccessOptions,
             maxRequestImageBytes: connection.maxRequestFilesBytes,

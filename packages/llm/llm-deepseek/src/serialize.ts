@@ -8,7 +8,7 @@
 
 import { contentHasImage, LlmError, offloadedImageText, offloadRequestImagesWithPolicy, requestImageHandleText } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, GenerateOptions, ImageAttachmentAccessResolver, Message } from '@deepseek-ai/dsh-llm'
-import type { ImageAttachmentRef, RequestImageAttachment } from '@deepseek-ai/dsh-attachment'
+import type { FileAttachmentRef, ImageAttachmentRef, RequestImageAttachment } from '@deepseek-ai/dsh-attachment'
 import type {
   WireImageContentPart,
   WireMessage,
@@ -48,6 +48,8 @@ export interface ImageSerializationOptions {
   representation: ImageRequestRepresentation
   /** Request versions prepared for the conservatively retained normalized attachments, keyed by attachment id. */
   requestImages: ReadonlyMap<ImageAttachmentRef['attachmentId'], RequestImageAttachment>
+  /** Verbatim video bytes prepared for this request, keyed by attachment id. */
+  requestVideos: ReadonlyMap<FileAttachmentRef['attachmentId'], Uint8Array>
   /** Resolve current tool access independently from deterministic request-image versions. */
   resolveImageAccess?: ImageAttachmentAccessResolver
   /** Positive bound on accumulated represented image bytes. */
@@ -178,6 +180,20 @@ async function contentParts(
         nextImage.value += 1
         parts.push(...await imageParts(block, images, { message, image: nextImage.value }, parts.length > 0))
         break
+      case 'video': {
+        const data = images.requestVideos.get(block.attachment.attachmentId)
+        if (data === undefined) {
+          throw new LlmError(
+            `DeepSeek request video ${block.attachment.attachmentId} was not prepared.`,
+            'INVALID_REQUEST',
+          )
+        }
+        parts.push({
+          type: 'video_url',
+          video_url: { url: `data:${block.mediaType};base64,${Buffer.from(data).toString('base64')}` },
+        })
+        break
+      }
       case 'tool-result':
         parts.push(...await contentParts(block.content, images, message, nextImage))
         break
