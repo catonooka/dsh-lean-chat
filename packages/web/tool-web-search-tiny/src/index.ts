@@ -88,8 +88,8 @@ const LATEST_KEYWORDS: readonly string[] = [
  */
 export function resolveStaleYear(question: string, rawQuery: string, now: Date = new Date()): string {
   const haystack = rawQuery.toLowerCase()
-  const nowClass = NOW_KEYWORDS.some(keyword => haystack.includes(keyword.toLowerCase()))
-  const latestClass = !nowClass && LATEST_KEYWORDS.some(keyword => haystack.includes(keyword.toLowerCase()))
+  const nowClass = NOW_KEYWORDS.some(keyword => matchesKeyword(haystack, keyword.toLowerCase()))
+  const latestClass = !nowClass && LATEST_KEYWORDS.some(keyword => matchesKeyword(haystack, keyword.toLowerCase()))
   if (!nowClass && !latestClass) return question
   const currentYear = now.getUTCFullYear()
   const years = (question.match(/\b(?:19|20)\d{2}\b/gu) ?? []).map(Number)
@@ -109,6 +109,24 @@ function pad2(value: number): string {
   return String(value).padStart(2, '0')
 }
 
+/** Escape literal text for embedding in a RegExp. */
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
+}
+
+/**
+ * Whether a keyword appears in the already-lowercased haystack. Pure-ASCII
+ * keywords must match as whole words — the French "hier" must not fire inside
+ * "hierarchy", nor Spanish "hoy" inside "ahoy" — while CJK and diacritic
+ * keywords have no word boundaries to lean on, so substring matching stands.
+ */
+function matchesKeyword(haystack: string, keyword: string): boolean {
+  if (/^[a-z0-9' -]+$/u.test(keyword)) {
+    return new RegExp(`(?:^|[^\\p{L}\\p{N}])${escapeRegExp(keyword)}(?:[^\\p{L}\\p{N}]|$)`, 'u').test(haystack)
+  }
+  return haystack.includes(keyword)
+}
+
 /**
  * Keyless time-stamp fallback: when a query carries a relative-time keyword
  * in any listed language but no explicit year, stamp the current UTC date
@@ -121,11 +139,11 @@ function pad2(value: number): string {
 export function withCurrentDate(query: string, now: Date = new Date()): string {
   if (/\b(?:19|20)\d{2}\b/u.test(query)) return query
   const haystack = query.toLowerCase()
-  const hasNow = NOW_KEYWORDS.some(keyword => haystack.includes(keyword.toLowerCase()))
+  const hasNow = NOW_KEYWORDS.some(keyword => matchesKeyword(haystack, keyword.toLowerCase()))
   if (hasNow) {
     return `${query} ${String(now.getUTCFullYear())}-${pad2(now.getUTCMonth() + 1)}-${pad2(now.getUTCDate())}`
   }
-  const hasLatest = LATEST_KEYWORDS.some(keyword => haystack.includes(keyword.toLowerCase()))
+  const hasLatest = LATEST_KEYWORDS.some(keyword => matchesKeyword(haystack, keyword.toLowerCase()))
   if (hasLatest) {
     return `${query} ${String(now.getUTCFullYear())}`
   }

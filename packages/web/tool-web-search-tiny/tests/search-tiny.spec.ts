@@ -149,3 +149,111 @@ describe('Config', () => {
     })
   })
 })
+
+describe('withCurrentDate — keyword corners', () => {
+  it('does not fire ASCII keywords inside longer words', () => {
+    // "hierarchy" contains the French "hier"; "ahoy" contains Spanish "hoy";
+    // without word boundaries both stamped full dates on plain queries.
+    expect(withCurrentDate('microservice hierarchy latest patterns', NOW))
+      .toBe('microservice hierarchy latest patterns 2026')
+    expect(withCurrentDate('ahoy newest pirate ships', NOW)).toBe('ahoy newest pirate ships 2026')
+    expect(withCurrentDate('Windows current build', NOW)).toBe('Windows current build 2026')
+  })
+
+  it('still fires ASCII keywords as standalone words and at boundaries', () => {
+    expect(withCurrentDate('weather today', NOW)).toBe('weather today 2026-09-08')
+    expect(withCurrentDate('today', NOW)).toBe('today 2026-09-08')
+    expect(withCurrentDate('news today.', NOW)).toBe('news today. 2026-09-08')
+    expect(withCurrentDate('news, current events.', NOW)).toBe('news, current events. 2026')
+  })
+
+  it('matches keywords case-insensitively', () => {
+    expect(withCurrentDate('HÔM NAY giá vàng', NOW)).toBe('HÔM NAY giá vàng 2026-09-08')
+    expect(withCurrentDate('LATEST kernel', NOW)).toBe('LATEST kernel 2026')
+  })
+
+  it('prefers the full-date stamp when now and freshness words both appear', () => {
+    expect(withCurrentDate('latest news today', NOW)).toBe('latest news today 2026-09-08')
+  })
+
+  it('keeps substring matching for CJK and diacritic keywords', () => {
+    expect(withCurrentDate('今天上海天气', NOW)).toBe('今天上海天气 2026-09-08')
+    expect(withCurrentDate('việc gần đây nhất', NOW)).toBe('việc gần đây nhất 2026')
+  })
+
+  it('treats any 19xx/20xx four-digit token as an explicit year and skips stamping', () => {
+    expect(withCurrentDate('Chrome 1909 features', NOW)).toBe('Chrome 1909 features')
+  })
+})
+
+describe('resolveStaleYear — corners', () => {
+  it('keeps a now-class question whose only year is the current one', () => {
+    expect(resolveStaleYear('giá vàng hôm nay 2026', 'giá vàng hôm nay', NOW))
+      .toBe('giá vàng hôm nay 2026')
+  })
+
+  it('keeps future years on freshness-class queries', () => {
+    expect(resolveStaleYear('F1 calendar 2027 latest', 'F1 2027 calendar latest', NOW))
+      .toBe('F1 calendar 2027 latest')
+  })
+
+  it('now-class beats freshness-class when both vocabularies appear', () => {
+    expect(resolveStaleYear('news latest 2025', 'latest news today', NOW)).toBe('news latest 2026-09-08')
+  })
+
+  it('does not classify from keywords that only exist inside longer words', () => {
+    expect(resolveStaleYear('hierarchy 2020 design', 'software hierarchy 2020 design', NOW))
+      .toBe('hierarchy 2020 design')
+  })
+
+  it('classifies from the raw query only, not the generated question', () => {
+    expect(resolveStaleYear('released 2024 today', 'released 2024', NOW)).toBe('released 2024 today')
+  })
+
+  it('strips years embedded at string boundaries', () => {
+    expect(resolveStaleYear('2025 schedule hôm nay', 'lịch hôm nay', NOW)).toBe('schedule hôm nay 2026-09-08')
+  })
+})
+
+describe('sanitizeGeneratedQuestion — corners', () => {
+  it('leaves single or asymmetric quote characters alone', () => {
+    expect(sanitizeGeneratedQuestion('"', 'fallback')).toBe('"')
+    expect(sanitizeGeneratedQuestion('"asymmetric\'', 'fallback')).toBe('"asymmetric\'')
+  })
+
+  it('falls back when only wrapping quotes remain', () => {
+    expect(sanitizeGeneratedQuestion('""', 'fallback')).toBe('fallback')
+  })
+
+  it('keeps exactly 200 characters and falls back at 201', () => {
+    const exact = 'a'.repeat(200)
+    expect(sanitizeGeneratedQuestion(exact, 'fallback')).toBe(exact)
+    expect(sanitizeGeneratedQuestion(`${exact}x`, 'fallback')).toBe('fallback')
+  })
+
+  it('keeps the first line across CRLF and unicode content', () => {
+    expect(sanitizeGeneratedQuestion('giá vàng\r\nsecond line', 'fallback')).toBe('giá vàng')
+    expect(sanitizeGeneratedQuestion('  hôm nay  giá   vàng  ', 'fallback')).toBe('hôm nay giá vàng')
+  })
+})
+
+describe('formatSearchOutput — corners', () => {
+  it('labels untitled sources by hostname, malformed URLs by the raw string', () => {
+    const text = formatSearchOutput(value({
+      sources: [
+        { url: 'https://docs.example.io/x', title: '' },
+        { url: 'not a url', title: '' },
+      ],
+    }))
+    expect(text).toContain('- [docs.example.io](https://docs.example.io/x)')
+    expect(text).toContain('- [not a url](not a url)')
+  })
+
+  it('omits empty snippet and publishedAt strings', () => {
+    const text = formatSearchOutput(value({
+      sources: [{ url: 'https://a', title: 'A', snippet: '', publishedAt: '' }],
+    }))
+    expect(text).toContain('- [A](https://a)')
+    expect(text).not.toContain('published')
+  })
+})
