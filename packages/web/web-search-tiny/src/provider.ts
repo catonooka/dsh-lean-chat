@@ -21,7 +21,7 @@ const WIKIPEDIA_URL = 'https://en.wikipedia.org/w/api.php'
 
 /** Browser-like user agent for the HTML endpoint; a descriptive one for the API. */
 const BROWSER_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-const API_USER_AGENT = 'dsh-tiny-metasearch/0.1 (https://github.com/catonooka/deepseek-harness)'
+const API_USER_AGENT = 'dsh-tiny-metasearch/0.1 (https://github.com/catonooka/dsh-lean-chat)'
 
 /** How many results to ask each engine for before merging. */
 const PER_ENGINE_LIMIT = 8
