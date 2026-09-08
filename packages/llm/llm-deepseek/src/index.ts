@@ -161,6 +161,11 @@ export interface Config {
   fileQuotaCleanupBatch?: number
   /** Provider-owned model-request retry policy; omission uses normal mode with five retries. */
   retryPolicy?: RetryPolicyConfig
+  /** Claim image input for models outside the catalog, so custom multimodal
+   * gateways receive attachments instead of deterministic placeholder text.
+   * Off by default: an unverified claim lets the host persist input a later
+   * endpoint may reject. */
+  uncataloguedImageInput?: boolean
 }
 
 const catalogModel: z<DeepSeekCatalogModel> = z.object({
@@ -194,6 +199,7 @@ export const Config: z<Config> = z.object({
   fileRefreshMarginSeconds: z.number().step(1).min(0).default(DEFAULT_FILE_REFRESH_MARGIN_SECONDS),
   fileQuotaCleanupBatch: z.number().step(1).min(1).max(1_000).default(DEFAULT_FILE_QUOTA_CLEANUP_BATCH),
   retryPolicy: RetryPolicySchema,
+  uncataloguedImageInput: z.boolean().default(false),
 })
 
 /** Public API default; the internal endpoint comes from $DEEPSEEK_BASE_URL. */
@@ -389,6 +395,7 @@ export function resolveAdapterOptions(config: Config, environment?: LaunchEnviro
     maxRequestFilesBytes,
     maxInlineRequestImageBytes,
     maxImagesPerRequest,
+    uncataloguedImageInput: config.uncataloguedImageInput ?? false,
     imageOffloadByteQuantum,
     inlineImageOffloadByteQuantum,
     imageOffloadCountQuantum,

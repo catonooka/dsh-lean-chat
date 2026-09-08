@@ -46,6 +46,10 @@
       name: '@deepseek-ai/dsh-llm-deepseek'
       config:
         apiKeyEnv: DEEPSEEK_API_KEY
+        # The profile targets custom OpenAI-compatible gateways whose models
+        # sit outside the catalog; claiming image input lets attachments flow
+        # instead of becoming placeholder text.
+        uncataloguedImageInput: true
         defaultContextWindow: !!js Number(process.env.DSH_CONTEXT_WINDOW ?? 1000000)
         streamIdleTimeoutMs: 172800000
 

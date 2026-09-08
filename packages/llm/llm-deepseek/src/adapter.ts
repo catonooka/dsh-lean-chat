@@ -98,6 +98,8 @@ export interface DeepSeekConnectionOptions {
   maxInlineRequestImageBytes: number
   /** Maximum number of represented images in one request. */
   maxImagesPerRequest: number
+  /** Claim image input for uncatalogued models (opt-in for custom gateways). */
+  uncataloguedImageInput: boolean
   /** Raw-byte removal step after the file-reference bound is exceeded. */
   imageOffloadByteQuantum: number
   /** Base64-byte removal step after the inline fallback bound is exceeded. */
@@ -431,11 +433,19 @@ export class DeepSeekAdapter extends LlmAdapter {
     const contextWindow = configured?.contextWindow
       ?? connection.defaultContextWindow
     return {
-      // An uncatalogued endpoint is safely treated as text-only. Declaring an
-      // unverified image capability would let the host persist input that the
-      // endpoint may reject on every later turn.
+      // An uncatalogued endpoint defaults to text-only; declaring an
+      // unverified image capability would let the host persist input the
+      // endpoint may reject on every later turn. Deployments pointing at
+      // custom multimodal gateways opt in through uncataloguedImageInput.
       ...configured === undefined
-        ? { provider, id: model, name: model, inputModalities: ['text' as const] }
+        ? {
+          provider,
+          id: model,
+          name: model,
+          inputModalities: connection.uncataloguedImageInput
+            ? ['text' as const, 'image' as const]
+            : ['text' as const],
+        }
         : modelInfo(provider, configured),
       context: { contextWindow },
       defaultMaxTokens: configured?.maxTokens ?? connection.maxTokens,
@@ -486,7 +496,12 @@ export class DeepSeekAdapter extends LlmAdapter {
     let attachments: AttachmentStore | undefined
     if (hasImages) {
       const model = connection.models.find(entry => entry.id === options.model)
-      if (model?.inputModalities?.includes('image') !== true) {
+      // Uncatalogued models pass only under the deployment's explicit
+      // image-input opt-in; catalogued ones must declare the modality.
+      const acceptsImages = model === undefined
+        ? connection.uncataloguedImageInput
+        : model.inputModalities?.includes('image') === true
+      if (!acceptsImages) {
         throw new LlmError(
           `DeepSeek model "${options.model}" does not accept image input.`,
           'UNSUPPORTED_CONTENT',
