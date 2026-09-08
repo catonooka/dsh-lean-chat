@@ -9,6 +9,7 @@ import {
   RateLimiter,
   attachmentDescriptors,
   cachePolicyFor,
+  modalityClaim,
   evictableSessionIds,
   hasSessionCookie,
   isLocalOrBridgeRequest,
@@ -787,5 +788,19 @@ describe('attachmentDescriptors and projection', () => {
     const only = projectSurfaceEvent(surfaceEvent('user/message', { content: [videoBlock] }))
     expect(only).toEqual({ role: 'user', attachments: [{ kind: 'video', attachmentId: 'vid-1', mediaType: 'video/mp4', ref: videoBlock.attachment }] })
     expect(projectSurfaceEvent(surfaceEvent('user/message', { content: [] }))).toBeUndefined()
+  })
+})
+
+describe('modalityClaim', () => {
+  it('claims image input when either modality probed yes', () => {
+    expect(modalityClaim({ model: 'm', image: 'yes', video: 'no' })).toBe(true)
+    expect(modalityClaim({ model: 'm', image: 'no', video: 'yes' })).toBe(true)
+    expect(modalityClaim({ model: 'm', image: 'yes', video: 'yes' })).toBe(true)
+  })
+
+  it('stays text-only when both modalities are refused or unknown', () => {
+    expect(modalityClaim({ model: 'm', image: 'no', video: 'no' })).toBe(false)
+    expect(modalityClaim({ model: 'm', image: 'unknown', video: 'unknown' })).toBe(false)
+    expect(modalityClaim({ model: 'm', image: 'no', video: 'unknown' })).toBe(false)
   })
 })

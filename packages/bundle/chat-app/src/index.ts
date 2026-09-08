@@ -55,6 +55,17 @@ const MAX_API_KEY_LENGTH = 500
 /** Public DeepSeek API, mirroring llm-deepseek's fallback when nothing overrides it. */
 const PUBLIC_BASE_URL = 'https://api.deepseek.com'
 
+/**
+ * Whether one model's probed abilities should claim image input for the
+ * uncatalogued route. Video rides the same multimodal machinery, so either
+ * accepted modality claims it.
+ * @param abilities - one model's probe verdicts.
+ * @returns the adapter's uncataloguedImageInput claim.
+ */
+export function modalityClaim(abilities: ModelAbilities): boolean {
+  return abilities.image === 'yes' || abilities.video === 'yes'
+}
+
 /** Plugin config: browser handoff, URL line, and the conversation model route. */
 export interface Config {
   /** Open the default browser after startup. */
@@ -610,6 +621,13 @@ export interface ParsedAttachment {
   data: Uint8Array
 }
 
+/** Pull the declared kind out of an attachment payload, unvalidated. */
+function attachmentKind(body: unknown): 'image' | 'video' | undefined {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return undefined
+  const kind = (body as { kind?: unknown }).kind
+  return kind === 'image' || kind === 'video' ? kind : undefined
+}
+
 /**
  * Validate one inline attachment payload: a `data:<media>;base64,…` URL with
  * a kind-appropriate media type and size, plus an optional display name.
@@ -1123,6 +1141,9 @@ export function apply(ctx: Context, config: Config): void {
       const reason = error instanceof Error ? error.message : String(error)
       console.error(`chat-app: could not apply the base URL live because ${reason}; it still applies on restart`)
     }
+    // Warm the modality claim for whatever model is now active; a message
+    // with an attachment awaits the probe regardless.
+    void ensureModelAbilities(activeProfile(settings).model).catch(() => { /* the attach route probes on demand */ })
   }
 
   void applyLiveModelSettings()
@@ -1175,6 +1196,36 @@ export function apply(ctx: Context, config: Config): void {
   // one probe per model is enough and the panel re-checks on demand.
   const abilityCache = new Map<string, ModelAbilities>()
   const probeLimiter = new RateLimiter(20, 5 * 60_000)
+
+  /**
+   * One model's input modalities, probed once and cached — and pushed into the
+   * adapter's live settings so its modality gates follow the endpoint's own
+   * truth instead of per-model code: a probe that accepts images (or videos,
+   * which ride the same machinery) claims image input for the uncatalogued
+   * model; anything else restores upstream's conservative text-only default.
+   */
+  async function ensureModelAbilities(model: string): Promise<ModelAbilities> {
+    const cached = abilityCache.get(model)
+    if (cached !== undefined) return cached
+    const active = activeProfile(settings)
+    const outcome = await probeModelAbilities({
+      base: (active.baseUrl ?? process.env.DEEPSEEK_BASE_URL ?? PUBLIC_BASE_URL).replace(/\/+$/, ''),
+      apiKey: process.env.DEEPSEEK_API_KEY ?? '',
+      model,
+      timeoutMs: 15_000,
+    })
+    abilityCache.set(model, outcome)
+    const settingsService = ctx.get('settings')
+    if (settingsService !== undefined) {
+      try {
+        await settingsService.update('llm-deepseek', { uncataloguedImageInput: modalityClaim(outcome) })
+      } catch (error: unknown) {
+        const reason = error instanceof Error ? error.message : String(error)
+        console.error(`chat-app: could not sync the model's modality claim because ${reason}`)
+      }
+    }
+    return outcome
+  }
   type ChromeSearchOutcome = {
     engine: 'extension' | 'cdp'
     result: Awaited<ReturnType<UserChromeSearchProvider['search']>>
@@ -1624,6 +1675,16 @@ export function apply(ctx: Context, config: Config): void {
             sendJson(res, 400, { error: 'attachment storage is not available in this composition' })
             return
           }
+          const kind = attachmentKind(body.attachment)
+          if (kind === undefined) {
+            sendJson(res, 400, { error: 'attachment kind must be image or video' })
+            return
+          }
+          const abilities = await ensureModelAbilities(activeProfile(settings).model)
+          if (abilities[kind] !== 'yes') {
+            sendJson(res, 400, { error: `this model does not accept ${kind} input (probe says ${abilities[kind]})` })
+            return
+          }
           const parsed = parseAttachment(body.attachment)
           if (parsed.kind === 'image') {
             const [ref] = await store.saveImages([{
@@ -1723,20 +1784,7 @@ export function apply(ctx: Context, config: Config): void {
       const body = await readJsonBody(req)
       const active = activeProfile(settings)
       const model = typeof body.model === 'string' && body.model.trim() !== '' ? body.model.trim() : active.model
-      const cached = abilityCache.get(model)
-      if (cached !== undefined) {
-        sendJson(res, 200, cached)
-        return
-      }
-      const base = (active.baseUrl ?? process.env.DEEPSEEK_BASE_URL ?? PUBLIC_BASE_URL).replace(/\/+$/, '')
-      const outcome = await probeModelAbilities({
-        base,
-        apiKey: process.env.DEEPSEEK_API_KEY ?? '',
-        model,
-        timeoutMs: 15_000,
-      })
-      abilityCache.set(model, outcome)
-      sendJson(res, 200, outcome)
+      sendJson(res, 200, await ensureModelAbilities(model))
       return
     }
 
