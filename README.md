@@ -1,63 +1,79 @@
-# DeepSeek Harness
+# dsh-lean-chat
 
-English | [中文](README.zh.md)
+A lean, chat-only web app forked from [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)
+(MIT — see [LICENSE](LICENSE) and [README.upstream.md](README.upstream.md) for the upstream project).
 
-DeepSeek Harness (`dsh`) is an open-source agent harness developed by [DeepSeek AI](https://deepseek.com).
+One chat surface, no agent shell: a minimal system prompt, one `web_search`
+tool, and a small ChatGPT-style UI you can point at **any OpenAI-compatible
+endpoint** — DeepSeek, an mLLM gateway, or a local Ollama/vLLM.
 
-It is built on an **everything-is-a-plugin** architecture and powered by [Cordis](https://github.com/cordiverse/cordis), whose design is described in [_A Programming Paradigm for Spatiotemporal Composability_](https://arxiv.org/abs/2608.25512).
+## Highlights
 
-Documentation: [https://deepseek-harness.github.io/deepseek-harness/](https://deepseek-harness.github.io/deepseek-harness/)
+- **Tiny model context** — one persona line plus a single tool schema on the
+  wire; nothing else mounts.
+- **Provider profiles** — save any number of named endpoints (base URL, key,
+  model each), switch in the settings panel, all riding one adapter.
+- **Search your way** — the keyless built-in metasearch, or *Your Chrome*:
+  a tiny [companion extension](packages/web/web-search-chrome/extension/README.md)
+  runs searches inside your logged-in browser (no debug port, no tab), with a
+  CDP fallback; `x:`-prefixed queries search your own X account.
+- **Multimodal aware** — a one-click probe tells you whether the active model
+  accepts image and video input.
+- **Clean UI** — collapsible sidebar, full-text chat search, lazy-loaded
+  history, streaming with batched rendering, avatars, light/dark theme.
+- **Hardened localhost surface** — loopback-only, boot-minted HttpOnly session
+  cookie, extension trust scoped to exactly two bridge routes, rate-limited
+  probe endpoint.
 
-## Developer preview
+## Run it
 
-DeepSeek Harness is in _developer preview_ and iterating rapidly. **THERE WILL BE COMPATIBILITY-BREAKING CHANGES.**
-
-Review the [safety notice](SAFETY.md) before running the project.
-
-## Run
-
-### Run from `npm`
-
-Install `Node.js`, then run:
+Requires Node `^22.19.0 || >=24.0.0` and pnpm (`corepack enable` sorts it).
 
 ```sh
-npx @deepseek-ai/dsh web
+git clone https://github.com/catonooka/dsh-lean-chat.git
+cd dsh-lean-chat
+pnpm install && pnpm run build
+
+export DEEPSEEK_API_KEY=...        # or skip this and configure in the UI
+pnpm dsh --profile chat            # http://127.0.0.1:3095 (opens the browser)
 ```
 
-The command starts the Web UI at `http://127.0.0.1:3080` by default and opens it in the default browser for a local launch. An SSH launch only prints the host URL because the SSH client or editor owns the local forwarded address. Pass `--no-open` to run the server without opening a browser. See [Web UI guide](docs/user/guide/index.md).
+Then open **Settings** (user row, bottom-left) to pick an avatar and set up a
+provider profile: base URL, API key, and model all live there. Any
+OpenAI-compatible gateway works, e.g. `http://localhost:11434/v1` for Ollama.
 
-### Run from source
+Useful flags: `--no-open`, `--port <n>`, `--host <h>` (loopback only).
+The full environment-variable table and the access model are in
+[docs/chat-app.md](docs/chat-app.md).
 
-To run from a repository checkout:
+### Optional: search with your own Chrome
+
+1. Open `chrome://extensions`, enable **Developer mode**.
+2. **Load unpacked** → `packages/web/web-search-chrome/extension` in this
+   checkout (the app's Settings → Search tool → *How to connect* prints the
+   exact path while it runs).
+3. Pick **Your Chrome** as the search tool. Queries prefixed `x:` search your
+   logged-in X; everything else searches the web with your browser's session.
+   Different app port? Set it once in the extension's options.
+
+## Develop
 
 ```sh
-git clone https://github.com/deepseek-ai/deepseek-harness.git
-cd deepseek-harness
-pnpm install
-pnpm run build
-pnpm dsh web
+pnpm vitest run packages/bundle/chat-app packages/web/web-search-chrome apps/chat   # the fork's suites
+pnpm run build:chat-web        # rebuild the frontend after UI edits
+pnpm run build:lib:host        # rebuild server libs after bundle edits
 ```
 
-`pnpm run build` prepares the repository artifacts. `pnpm dsh web` uses those built artifacts without rebuilding.
+## Layout
 
-## Community and support
+| Path | What it is |
+|---|---|
+| `packages/bundle/chat-app/` | the chat profile bundle: API routes, SSE, settings, engines |
+| `apps/chat/` | the web frontend (React, no runtime deps beyond it) |
+| `packages/web/web-search-chrome/` | the user-Chrome search provider + companion extension |
+| `packages/web/web-search-tiny/`, `packages/web/tool-web-search-tiny/` | the built-in search engines and tool |
+| `docs/chat-app.md` | the chat surface's own documentation |
 
-- Submit feedback or bug reports through [GitHub Discussions](https://github.com/deepseek-ai/deepseek-harness/discussions).
-- Add the [`dsh-plugin`](https://github.com/topics/dsh-plugin) topic to your plugin repository for discoverability.
-- Join <a href="https://discord.gg/Ycq5dCaS4">DeepSeek Harness Discord community</a>.
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## Development
-
-Start with the [development guide](docs/development.md) and [architecture documentation](docs/architecture.md).
-
-For agents, follow [AGENTS.md](AGENTS.md).
-
-## License
-
-[MIT](LICENSE)
-
-Third-party dependencies and their licenses are disclosed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Everything else is upstream harness, mounted but untouched — see
+[README.upstream.md](README.upstream.md). To take future upstream fixes:
+`git fetch upstream && git merge upstream/master`.
