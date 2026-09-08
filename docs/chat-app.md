@@ -28,6 +28,9 @@ context**.
 - **A clean, minimal UI** (`apps/chat`): sidebar with the conversation list,
   a centered 720px thread with streaming, markdown, and expandable
   search-result chips, and a composer with Enter-to-send and a stop button.
+- **A settings panel** on the sidebar's user row (bottom-left): model,
+  thinking level, temperature, system prompt, and theme — editable at
+  runtime, no restart needed.
 
 ## Run
 
@@ -50,7 +53,19 @@ Environment:
 | `DSH_CHAT_PROVIDER` | `deepseek-official` | Conversation provider route |
 | `DSH_CHAT_REASONING` | model default | Thinking level: `off`, `low`, `high`, or `max` |
 | `DSH_CHAT_TEMPERATURE` | model default | Sampling temperature (0–2), applied to every conversation request |
-| `DSH_CHAT_PERSONA` | `You are a helpful assistant.` | The whole system prompt; `''` for none |
+| `DSH_CHAT_PERSONA` | `You are a helpful assistant.` | The whole system prompt |
+
+### Settings panel
+
+The user row at the bottom of the sidebar opens the settings panel. It edits
+the conversation model route (provider, model, thinking level, temperature)
+and the system prompt at runtime: `PUT /api/config` validates the patch,
+persists it to `$DSH_HOME/chat-settings.json`, and applies it from the next
+message on — a model change swaps the session's agent while its durable
+history keeps the conversation. Temperature and the persona apply
+immediately (both are evaluated per request). The env vars above are only
+the seed defaults for a fresh home; the persisted file wins afterwards.
+Theme (system / light / dark) is a browser preference stored client-side.
 
 Any OpenAI-compatible gateway can serve the conversation model this way, e.g.
 an mLLM endpoint:

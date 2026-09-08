@@ -30,6 +30,16 @@ export interface AppConfig {
   model: string
   reasoningEffort?: string
   temperature?: number
+  persona: string
+}
+
+/** One partial settings update; `null` clears an optional field. */
+export interface SettingsPatch {
+  provider?: string
+  model?: string
+  reasoningEffort?: string | null
+  temperature?: number | null
+  persona?: string
 }
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -57,6 +67,14 @@ export function fetchMessages(sessionId: string): Promise<ChatItem[]> {
 
 export function fetchConfig(): Promise<AppConfig> {
   return fetchJson<AppConfig>('/api/config')
+}
+
+export function updateConfig(patch: SettingsPatch): Promise<AppConfig> {
+  return fetchJson<AppConfig>('/api/config', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(patch),
+  })
 }
 
 export function stopSession(sessionId: string): Promise<void> {

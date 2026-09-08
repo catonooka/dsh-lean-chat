@@ -25,6 +25,9 @@
       "path": "../../core/session"
     },
     {
+      "path": "../../util/home-paths"
+    },
+    {
       "path": "../../session-query/session-query"
     },
     {

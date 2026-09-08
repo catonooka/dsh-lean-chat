@@ -2,8 +2,8 @@
  * @deepseek-ai/dsh-chat-app — the chat bundle's runtime glue plugin. It serves
  * the built chat frontend dist on the webserver fallback seat, exposes a small
  * local JSON API over `/api` (session list, history, message send with SSE
- * streaming, stop), and drives agents directly through `ctx.agents` and
- * `ctx.sessionQuery` — no client module system, no settings surface.
+ * streaming, stop, runtime settings), and drives agents directly through
+ * `ctx.agents` and `ctx.sessionQuery` — no client module system.
  *
  * Wire protocol (SSE `data:` payloads, one JSON object per line):
  * - `{t:'user', text}` — the durable user message entering the surface
@@ -22,8 +22,10 @@
 
 import { randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
-import { readFile, stat } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname, extname, join, resolve, sep } from 'node:path'
+import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -39,6 +41,9 @@ export const name = 'chat-app'
 /** Services required before the chat surface can mount. */
 export const inject = ['webServer', 'agents', 'sessionQuery']
 
+/** Persona used when no explicit one is set; empty panel input means this too. */
+export const DEFAULT_PERSONA = 'You are a helpful assistant.'
+
 /** Plugin config: browser handoff, URL line, and the conversation model route. */
 export interface Config {
   /** Open the default browser after startup. */
@@ -53,6 +58,8 @@ export interface Config {
   reasoningEffort?: 'off' | 'low' | 'high' | 'max'
   /** Sampling temperature applied to every conversation request. */
   temperature?: number
+  /** Persona seeding the runtime system-prompt setting. */
+  persona: string
 }
 
 export const Config: z<Config> = z.object({
@@ -62,7 +69,137 @@ export const Config: z<Config> = z.object({
   model: z.string().default('deepseek-chat'),
   reasoningEffort: z.union([z.const('off'), z.const('low'), z.const('high'), z.const('max')]),
   temperature: z.number().min(0).max(2),
+  persona: z.string().default(DEFAULT_PERSONA),
 })
+
+/** Everything the settings panel can change while the app runs. */
+export interface ChatSettings {
+  provider: string
+  model: string
+  reasoningEffort?: 'off' | 'low' | 'high' | 'max'
+  temperature?: number
+  persona: string
+}
+
+/** Longest accepted persona text; the persona is the whole system prompt. */
+const MAX_PERSONA_LENGTH = 4000
+
+/**
+ * Validate one partial settings update. `null` clears an optional field.
+ * Unknown keys are rejected so a drifted frontend fails loudly, not silently.
+ * @param current - the settings in force before the patch.
+ * @param patch - the request body.
+ * @returns the next settings; throws on any invalid value.
+ */
+export function applySettingsPatch(current: ChatSettings, patch: Record<string, unknown>): ChatSettings {
+  const next: ChatSettings = { ...current }
+  for (const [key, value] of Object.entries(patch)) {
+    switch (key) {
+      case 'provider': {
+        if (typeof value !== 'string' || value.trim() === '') throw new Error('provider must be a non-empty string')
+        next.provider = value.trim()
+        break
+      }
+      case 'model': {
+        if (typeof value !== 'string' || value.trim() === '') throw new Error('model must be a non-empty string')
+        next.model = value.trim()
+        break
+      }
+      case 'reasoningEffort': {
+        if (value === null) {
+          delete next.reasoningEffort
+          break
+        }
+        if (value !== 'off' && value !== 'low' && value !== 'high' && value !== 'max') {
+          throw new Error('reasoningEffort must be one of off, low, high, max, or null')
+        }
+        next.reasoningEffort = value
+        break
+      }
+      case 'temperature': {
+        if (value === null) {
+          delete next.temperature
+          break
+        }
+        if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 2) {
+          throw new Error('temperature must be a number between 0 and 2, or null')
+        }
+        next.temperature = value
+        break
+      }
+      case 'persona': {
+        if (typeof value !== 'string') throw new Error('persona must be a string')
+        if (value.length > MAX_PERSONA_LENGTH) throw new Error(`persona must be at most ${String(MAX_PERSONA_LENGTH)} characters`)
+        const trimmed = value.trim()
+        next.persona = trimmed === '' ? DEFAULT_PERSONA : trimmed
+        break
+      }
+      default:
+        throw new Error(`unknown setting "${key}"`)
+    }
+  }
+  return next
+}
+
+/**
+ * Load settings over the config defaults from the persisted JSON file's
+ * contents. A missing or corrupt file falls back to the defaults — settings
+ * are convenience, never a boot gate.
+ * @param raw - the file contents, or `undefined` when no file exists yet.
+ * @param defaults - boot-time defaults (config, which folds the env seeds).
+ * @returns the settings in force.
+ */
+export function parseSettingsFile(raw: string | undefined, defaults: Config): ChatSettings {
+  const base: ChatSettings = {
+    provider: defaults.provider,
+    model: defaults.model,
+    ...defaults.reasoningEffort !== undefined ? { reasoningEffort: defaults.reasoningEffort } : {},
+    ...defaults.temperature !== undefined ? { temperature: defaults.temperature } : {},
+    persona: defaults.persona === '' ? DEFAULT_PERSONA : defaults.persona,
+  }
+  if (raw === undefined) return base
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return base
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return base
+  try {
+    return applySettingsPatch(base, parsed as Record<string, unknown>)
+  } catch {
+    return base
+  }
+}
+
+/** Project settings into the JSON body served by `GET /api/config`. */
+function settingsJson(settings: ChatSettings): Record<string, unknown> {
+  return {
+    provider: settings.provider,
+    model: settings.model,
+    ...settings.reasoningEffort !== undefined ? { reasoningEffort: settings.reasoningEffort } : {},
+    ...settings.temperature !== undefined ? { temperature: settings.temperature } : {},
+    persona: settings.persona,
+  }
+}
+
+/** Persist settings to disk; failures log but never break the request. */
+async function persistSettings(path: string, settings: ChatSettings): Promise<void> {
+  await mkdir(dirname(path), { recursive: true })
+  await writeFile(path, `${JSON.stringify(settingsJson(settings), null, 2)}\n`, 'utf8')
+}
+
+/** The agent-creation options derived from settings. */
+interface ConversationOptions {
+  provider: string
+  model: string
+  reasoningEffort?: ReasoningEffortId
+}
+
+/** Whether two agent-creation option sets select the same model route. */
+function sameConversationOptions(a: ConversationOptions, b: ConversationOptions): boolean {
+  return a.provider === b.provider && a.model === b.model && a.reasoningEffort === b.reasoningEffort
+}
 
 /** Display-only loopback host for the URL line; the webserver schema is the source of truth. */
 const LOOPBACK_HOST = '127.0.0.1'
@@ -274,7 +411,17 @@ async function serveStatic(req: IncomingMessage, res: ServerResponse, distRoot: 
  */
 export function apply(ctx: Context, config: Config): void {
   const distRoot = resolveDistRoot()
-  const handles = new Map<string, AgentHandle>()
+  // Runtime settings: boot-time config (which folds the env seeds) overlaid
+  // with the persisted panel edits, mutable through PUT /api/config.
+  const settingsPath = dshHomePath('chat-settings.json')
+  let settingsRaw: string | undefined
+  try {
+    settingsRaw = readFileSync(settingsPath, 'utf8')
+  } catch {
+    // First run: no file yet, the config defaults stand.
+  }
+  const settings = parseSettingsFile(settingsRaw, config)
+  const handles = new Map<string, { handle: AgentHandle; options: ConversationOptions }>()
   const streams = new Map<string, Set<ServerResponse>>()
 
   /** Send one SSE payload to every open stream of one session. */
@@ -294,32 +441,46 @@ export function apply(ctx: Context, config: Config): void {
 
   /** Resolve one agent by session id, creating (or resuming) it on demand. */
   async function getOrCreateAgent(sessionId: string): Promise<AgentHandle> {
+    const options: ConversationOptions = {
+      provider: settings.provider,
+      model: settings.model,
+      ...settings.reasoningEffort !== undefined ? { reasoningEffort: ReasoningEffortId(settings.reasoningEffort) } : {},
+    }
     const existing = handles.get(sessionId)
-    if (existing !== undefined && ctx.agents.get(existing.agent.id) === existing.agent) return existing
+    if (existing !== undefined && ctx.agents.get(existing.handle.agent.id) === existing.handle.agent) {
+      if (sameConversationOptions(existing.options, options)) return existing.handle
+      // The model route changed in settings: retire the stale agent. Session
+      // history is durable, so the replacement resumes this conversation on
+      // the new route; a running turn finishes on the old one.
+      handles.delete(sessionId)
+      await existing.handle.dispose()
+    }
     const handle = await ctx.agents.create({
       sessionId: SessionId(sessionId),
       meta: { cwd: process.cwd() },
-      agentOptions: {
-        provider: config.provider,
-        model: config.model,
-        ...config.reasoningEffort !== undefined ? { reasoningEffort: ReasoningEffortId(config.reasoningEffort) } : {},
-      },
+      agentOptions: options,
     })
-    handles.set(sessionId, handle)
+    handles.set(sessionId, { handle, options })
     ctx.effect(() => () => {
-      void handle.dispose()
-      handles.delete(sessionId)
+      // A settings swap may have disposed this handle already; only the
+      // map's current entry owns cleanup.
+      if (handles.get(sessionId)?.handle === handle) {
+        void handle.dispose()
+        handles.delete(sessionId)
+      }
     }, `chat-app.agent.${sessionId}`)
     return handle
   }
 
   // Sampling is request-level, not agent identity: patch the frozen call
   // config on its way out so every conversation request carries the
-  // configured temperature (the generator's hand-built call is untouched).
-  const temperature = config.temperature
-  if (temperature !== undefined) {
-    ctx.on('agent/request', async (_payload, next) => ({ ...(await next()), temperature }))
-  }
+  // current settings temperature (the generator's hand-built call is
+  // untouched). Reading the store per request keeps panel edits live.
+  ctx.on('agent/request', async (_payload, next) => {
+    const base = await next()
+    const temperature = settings.temperature
+    return temperature === undefined ? base : { ...base, temperature }
+  })
 
   ctx.on('session/event', (session, event) => {
     const sessionId = String(session.id)
@@ -382,11 +543,18 @@ export function apply(ctx: Context, config: Config): void {
     }
   })
 
-  // The conversation model must know what day it is, or it bakes its stale
+  // The persona is the whole system prompt, and the settings panel owns it:
+  // one dynamic section evaluated per request keeps panel edits live. The
+  // conversation model must also know what day it is, or it bakes its stale
   // training-cutoff year into time-relative tool calls ("giá vàng hôm nay
-  // 2025"). One dynamic line right after the persona is the leanest honest
-  // fix: ~10 tokens, evaluated per request.
+  // 2025") — one dynamic line right after the persona is the leanest honest
+  // fix: ~10 tokens.
   ctx.inject(['systemPrompt'], (promptCtx) => {
+    promptCtx.systemPrompt.section({
+      name: 'app:persona',
+      order: promptCtx.systemPrompt.getSectionOrder('DEPLOYMENT_PERSONA_PREFIX'),
+      text: () => settings.persona,
+    })
     promptCtx.systemPrompt.section({
       name: 'app:current-date',
       order: promptCtx.systemPrompt.getSectionOrder('DEPLOYMENT_PERSONA_SUFFIX'),
@@ -430,13 +598,23 @@ export function apply(ctx: Context, config: Config): void {
     // parts[0] is 'api' (the registered prefix).
     if (parts.length >= 1 && parts[0] === 'api') parts.shift()
 
-    if (req.method === 'GET' && parts.length === 1 && parts[0] === 'config') {
-      sendJson(res, 200, {
-        provider: config.provider,
-        model: config.model,
-        ...config.reasoningEffort !== undefined ? { reasoningEffort: config.reasoningEffort } : {},
-        ...config.temperature !== undefined ? { temperature: config.temperature } : {},
-      })
+    if (parts.length === 1 && parts[0] === 'config') {
+      if (req.method === 'GET') {
+        sendJson(res, 200, settingsJson(settings))
+        return
+      }
+      if (req.method === 'PUT') {
+        const body = await readJsonBody(req)
+        const next = applySettingsPatch(settings, body)
+        Object.assign(settings, next)
+        void persistSettings(settingsPath, settings).catch((error: unknown) => {
+          const reason = error instanceof Error ? error.message : String(error)
+          console.error(`chat-app: could not persist chat settings because ${reason}`)
+        })
+        sendJson(res, 200, settingsJson(settings))
+        return
+      }
+      sendJson(res, 405, { allow: 'GET, PUT' })
       return
     }
 
@@ -523,9 +701,9 @@ export function apply(ctx: Context, config: Config): void {
 
     if (req.method === 'POST' && parts.length === 3 && parts[0] === 'sessions' && parts[2] === 'stop') {
       const sessionId = parts[1] as string
-      const handle = handles.get(sessionId)
-      if (handle !== undefined) handle.agent.cancel({ kind: 'user' })
-      sendJson(res, 200, { stopped: handle !== undefined })
+      const entry = handles.get(sessionId)
+      if (entry !== undefined) entry.handle.agent.cancel({ kind: 'user' })
+      sendJson(res, 200, { stopped: entry !== undefined })
       return
     }
 

@@ -39,6 +39,7 @@
     "@deepseek-ai/dsh-agent-loop": "workspace:^",
     "@deepseek-ai/dsh-chat-frontend": "workspace:^",
     "@deepseek-ai/dsh-deepseek-llm-api-extensions": "workspace:^",
+    "@deepseek-ai/dsh-home-paths": "workspace:^",
     "@deepseek-ai/dsh-invariants": "workspace:^",
     "@deepseek-ai/dsh-llm": "workspace:^",
     "@deepseek-ai/dsh-llm-deepseek": "workspace:^",

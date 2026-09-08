@@ -13,6 +13,7 @@ import {
   type SessionSummary,
 } from './api.ts'
 import { renderMarkdown } from './markdown.ts'
+import { SettingsPanel, applyTheme, readStoredTheme, storeTheme, type Theme } from './Settings.tsx'
 
 const ACTIVE_KEY = 'dsh-chat-active'
 
@@ -88,6 +89,8 @@ export default function App(): JSX.Element {
   const [streaming, setStreaming] = useState(false)
   const [draft, setDraft] = useState('')
   const [config, setConfig] = useState<AppConfig | undefined>(undefined)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [theme, setTheme] = useState<Theme>(readStoredTheme)
   const [error, setError] = useState<string | undefined>(undefined)
   const threadRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -106,6 +109,11 @@ export default function App(): JSX.Element {
   useEffect(() => {
     localStorage.setItem(ACTIVE_KEY, activeId)
   }, [activeId])
+
+  useEffect(() => {
+    applyTheme(theme)
+    storeTheme(theme)
+  }, [theme])
 
   // A persisted session's history loads once the session list confirms the
   // id; a draft (never-sent) session shows an empty thread until its first
@@ -252,6 +260,23 @@ export default function App(): JSX.Element {
             </button>
           ))}
         </nav>
+        <div className="sidebar-footer">
+          <button type="button" className="user-row" onClick={() => { setSettingsOpen(true) }}>
+            <span className="user-avatar" aria-hidden="true">
+              <svg viewBox="0 0 16 16">
+                <circle cx="8" cy="5.2" r="2.6" fill="none" stroke="currentColor" strokeWidth="1.5" />
+                <path d="M3 13.5c.9-2.7 2.8-4.1 5-4.1s4.1 1.4 5 4.1" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              </svg>
+            </span>
+            <span className="user-name">catonooka</span>
+            <svg className="user-gear" viewBox="0 0 16 16" aria-hidden="true">
+              <line x1="2" y1="4.5" x2="14" y2="4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              <circle cx="6" cy="4.5" r="1.9" fill="none" stroke="currentColor" strokeWidth="1.5" />
+              <line x1="2" y1="11.5" x2="14" y2="11.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              <circle cx="10" cy="11.5" r="1.9" fill="none" stroke="currentColor" strokeWidth="1.5" />
+            </svg>
+          </button>
+        </div>
       </aside>
       <main className="main">
         <header className="topbar">
@@ -363,6 +388,20 @@ export default function App(): JSX.Element {
           <div className="composer-note">dsh chat can make mistakes. It searches the web with one internal tool.</div>
         </div>
       </main>
+      {settingsOpen && config !== undefined
+        ? (
+          <SettingsPanel
+            config={config}
+            theme={theme}
+            onTheme={setTheme}
+            onSaved={(next) => {
+              setConfig(next)
+              setSettingsOpen(false)
+            }}
+            onClose={() => { setSettingsOpen(false) }}
+          />
+        )
+        : undefined}
     </div>
   )
 }

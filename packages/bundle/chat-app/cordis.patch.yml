@@ -56,14 +56,16 @@
         fallbackMaxBytes: 48
         maxTitleBytes: 80
 
-    # The chat persona is the whole system prompt: one line, overridable via
-    # DSH_CHAT_PERSONA (set it to '' for an empty system prompt).
+    # The persona is the whole system prompt, and it lives in the runtime
+    # settings (editable from the panel, persisted under the dsh home). The
+    # static prefix stays empty so the glue's dynamic persona section is the
+    # single source.
     - id: system-prompt
       name: '@deepseek-ai/dsh-system-prompt'
       config:
         includeHarnessIdentity: false
         includeRuntimeContext: false
-        personaPrefix: !!js process.env.DSH_CHAT_PERSONA ?? 'You are a helpful assistant.'
+        personaPrefix: ''
 
     - id: tools
       name: '@deepseek-ai/dsh-tools'
@@ -149,3 +151,4 @@
         model: !!js process.env.DSH_CHAT_MODEL ?? 'deepseek-chat'
         reasoningEffort: !!js (process.env.DSH_CHAT_REASONING || undefined)
         temperature: !!js "process.env.DSH_CHAT_TEMPERATURE ? Number(process.env.DSH_CHAT_TEMPERATURE) : undefined"
+        persona: !!js process.env.DSH_CHAT_PERSONA ?? 'You are a helpful assistant.'

@@ -1,9 +1,15 @@
 /**
- * Unit coverage for the chat glue's pure history projection.
+ * Unit coverage for the chat glue's pure history projection and settings.
  */
 
 import { describe, expect, it } from 'vitest'
-import { projectSurfaceEvent } from '../src/index.ts'
+import {
+  applySettingsPatch,
+  parseSettingsFile,
+  projectSurfaceEvent,
+  type ChatSettings,
+  type Config,
+} from '../src/index.ts'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 
 function surfaceEvent(type: string, data: unknown): SessionEvent {
@@ -62,5 +68,60 @@ describe('projectSurfaceEvent', () => {
   it('ignores non-surface events', () => {
     expect(projectSurfaceEvent(surfaceEvent('turn/end', { turn: 1, reason: { kind: 'completed' } })))
       .toBeUndefined()
+  })
+})
+
+const baseConfig: Config = {
+  openBrowser: false,
+  printUrl: false,
+  provider: 'deepseek-official',
+  model: 'deepseek-chat',
+  persona: 'You are a helpful assistant.',
+}
+
+const baseSettings: ChatSettings = {
+  provider: 'deepseek-official',
+  model: 'deepseek-chat',
+  persona: 'You are a helpful assistant.',
+}
+
+describe('applySettingsPatch', () => {
+  it('applies each field and trims route strings', () => {
+    expect(applySettingsPatch(baseSettings, { provider: ' p ', model: ' m ', reasoningEffort: 'high', temperature: 0.3 }))
+      .toEqual({ ...baseSettings, provider: 'p', model: 'm', reasoningEffort: 'high', temperature: 0.3 })
+  })
+
+  it('clears optional fields with null and normalizes an empty persona', () => {
+    const set: ChatSettings = { ...baseSettings, reasoningEffort: 'low', temperature: 1, persona: 'custom' }
+    expect(applySettingsPatch(set, { reasoningEffort: null, temperature: null, persona: '  ' }))
+      .toEqual({ ...baseSettings, persona: 'You are a helpful assistant.' })
+  })
+
+  it('rejects unknown keys and invalid values', () => {
+    expect(() => applySettingsPatch(baseSettings, { nope: 1 })).toThrow('unknown setting "nope"')
+    expect(() => applySettingsPatch(baseSettings, { model: '' })).toThrow()
+    expect(() => applySettingsPatch(baseSettings, { reasoningEffort: 'medium' })).toThrow()
+    expect(() => applySettingsPatch(baseSettings, { temperature: 3 })).toThrow()
+    expect(() => applySettingsPatch(baseSettings, { persona: 7 })).toThrow()
+  })
+})
+
+describe('parseSettingsFile', () => {
+  it('falls back to config defaults without a file', () => {
+    expect(parseSettingsFile(undefined, baseConfig)).toEqual(baseSettings)
+  })
+
+  it('falls back to config defaults on a corrupt file', () => {
+    expect(parseSettingsFile('{oops', baseConfig)).toEqual(baseSettings)
+  })
+
+  it('overlays a valid persisted file', () => {
+    const raw = JSON.stringify({ model: 'qwen3.8-flash-next', reasoningEffort: 'off', temperature: 0.7 })
+    expect(parseSettingsFile(raw, baseConfig))
+      .toEqual({ ...baseSettings, model: 'qwen3.8-flash-next', reasoningEffort: 'off', temperature: 0.7 })
+  })
+
+  it('falls back when the file carries an unknown key', () => {
+    expect(parseSettingsFile(JSON.stringify({ nope: true }), baseConfig)).toEqual(baseSettings)
   })
 })
