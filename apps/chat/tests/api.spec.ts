@@ -124,7 +124,7 @@ describe('sendMessage SSE parsing', () => {
       '\n\ndata: {"t":"turn-end","reason":"completed"}\n\n',
     ])))
     const events: unknown[] = []
-    await sendMessage('s', 'hi', (event) => { events.push(event) })
+    await sendMessage('s', 'hi', undefined, (event) => { events.push(event) })
     expect(events).toEqual([
       { t: 'user', text: 'hi' },
       { t: 'delta', text: 'there' },
@@ -135,25 +135,51 @@ describe('sendMessage SSE parsing', () => {
   it('ignores non-data lines and malformed data frames without stopping', async () => {
     stubFetch(() => okResponse(sseBody([': comment\nx-ignored: 1\ndata: not json\ndata: {"t":"status","status":"running"}\n\n'])))
     const events: unknown[] = []
-    await sendMessage('s', 'hi', (event) => { events.push(event) })
+    await sendMessage('s', 'hi', undefined, (event) => { events.push(event) })
     expect(events).toEqual([{ t: 'status', status: 'running' }])
   })
 
   it('surfaces the error body of a rejected send', async () => {
     stubFetch(() => jsonResponse(400, { error: 'text must be a non-empty string' }))
-    await expect(sendMessage('s', '', () => undefined)).rejects.toThrow('text must be a non-empty string')
+    await expect(sendMessage('s', '', undefined, () => undefined)).rejects.toThrow('text must be a non-empty string')
   })
 
   it('throws on a missing stream body', async () => {
     stubFetch(() => ({ ok: true, status: 200, statusText: 'OK', body: null } as unknown as Response))
-    await expect(sendMessage('s', 'hi', () => undefined)).rejects.toThrow('200 OK')
+    await expect(sendMessage('s', 'hi', undefined, () => undefined)).rejects.toThrow('200 OK')
+  })
+})
+
+describe('sendMessage attachments', () => {
+  it('rides the attachment in the POST body and omits it when absent', async () => {
+    const calls: unknown[] = []
+    stubFetch((_url, init) => {
+      calls.push(JSON.parse(String(init?.body)))
+      return okResponse(sseBody(['data: {"t":"turn-end","reason":"completed"}\n\n']))
+    })
+    await sendMessage('s', 'what is this', { kind: 'image', name: 'red.png', dataUrl: 'data:image/png;base64,AAAA' }, () => undefined)
+    await sendMessage('s', 'plain', undefined, () => undefined)
+    expect(calls).toEqual([
+      { text: 'what is this', attachment: { kind: 'image', name: 'red.png', dataUrl: 'data:image/png;base64,AAAA' } },
+      { text: 'plain' },
+    ])
+  })
+
+  it('fetches attachment bytes by echoing the durable reference', async () => {
+    const mock = stubFetch(() => okResponse(sseBody([])) as unknown as Response)
+    void mock
+    const blob = new Blob(['x'])
+    stubFetch(() => ({ ok: true, status: 200, blob: async () => blob } as unknown as Response))
+    const { fetchAttachmentBlob } = await import('../src/api.ts')
+    await expect(fetchAttachmentBlob({ kind: 'video', mediaType: 'video/mp4', ref: { attachmentId: 'v1' } }))
+      .resolves.toBe(blob)
   })
 })
 
 describe('sendMessage callback failures', () => {
   it('propagates a throwing callback instead of swallowing it as a malformed frame', async () => {
     stubFetch(() => okResponse(sseBody(['data: {"t":"user","text":"hi"}\n\n'])))
-    await expect(sendMessage('s', 'hi', () => { throw new Error('render exploded') }))
+    await expect(sendMessage('s', 'hi', undefined, () => { throw new Error('render exploded') }))
       .rejects.toThrow('render exploded')
   })
 })

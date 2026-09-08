@@ -6,9 +6,21 @@ export interface ChatSource {
   publishedAt?: string
 }
 
+/** One attachment as history serves it, or as the composer holds it locally. */
+export interface ChatAttachment {
+  kind: 'image' | 'video'
+  attachmentId?: string
+  mediaType: string
+  /** History entries carry the durable reference to fetch bytes with. */
+  ref?: unknown
+  /** Live messages preview from the local data URL instead. */
+  localUrl?: string
+}
+
 export interface ChatItem {
   role: 'user' | 'assistant' | 'tool'
   text?: string
+  attachments?: ChatAttachment[]
   name?: string
   query?: string
   searchQuestion?: string
@@ -181,6 +193,17 @@ export function testChromeSearch(query?: string): Promise<ChromeTestOutcome> {
   })
 }
 
+/** Fetch one attachment's bytes for rendering (history entries). */
+export async function fetchAttachmentBlob(attachment: ChatAttachment): Promise<Blob> {
+  const response = await fetch('/api/attachment', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ kind: attachment.kind, mediaType: attachment.mediaType, ref: attachment.ref }),
+  })
+  if (!response.ok) throw new Error(`attachment fetch failed: ${String(response.status)}`)
+  return await response.blob()
+}
+
 export function stopSession(sessionId: string): Promise<void> {
   return fetchJson(`/api/sessions/${sessionId}/stop`, { method: 'POST' }).then(() => undefined)
 }
@@ -196,12 +219,27 @@ export type StreamEvent =
   | { t: 'turn-end'; reason: string }
   | { t: 'error'; message: string }
 
-/** Send one message and dispatch its SSE stream until the server closes it. */
-export async function sendMessage(sessionId: string, text: string, onEvent: (event: StreamEvent) => void): Promise<void> {
+/** One upload ready to ride a message. */
+export interface OutgoingAttachment {
+  kind: 'image' | 'video'
+  name: string
+  dataUrl: string
+}
+
+/** Send one message (with its optional attachment) and dispatch its SSE stream. */
+export async function sendMessage(
+  sessionId: string,
+  text: string,
+  attachment: OutgoingAttachment | undefined,
+  onEvent: (event: StreamEvent) => void,
+): Promise<void> {
   const response = await fetch(`/api/sessions/${sessionId}/messages`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify({
+      text,
+      ...attachment !== undefined ? { attachment: { kind: attachment.kind, name: attachment.name, dataUrl: attachment.dataUrl } } : {},
+    }),
   })
   if (!response.ok || response.body === null) {
     let message = `${String(response.status)} ${response.statusText}`

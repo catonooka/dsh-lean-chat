@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react'
 import { randomUUID } from '@deepseek-ai/dsh-util-crypto'
 import {
+  checkModelAbilities,
   fetchConfig,
   fetchMessages,
   listSessions,
@@ -10,8 +11,11 @@ import {
   sendMessage,
   stopSession,
   SESSION_PAGE_SIZE,
+  fetchAttachmentBlob,
   type AppConfig,
+  type ChatAttachment,
   type ChatItem,
+  type OutgoingAttachment,
   type SearchHit,
   type SessionSummary,
 } from './api.ts'
@@ -42,6 +46,31 @@ function relativeDate(createdAt: number): string {
     return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
   }
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
+/** One attachment inside a user bubble: local preview while live, fetched
+ * bytes for history. */
+function BubbleAttachment({ attachment }: { attachment: ChatAttachment }): JSX.Element {
+  const [url, setUrl] = useState<string | undefined>(attachment.localUrl)
+  useEffect(() => {
+    if (url !== undefined) return
+    let revoked = false
+    let objectUrl: string | undefined
+    fetchAttachmentBlob(attachment)
+      .then((blob) => {
+        objectUrl = URL.createObjectURL(blob)
+        if (!revoked) setUrl(objectUrl)
+      })
+      .catch(() => { /* the bubble falls back to a placeholder */ })
+    return () => {
+      revoked = true
+      if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl)
+    }
+  }, [attachment, url])
+  if (attachment.kind === 'image') {
+    return <img className="bubble-attachment" src={url} alt={attachment.mediaType} />
+  }
+  return <video className="bubble-attachment" src={url} muted controls playsInline />
 }
 
 function AssistantText({ text, streaming }: { text: string; streaming: boolean }): JSX.Element {
@@ -257,6 +286,20 @@ export default function App(): JSX.Element {
   // The conversation whose history has already been landed on the bottom.
   const anchoredSessionRef = useRef('')
 
+  // Which input modalities the active model accepts (server probes, cached).
+  const [abilities, setAbilities] = useState<{ image: 'yes' | 'no' | 'unknown'; video: 'yes' | 'no' | 'unknown' } | undefined>(undefined)
+  const [attachment, setAttachment] = useState<OutgoingAttachment | undefined>(undefined)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+
+  useEffect(() => {
+    if (config === undefined) return
+    let cancelled = false
+    checkModelAbilities(config.model)
+      .then((probe) => { if (!cancelled) setAbilities({ image: probe.image, video: probe.video }) })
+      .catch(() => { /* no attach button until a probe answers */ })
+    return () => { cancelled = true }
+  }, [config?.model])
+
   useEffect(() => {
     const thread = threadRef.current
     if (thread === null) return
@@ -273,6 +316,37 @@ export default function App(): JSX.Element {
     if (nearBottom) thread.scrollTop = thread.scrollHeight
   }, [activeId, items, streamText])
 
+  const acceptsImages = abilities?.image === 'yes'
+  const acceptsVideos = abilities?.video === 'yes'
+  const attachAccept = [acceptsImages ? 'image/png,image/jpeg,image/webp,image/gif' : '', acceptsVideos ? 'video/*' : '']
+    .filter(value => value !== '').join(',')
+
+  const pickAttachment = (file: File | undefined): void => {
+    if (file === undefined) return
+    const isImage = file.type.startsWith('image/')
+    const cap = isImage ? 8 * 1024 * 1024 : 25 * 1024 * 1024
+    if (!(isImage ? acceptsImages : acceptsVideos)) {
+      setError(`this model does not accept ${isImage ? 'images' : 'videos'}`)
+      return
+    }
+    if (file.size > cap) {
+      setError(`that ${isImage ? 'image' : 'video'} is over the ${String(Math.round(cap / 1024 / 1024))}MB limit`)
+      return
+    }
+    const reader = new FileReader()
+    reader.onerror = () => { setError('could not read that file') }
+    reader.onload = () => {
+      const dataUrl = typeof reader.result === 'string' ? reader.result : ''
+      if (dataUrl === '') {
+        setError('could not read that file')
+        return
+      }
+      setError(undefined)
+      setAttachment({ kind: isImage ? 'image' : 'video', name: file.name, dataUrl })
+    }
+    reader.readAsDataURL(file)
+  }
+
   const startNewChat = useCallback(() => {
     if (streaming) return
     setActiveId(newSessionId())
@@ -283,17 +357,25 @@ export default function App(): JSX.Element {
 
   const send = useCallback(async (): Promise<void> => {
     const text = draft.trim()
-    if (text === '' || streaming) return
+    const outgoing = attachment
+    if ((text === '' && outgoing === undefined) || streaming) return
     setDraft('')
+    setAttachment(undefined)
     setStreaming(true)
     setStreamText('')
-    setItems(previous => [...previous, { role: 'user', text }])
+    setItems(previous => [...previous, {
+      role: 'user' as const,
+      ...text !== '' ? { text } : {},
+      ...outgoing !== undefined
+        ? { attachments: [{ kind: outgoing.kind, mediaType: outgoing.dataUrl.slice(5, outgoing.dataUrl.indexOf(';')), localUrl: outgoing.dataUrl }] }
+        : {},
+    }])
     let sawAssistant = false
     // Deltas land in coarse batches so the tree and the markdown parser run
     // at frame cadence, not once per token; order-critical events flush first.
     const batcher = new DeltaBatcher((chunk) => { setStreamText(previous => previous + chunk) })
     try {
-      await sendMessage(activeId, text, (event) => {
+      await sendMessage(activeId, text, outgoing, (event) => {
         switch (event.t) {
           case 'user':
             break
@@ -355,7 +437,7 @@ export default function App(): JSX.Element {
       setStreaming(false)
       refreshSessions()
     }
-  }, [activeId, draft, refreshSessions, streaming])
+  }, [activeId, attachment, draft, refreshSessions, streaming])
 
   const stop = useCallback(() => {
     stopSession(activeId).catch(() => { /* the stream ends on its own */ })
@@ -505,7 +587,10 @@ export default function App(): JSX.Element {
                   if (item.role === 'user') {
                     return (
                       <div key={index} className="row user">
-                        <div className="user-bubble">{item.text}</div>
+                        <div className="user-bubble">
+                          {(item.attachments ?? []).map((one, at) => <BubbleAttachment key={at} attachment={one} />)}
+                          {item.text}
+                        </div>
                       </div>
                     )
                   }
@@ -553,6 +638,22 @@ export default function App(): JSX.Element {
               </div>
             )
             : undefined}
+          {attachment !== undefined
+            ? (
+              <div className="attachment-chip">
+                {attachment.kind === 'image'
+                  ? <img src={attachment.dataUrl} alt="" />
+                  : <video src={attachment.dataUrl} muted playsInline />}
+                <span className="attachment-name">{attachment.name}</span>
+                <button type="button" aria-label="Remove attachment" onClick={() => { setAttachment(undefined) }}>
+                  <svg viewBox="0 0 16 16" aria-hidden="true">
+                    <line x1="4" y1="4" x2="12" y2="12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                    <line x1="12" y1="4" x2="4" y2="12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                  </svg>
+                </button>
+              </div>
+            )
+            : undefined}
           <form
             className="composer"
             onSubmit={(event) => {
@@ -560,6 +661,32 @@ export default function App(): JSX.Element {
               void send()
             }}
           >
+            {(acceptsImages || acceptsVideos)
+              ? (
+                <>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept={attachAccept}
+                    className="attach-input"
+                    onChange={(event) => {
+                      pickAttachment(event.target.files?.[0])
+                      event.target.value = ''
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="icon-btn attach-btn"
+                    aria-label="Attach image or video"
+                    onClick={() => { fileInputRef.current?.click() }}
+                  >
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                      <path d="M13.5 6.5l-6 6a3 3 0 0 1-4.2-4.2l6.4-6.4a2 2 0 0 1 2.8 2.8l-6.3 6.4a1 1 0 0 1-1.4-1.4l5.7-5.7" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                    </svg>
+                  </button>
+                </>
+              )
+              : undefined}
             <textarea
               ref={textareaRef}
               value={draft}
@@ -587,7 +714,7 @@ export default function App(): JSX.Element {
                 </button>
               )
               : (
-                <button type="submit" className="send" aria-label="Send message" disabled={draft.trim() === ''}>
+                <button type="submit" className="send" aria-label="Send message" disabled={draft.trim() === '' && attachment === undefined}>
                   <svg viewBox="0 0 16 16" aria-hidden="true">
                     <path d="M8 13V3.5M8 3.5L3.8 7.7M8 3.5l4.2 4.2" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
                   </svg>
