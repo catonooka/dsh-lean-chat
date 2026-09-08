@@ -210,11 +210,14 @@ export async function sendMessage(sessionId: string, text: string, onEvent: (eve
       buffer = buffer.slice(boundary + 2)
       for (const line of frame.split('\n')) {
         if (!line.startsWith('data: ')) continue
+        let parsed: StreamEvent
         try {
-          onEvent(JSON.parse(line.slice(6)) as StreamEvent)
+          parsed = JSON.parse(line.slice(6)) as StreamEvent
         } catch {
           // Ignore malformed frames; the stream continues.
+          continue
         }
+        onEvent(parsed)
       }
       boundary = buffer.indexOf('\n\n')
     }
