@@ -20,17 +20,19 @@ import {
 
 /** One JSON Response stub with the given status. */
 function jsonResponse(status: number, body: unknown): Response {
-  return {
+  const response = {
     ok: status >= 200 && status < 300,
     status,
     statusText: 'Status Text',
     json: async () => body,
-  } as unknown as Response
+    text: async () => JSON.stringify(body),
+  }
+  return { ...response, clone: () => response } as unknown as Response
 }
 
 /** A fetch stub that records calls and answers with canned responses. */
 function stubFetch(responder: (url: string, init?: RequestInit) => Response | Promise<Response>): typeof fetch {
-  const mock = vi.fn(responder)
+  const mock = vi.fn((url: string, init?: RequestInit) => Promise.resolve(responder(url, init)))
   vi.stubGlobal('fetch', mock)
   return mock as unknown as typeof fetch
 }
@@ -207,5 +209,34 @@ describe('classifyPastedFile', () => {
     expect(classifyPastedFile({ type: 'application/pdf', name: 'report.pdf' })).toBe('file')
     expect(classifyPastedFile({ type: '', name: 'archive' })).toBe('file')
     expect(classifyPastedFile({ type: '', name: 'archive.ZIP' })).toBe('file')
+  })
+})
+
+describe('session-cookie self-heal', () => {
+  it('retries once through a page refetch after a session-cookie 403', async () => {
+    const calls: string[] = []
+    stubFetch((url) => {
+      calls.push(String(url))
+      if (calls.filter(c => c.includes('/api/config')).length === 1) {
+        return jsonResponse(403, { error: 'session cookie required' })
+      }
+      if (String(url) === '/' || String(url) === 'http://x/') return { ok: true, status: 200 } as unknown as Response
+      return jsonResponse(200, { provider: 'p' })
+    })
+    const { fetchConfig } = await import('../src/api.ts')
+    await expect(fetchConfig()).resolves.toEqual({ provider: 'p' })
+    expect(calls.filter(c => c.includes('/api/config'))).toHaveLength(2)
+    expect(calls.some(c => c === '/' || c.includes('//127.0.0.1:3095/')) || calls.includes('/')).toBe(true)
+  })
+
+  it('does not retry other 403s or transient failures', async () => {
+    let count = 0
+    stubFetch(() => {
+      count += 1
+      return jsonResponse(403, { error: 'local requests only' })
+    })
+    const { fetchConfig } = await import('../src/api.ts')
+    await expect(fetchConfig()).rejects.toThrow('local requests only')
+    expect(count).toBe(1)
   })
 })

@@ -84,8 +84,22 @@ export interface SettingsPatch {
   deleteProfile?: { id: string }
 }
 
+/**
+ * Fetch with one self-healing retry: a 403 session-cookie rejection (a
+ * server restart rotated expectations) refetches the page to receive a fresh
+ * HttpOnly cookie, then replays the request once.
+ */
+async function fetchWithSessionHeal(url: string, init?: RequestInit): Promise<Response> {
+  const first = await fetch(url, init)
+  if (first.status !== 403) return first
+  const reason = await first.clone().text().catch(() => '')
+  if (!reason.includes('session cookie required')) return first
+  await fetch('/', { cache: 'no-store' }).catch(() => undefined)
+  return await fetch(url, init)
+}
+
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init)
+  const response = await fetchWithSessionHeal(url, init)
   if (!response.ok) {
     let message = `${String(response.status)} ${response.statusText}`
     try {
@@ -196,7 +210,7 @@ export function testChromeSearch(query?: string): Promise<ChromeTestOutcome> {
 
 /** Fetch one attachment's bytes for rendering (history entries). */
 export async function fetchAttachmentBlob(attachment: ChatAttachment): Promise<Blob> {
-  const response = await fetch('/api/attachment', {
+  const response = await fetchWithSessionHeal('/api/attachment', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ kind: attachment.kind, mediaType: attachment.mediaType, ref: attachment.ref }),
@@ -234,7 +248,7 @@ export async function sendMessage(
   attachment: OutgoingAttachment | undefined,
   onEvent: (event: StreamEvent) => void,
 ): Promise<void> {
-  const response = await fetch(`/api/sessions/${sessionId}/messages`, {
+  const response = await fetchWithSessionHeal(`/api/sessions/${sessionId}/messages`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({

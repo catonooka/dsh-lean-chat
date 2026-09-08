@@ -907,6 +907,13 @@ export const SESSION_COOKIE = 'dsh-chat-session'
  * @param token - this boot's minted token.
  * @returns whether the request is the app's own page.
  */
+/** Validate a persisted token file's contents: a non-empty short secret. */
+export function parseSessionToken(raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined
+  const trimmed = raw.trim()
+  return /^[A-Za-z0-9-]{16,128}$/.test(trimmed) ? trimmed : undefined
+}
+
 export function hasSessionCookie(cookieHeader: string | undefined, token: string): boolean {
   if (typeof cookieHeader !== 'string') return false
   for (const part of cookieHeader.split(';')) {
@@ -1003,6 +1010,15 @@ function escapesRoot(distRoot: string, target: string): boolean {
   return target !== root && !target.startsWith(root + sep)
 }
 
+/** Read a small owner-only file, missing-file-tolerant. */
+function readFileSyncSafe(path: string): string | undefined {
+  try {
+    return readFileSync(path, 'utf8')
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * Where the companion extension's load-unpacked folder sits in this checkout,
  * when it does — the settings panel prints this so connecting is copy-paste.
@@ -1089,9 +1105,20 @@ async function serveStatic(
 export function apply(ctx: Context, config: Config): void {
   const distRoot = resolveDistRoot()
   const extensionPath = resolveExtensionPath()
-  // One token per server start; index.html hands it to the page as an
-  // HttpOnly cookie and every non-bridge API call must carry it.
-  const sessionToken = randomUUID()
+  // The page's session token. It persists under the dsh home so a server
+  // restart keeps already-served pages authenticated — index.html hands it
+  // out as an HttpOnly cookie and every non-bridge API call must carry it.
+  const tokenPath = dshHomePath('chat-session-token')
+  const sessionToken = parseSessionToken(readFileSyncSafe(tokenPath)) ?? randomUUID()
+  if (!parseSessionToken(readFileSyncSafe(tokenPath))) {
+    void mkdir(dirname(tokenPath), { recursive: true })
+      .then(() => writeFile(tokenPath, `${sessionToken}\n`, { mode: 0o600, flag: 'w' }))
+      .then(() => chmod(tokenPath, 0o600))
+      .catch((error: unknown) => {
+        const reason = error instanceof Error ? error.message : String(error)
+        console.error(`chat-app: could not persist the session token because ${reason}`)
+      })
+  }
   // Runtime settings: boot-time config (which folds the env seeds) overlaid
   // with the persisted panel edits, mutable through PUT /api/config.
   const settingsPath = dshHomePath('chat-settings.json')

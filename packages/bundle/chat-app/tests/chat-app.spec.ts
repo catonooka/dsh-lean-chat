@@ -18,6 +18,7 @@ import {
   normalizeSearchQuery,
   paginateSessions,
   parseAttachment,
+  parseSessionToken,
   parseSettingsFile,
   projectSurfaceEvent,
   resolveProviderFallback,
@@ -825,5 +826,17 @@ describe('attachmentDescriptors — file blocks', () => {
     ])
     const projected = projectSurfaceEvent(surfaceEvent('user/message', { content: [fileBlock, { type: 'text', text: 'see attached' }] }))
     expect(projected?.attachments?.[0]).toMatchObject({ kind: 'file', name: 'notes.md' })
+  })
+})
+
+describe('parseSessionToken', () => {
+  it('accepts uuid-shaped secrets and rejects everything else', () => {
+    const uuid = '40884640-d4c1-4ef3-8bd8-1f6ad48a4312'
+    expect(parseSessionToken(`${uuid}\n`)).toBe(uuid)
+    expect(parseSessionToken(undefined)).toBeUndefined()
+    expect(parseSessionToken('')).toBeUndefined()
+    expect(parseSessionToken('short')).toBeUndefined()
+    expect(parseSessionToken('has space in it and that is not a token at all')).toBeUndefined()
+    expect(parseSessionToken('§§not-ascii§§')).toBeUndefined()
   })
 })
