@@ -1371,26 +1371,23 @@ export function apply(ctx: Context, config: Config): void {
 
     if (req.method === 'GET' && parts.length === 1 && parts[0] === 'sessions') {
       // The list is ordered by last activity — a continued old conversation
-      // rises to the top — then paginated. The activity stamp merges the
-      // surface's own ledger (every user message), the title-refresh time,
-      // and creation as the floor.
+      // rises to the top — then paginated. Ordering reads only the surface's
+      // own ledger (every user message) over creation, so it costs no
+      // per-session file reads; title snapshots load for the returned page
+      // alone (their refresh time refines the display stamp, not the order).
       const records = (await ctx.sessionQuery.listSessions())
         .filter(record => record.header.origin !== 'subagent')
-      const titleOf = await titleMapOf(records)
       const activityOf = new Map<string, number>()
       for (const record of records) {
         const id = String(record.header.id)
-        activityOf.set(id, Math.max(
-          activity.get(id) ?? 0,
-          titleOf.get(id)?.updatedAt ?? 0,
-          record.header.createdAt,
-        ))
+        activityOf.set(id, Math.max(activity.get(id) ?? 0, record.header.createdAt))
       }
       const { page, total } = paginateSessions(
         sortSessionsByActivity(records, activityOf),
         url.searchParams.get('limit'),
         url.searchParams.get('offset'),
       )
+      const titleOf = await titleMapOf(page)
       sendJson(res, 200, {
         sessions: page.map((record) => {
           const id = String(record.header.id)
@@ -1398,7 +1395,7 @@ export function apply(ctx: Context, config: Config): void {
             id,
             title: titleOf.get(id)?.text ?? 'New chat',
             createdAt: record.header.createdAt,
-            updatedAt: activityOf.get(id) ?? record.header.createdAt,
+            updatedAt: Math.max(activityOf.get(id) ?? 0, titleOf.get(id)?.updatedAt ?? 0),
             live: record.live,
           }
         }),
