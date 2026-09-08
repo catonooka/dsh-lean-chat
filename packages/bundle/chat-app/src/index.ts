@@ -314,7 +314,7 @@ export function normalizeSearchQuery(query: string): string {
 }
 
 /** Clip one snippet to the code-point budget with an ellipsis. */
-function truncateSnippet(text: string): string {
+export function truncateSnippet(text: string): string {
   const points = Array.from(text)
   return points.length <= SNIPPET_MAX_CODE_POINTS ? text : `${points.slice(0, SNIPPET_MAX_CODE_POINTS).join('')}…`
 }

@@ -9,6 +9,7 @@ import {
   paginateSessions,
   parseSettingsFile,
   projectSurfaceEvent,
+  truncateSnippet,
   type ChatSettings,
   type Config,
 } from '../src/index.ts'
@@ -175,5 +176,124 @@ describe('normalizeSearchQuery', () => {
     expect(() => normalizeSearchQuery('   ')).toThrow('not be empty')
     expect(() => normalizeSearchQuery('a\0b')).toThrow('NUL')
     expect(() => normalizeSearchQuery('x'.repeat(501))).toThrow('at most 500')
+  })
+})
+
+describe('applySettingsPatch — boundary corners', () => {
+  it('accepts temperature at the exact bounds and rejects just outside', () => {
+    expect(applySettingsPatch(baseSettings, { temperature: 0 }).temperature).toBe(0)
+    expect(applySettingsPatch(baseSettings, { temperature: 2 }).temperature).toBe(2)
+    expect(() => applySettingsPatch(baseSettings, { temperature: -0.1 })).toThrow()
+    expect(() => applySettingsPatch(baseSettings, { temperature: 2.1 })).toThrow()
+    expect(() => applySettingsPatch(baseSettings, { temperature: Number.POSITIVE_INFINITY })).toThrow()
+    expect(() => applySettingsPatch(baseSettings, { temperature: Number.NaN })).toThrow()
+    expect(() => applySettingsPatch(baseSettings, { temperature: '0.5' as unknown as number })).toThrow()
+  })
+
+  it('accepts the exact persona and API-key caps and rejects one over', () => {
+    expect(applySettingsPatch(baseSettings, { persona: 'p'.repeat(4000) }).persona).toBe('p'.repeat(4000))
+    expect(() => applySettingsPatch(baseSettings, { persona: 'p'.repeat(4001) })).toThrow()
+    expect(applySettingsPatch(baseSettings, { apiKey: 'k'.repeat(500) }).apiKey).toBe('k'.repeat(500))
+    expect(() => applySettingsPatch(baseSettings, { apiKey: 'k'.repeat(501) })).toThrow()
+  })
+
+  it('keeps internal spaces and case in route strings, trimming only the edges', () => {
+    expect(applySettingsPatch(baseSettings, { model: ' qwen 3.5 Flash ' }).model).toBe('qwen 3.5 Flash')
+  })
+})
+
+describe('applySettingsPatch — baseUrl corners', () => {
+  it('accepts local hosts, uppercase schemes, and multi-trailing-slash trims', () => {
+    expect(applySettingsPatch(baseSettings, { baseUrl: 'http://localhost:11434' }).baseUrl).toBe('http://localhost:11434')
+    expect(applySettingsPatch(baseSettings, { baseUrl: 'HTTPS://GW.EXAMPLE/V1' }).baseUrl).toBe('HTTPS://GW.EXAMPLE/V1')
+    expect(applySettingsPatch(baseSettings, { baseUrl: 'https://gw.example/v1///' }).baseUrl).toBe('https://gw.example/v1')
+  })
+
+  it('rejects bare schemes, embedded spaces, and empty-after-trim values that stay set', () => {
+    expect(() => applySettingsPatch(baseSettings, { baseUrl: 'https://' })).toThrow('http(s) URL')
+    expect(() => applySettingsPatch(baseSettings, { baseUrl: 'https://ex ample.com' })).toThrow('http(s) URL')
+    // Whitespace-only clears the override rather than throwing.
+    expect(applySettingsPatch({ ...baseSettings, baseUrl: 'https://x' }, { baseUrl: '   ' }).baseUrl).toBeUndefined()
+  })
+})
+
+describe('parseSettingsFile — hostile file corners', () => {
+  it('falls back on an empty file, null values, and wrong-typed overlays', () => {
+    expect(parseSettingsFile('', baseConfig)).toEqual(baseSettings)
+    expect(parseSettingsFile(JSON.stringify({ model: null }), baseConfig)).toEqual(baseSettings)
+    expect(parseSettingsFile(JSON.stringify({ temperature: 'hot' }), baseConfig)).toEqual(baseSettings)
+  })
+
+  it('overlays only the given keys and keeps the rest of the defaults', () => {
+    expect(parseSettingsFile(JSON.stringify({ searchTool: 'user-chrome' }), baseConfig))
+      .toEqual({ ...baseSettings, searchTool: 'user-chrome' })
+  })
+})
+
+describe('paginateSessions — edge offsets', () => {
+  const records = [1, 2, 3, 4, 5]
+  it('returns an empty page (with the total) past the end and at exactly the end', () => {
+    expect(paginateSessions(records, '5', '5')).toEqual({ page: [], total: 5 })
+    expect(paginateSessions(records, '5', '10000')).toEqual({ page: [], total: 5 })
+  })
+  it('serves a one-item page', () => {
+    expect(paginateSessions(records, '1', '4')).toEqual({ page: [5], total: 5 })
+  })
+})
+
+describe('normalizeSearchQuery — length and content edges', () => {
+  it('accepts exactly 500 characters and rejects 501', () => {
+    expect(normalizeSearchQuery('q'.repeat(500))).toBe('q'.repeat(500))
+    expect(() => normalizeSearchQuery('q'.repeat(501))).toThrow('at most 500')
+  })
+  it('rejects whitespace-only and tab/newline-only input', () => {
+    expect(() => normalizeSearchQuery(' \t\n ')).toThrow('not be empty')
+  })
+})
+
+describe('truncateSnippet — code-point corners', () => {
+  it('keeps text at or under the budget untouched', () => {
+    expect(truncateSnippet('a'.repeat(240))).toBe('a'.repeat(240))
+    expect(truncateSnippet('')).toBe('')
+  })
+  it('clips by code points, not UTF-16 units, appending the ellipsis', () => {
+    const emoji = '🎉'.repeat(241)
+    const clipped = truncateSnippet(emoji)
+    // 240 emoji code points (480 UTF-16 units) plus the one-unit ellipsis.
+    expect(Array.from(clipped).length).toBe(241)
+    expect(clipped.endsWith('…')).toBe(true)
+    expect(clipped.slice(0, -1)).toBe('🎉'.repeat(240))
+  })
+})
+
+describe('projectSurfaceEvent — malformed meta corners', () => {
+  it('slices the source list to the cap and filters malformed entries', () => {
+    const sources = [
+      { url: 'https://a', title: 'A', publishedAt: '2026-01-01' },
+      { url: 42 },
+      'not an object',
+      null,
+      { title: 'no url' },
+      ...Array.from({ length: 10 }, (_, index) => ({ url: `https://x/${String(index)}` })),
+    ]
+    const item = projectSurfaceEvent(surfaceEvent('tool/result', { message: { content: [] }, meta: { query: 'q', sources } }))
+    expect(item?.sources).toHaveLength(8)
+    expect(item?.sources?.[0]).toEqual({ url: 'https://a', title: 'A', publishedAt: '2026-01-01' })
+    expect(item?.sources?.[1]?.url).toBe('https://x/0')
+  })
+
+  it('ignores a non-array sources field and non-string scalars', () => {
+    const item = projectSurfaceEvent(surfaceEvent('tool/result', {
+      message: { content: [] },
+      meta: { query: 'q', sources: 'nope', searchedAt: 123, searchQuestion: null },
+    }))
+    expect(item).toEqual({ role: 'tool', name: 'web_search', query: 'q', text: undefined })
+  })
+
+  it('keeps whitespace-only user and assistant text (only empty text is skipped)', () => {
+    expect(projectSurfaceEvent(surfaceEvent('user/message', { content: [{ type: 'text', text: '   ' }] })))
+      .toEqual({ role: 'user', text: '   ' })
+    expect(projectSurfaceEvent(surfaceEvent('assistant/message', { message: { content: [{ type: 'text', text: ' ' }] } })))
+      .toEqual({ role: 'assistant', text: ' ' })
   })
 })
