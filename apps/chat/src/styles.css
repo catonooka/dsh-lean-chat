@@ -217,6 +217,12 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .assistant-text a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
 .assistant-text hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
 
+.assistant-text .table-wrap { overflow-x: auto; margin: 0 0 12px; }
+.assistant-text table { border-collapse: collapse; font-size: 14px; line-height: 1.5; }
+.assistant-text th, .assistant-text td { border: 1px solid var(--border); padding: 6px 12px; }
+.assistant-text th { background: var(--code-bg); font-weight: 600; }
+.assistant-text tbody tr:nth-child(even) { background: color-mix(in srgb, var(--code-bg) 45%, transparent); }
+
 .thinking { color: var(--fg-muted); }
 
 .caret {

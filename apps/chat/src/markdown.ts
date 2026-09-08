@@ -48,6 +48,48 @@ function transformRest(text: string): string {
     .replace(/(^|[\s(])\*([^*\s][^*]*)\*(?=[\s).,!?:;]|$)/gu, '$1<em>$2</em>')
 }
 
+/** Whether one line is a GFM table delimiter row (`|---|:--:|` and friends). */
+function isDelimiterRow(line: string): boolean {
+  return /^\s*\|?\s*:?-{1,}\s*:?(\s*\|\s*:?-{1,}\s*?:?)*\|?\s*$/u.test(line)
+}
+
+/** Split one table row into trimmed cells; `\|` stays one cell. */
+function splitRow(line: string): string[] {
+  return line
+    .replace(/\\\|/gu, '\u0000')
+    .trim()
+    .replace(/^\|/u, '')
+    .replace(/\|$/u, '')
+    .split('|')
+    .map(cell => cell.replace(/\u0000/gu, '|').trim())
+}
+
+/** Column alignment read from one delimiter cell (`:--` left, `--:` right, `:-:` center). */
+function alignOf(delimiterCell: string): 'left' | 'center' | 'right' {
+  const left = delimiterCell.startsWith(':')
+  const right = delimiterCell.endsWith(':')
+  if (left && right) return 'center'
+  if (right) return 'right'
+  return 'left'
+}
+
+/** Render one GFM table as a safe, horizontally scrollable HTML table. */
+function renderTable(header: string[], delimiters: string[], rows: string[][]): string {
+  const head = header
+    .map((cell, index) => `<th style="text-align:${alignOf(delimiters[index] ?? '')}">${renderInline(cell)}</th>`)
+    .join('')
+  const body = rows
+    .map(row => `<tr>${row.map((cell, index) => `<td style="text-align:${alignOf(delimiters[index] ?? '')}">${renderInline(cell)}</td>`).join('')}</tr>`)
+    .join('')
+  return `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`
+}
+
+/** Whether a table starts at `index`: a pipe line whose next line is a delimiter row. */
+function startsTable(lines: readonly string[], index: number): boolean {
+  const line = lines[index] ?? ''
+  return line.includes('|') && isDelimiterRow(lines[index + 1] ?? '')
+}
+
 /** Render one fenced-block-split segment of block-level markdown. */
 function renderBlocks(segment: string): string {
   const lines = segment.split('\n')
@@ -67,11 +109,28 @@ function renderBlocks(segment: string): string {
     list = undefined
   }
 
-  for (const rawLine of lines) {
-    const line = rawLine.replace(/\s+$/u, '')
+  for (let index = 0; index < lines.length; index++) {
+    const line = (lines[index] ?? '').replace(/\s+$/u, '')
     if (line === '') {
       flushParagraph()
       flushList()
+      continue
+    }
+    if (startsTable(lines, index)) {
+      flushParagraph()
+      flushList()
+      const header = splitRow(line)
+      const delimiters = splitRow(lines[index + 1] ?? '')
+      index += 2
+      const rows: string[][] = []
+      while (index < lines.length) {
+        const row = lines[index] ?? ''
+        if (row.trim() === '' || !row.includes('|')) break
+        rows.push(splitRow(row))
+        index += 1
+      }
+      index -= 1
+      html.push(renderTable(header, delimiters, rows))
       continue
     }
     const heading = line.match(/^(#{1,4})\s+(.*)$/u)
