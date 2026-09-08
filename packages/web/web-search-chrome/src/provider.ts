@@ -349,19 +349,28 @@ export class UserChromeSearchProvider implements WebSearchProvider {
   }
 }
 
+/**
+ * Validate an unknown payload as raw hits, dropping every malformed entry —
+ * shared by the page-side snippet parser and the extension bridge.
+ * @param value - the parsed payload.
+ * @returns the well-typed hits, in order.
+ */
+export function coerceRawHits(value: unknown): RawHit[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((hit): hit is RawHit => {
+    if (typeof hit !== 'object' || hit === null) return false
+    const candidate = hit as Record<string, unknown>
+    return typeof candidate.title === 'string'
+      && typeof candidate.url === 'string'
+      && (candidate.snippet === undefined || typeof candidate.snippet === 'string')
+      && (candidate.publishedAt === undefined || typeof candidate.publishedAt === 'string')
+  })
+}
+
 /** Parse the extraction snippet's JSON, tolerating a bad page. */
 function parseHits(raw: string): RawHit[] {
   try {
-    const parsed: unknown = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return []
-    return parsed.filter((hit): hit is RawHit => {
-      if (typeof hit !== 'object' || hit === null) return false
-      const candidate = hit as Record<string, unknown>
-      return typeof candidate.title === 'string'
-        && typeof candidate.url === 'string'
-        && (candidate.snippet === undefined || typeof candidate.snippet === 'string')
-        && (candidate.publishedAt === undefined || typeof candidate.publishedAt === 'string')
-    })
+    return coerceRawHits(JSON.parse(raw))
   } catch {
     return []
   }
