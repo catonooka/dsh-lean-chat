@@ -762,6 +762,16 @@ describe('parseAttachment', () => {
     expect(parseAttachment({ kind: 'video', dataUrl: `data:video/mp4;base64,${underVideo}` }).data.byteLength)
       .toBeGreaterThan(8 * 1024 * 1024 - 10)
   })
+
+  it('admits video and file attachments up to the 64MB transport cap and refuses beyond', () => {
+    // 22369621 * 3 = 67108863 bytes: the largest multiple of 3 that fits 64MiB,
+    // so an exact-length base64 string sits one byte under the cap.
+    const atCap = 'A'.repeat(22369621 * 4)
+    expect(parseAttachment({ kind: 'video', dataUrl: `data:video/mp4;base64,${atCap}` }).data.byteLength).toBe(67108863)
+    expect(parseAttachment({ kind: 'file', name: 'blob.bin', dataUrl: `data:application/octet-stream;base64,${atCap}` }).data.byteLength).toBe(67108863)
+    expect(() => parseAttachment({ kind: 'video', dataUrl: `data:video/mp4;base64,${atCap}AAAA` })).toThrow('at most 64MB')
+    expect(() => parseAttachment({ kind: 'file', dataUrl: `data:application/octet-stream;base64,${atCap}AAAA` })).toThrow('at most 64MB')
+  })
 })
 
 describe('attachmentDescriptors and projection', () => {

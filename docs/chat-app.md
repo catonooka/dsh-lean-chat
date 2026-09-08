@@ -89,7 +89,13 @@ The composer grows a clip button once the ability probe says the active
 model accepts images or video (the accept list filters to the supported
 kinds). One attachment rides a message as a base64 data URL — images up
 to 8MB (png/jpeg/webp/gif, byte-sniffed by the durable store under
-`$DSH_HOME/attachments`), videos up to 25MB (stored verbatim). The
+`$DSH_HOME/attachments`), videos and files up to 64MB (stored verbatim).
+The cap guards transport only: 64MB raw becomes ~86MB of base64 body,
+under the ~100MB request ceiling Cloudflare enforces in front of many
+gateways. Model context is unrelated to file size — providers price
+video by resolution × duration (a 300KB 4K clip can cost 100K+ tokens
+while a 23MB 1080p clip costs ~5K), and some models adapt their frame
+sampling to self-cap video tokens. The
 model receives them as `image_url`/`video_url` parts; reloaded history
 renders attachments from digest-verified storage. The profile opts into
 `uncataloguedImageInput` on the adapter so custom-gateway models take

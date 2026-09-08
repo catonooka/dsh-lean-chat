@@ -366,7 +366,7 @@ export default function App(): JSX.Element {
   const pickAttachment = (file: File | undefined): void => {
     if (file === undefined) return
     const isImage = file.type.startsWith('image/')
-    const cap = isImage ? 8 * 1024 * 1024 : 25 * 1024 * 1024
+    const cap = isImage ? 8 * 1024 * 1024 : 64 * 1024 * 1024
     // Refuse only a definitive no: while the probe is still in flight the
     // file flows, and the server's own awaited probe delivers the verdict.
     if ((isImage ? abilities?.image : abilities?.video) === 'no') {
@@ -423,8 +423,8 @@ export default function App(): JSX.Element {
       reader.readAsText(file)
       return
     }
-    if (file.size > 25 * 1024 * 1024) {
-      setError('files paste up to 25MB')
+    if (file.size > 64 * 1024 * 1024) {
+      setError('files paste up to 64MB')
       return
     }
     const reader = new FileReader()

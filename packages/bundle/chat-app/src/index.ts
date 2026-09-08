@@ -601,14 +601,23 @@ export function truncateSnippet(text: string): string {
   return points.length <= SNIPPET_MAX_CODE_POINTS ? text : `${points.slice(0, SNIPPET_MAX_CODE_POINTS).join('')}…`
 }
 
-/** Message bodies may carry one inline attachment; the cap leaves base64 headroom. */
-const MESSAGE_BODY_CAP = 40_000_000
+/**
+ * Message bodies may carry one inline attachment as base64 (4/3 inflation).
+ * The cap covers a 64MB video plus its envelope while staying under the
+ * ~100MB request-body ceiling Cloudflare enforces in front of gateways.
+ */
+const MESSAGE_BODY_CAP = 90_000_000
 
 /** Largest accepted decoded image bytes. */
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
-/** Largest accepted decoded video bytes. */
-const MAX_VIDEO_BYTES = 25 * 1024 * 1024
+/**
+ * Largest accepted decoded video or file bytes. Context cost is unrelated to
+ * file size — models price video by resolution × duration and adapt their
+ * frame sampling — so the cap only guards the transport: 64MB raw becomes
+ * ~86MB of base64 body, safely under the gateway's ~100MB limit.
+ */
+const MAX_VIDEO_BYTES = 64 * 1024 * 1024
 
 /** Media types the durable image store admits (it sniffs bytes anyway). */
 const IMAGE_MEDIA_TYPES: ReadonlySet<string> = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
