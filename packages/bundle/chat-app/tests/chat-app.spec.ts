@@ -7,6 +7,7 @@ import {
   activeProfile,
   applySettingsPatch,
   RateLimiter,
+  cachePolicyFor,
   evictableSessionIds,
   hasSessionCookie,
   isLocalOrBridgeRequest,
@@ -703,5 +704,18 @@ describe('evictableSessionIds', () => {
       .toEqual(['idle'])
     expect(evictableSessionIds(handles, new Set(), 5_000, 10_000)).toEqual([])
     expect(evictableSessionIds(new Map(), new Set(), 99_999, 10_000)).toEqual([])
+  })
+})
+
+describe('cachePolicyFor', () => {
+  it('caches hashed assets forever and revalidates everything else', () => {
+    expect(cachePolicyFor('/assets/index-CJZzaPGD.js'))
+      .toEqual({ 'cache-control': 'public, max-age=31536000, immutable' })
+    expect(cachePolicyFor('/assets/index-abc123.css'))
+      .toEqual({ 'cache-control': 'public, max-age=31536000, immutable' })
+    expect(cachePolicyFor('/index.html')).toEqual({ 'cache-control': 'no-cache' })
+    expect(cachePolicyFor('/')).toEqual({ 'cache-control': 'no-cache' })
+    expect(cachePolicyFor('/avatars/avatar-1.png')).toEqual({ 'cache-control': 'no-cache' })
+    expect(cachePolicyFor('/assets-like/page')).toEqual({ 'cache-control': 'no-cache' })
   })
 })

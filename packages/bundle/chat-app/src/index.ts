@@ -898,6 +898,19 @@ function resolveExtensionPath(): string | undefined {
   }
 }
 
+/**
+ * Cache policy per served path: vite content-hashes everything under
+ * /assets/, so those are immutable forever; the page itself (and anything
+ * else) revalidates.
+ * @param pathname - the decoded request path.
+ * @returns the cache-control header pair.
+ */
+export function cachePolicyFor(pathname: string): Record<string, string> {
+  return pathname.startsWith('/assets/')
+    ? { 'cache-control': 'public, max-age=31536000, immutable' }
+    : { 'cache-control': 'no-cache' }
+}
+
 /** Serve the built dist over the fallback seat: assets by MIME, `/` as index. */
 async function serveStatic(
   req: IncomingMessage,
@@ -936,6 +949,7 @@ async function serveStatic(
     res.writeHead(200, {
       'content-type': MIME[extname(target)] ?? 'application/octet-stream',
       'content-length': String(info.size),
+      ...cachePolicyFor(pathname),
       ...pathname === '/index.html'
         ? { 'set-cookie': `${SESSION_COOKIE}=${sessionToken}; HttpOnly; SameSite=Strict; Path=/` }
         : {},
