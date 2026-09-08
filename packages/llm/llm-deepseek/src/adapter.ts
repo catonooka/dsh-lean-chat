@@ -213,7 +213,7 @@ function collectImageRefs(
 async function prepareRequestImages(
   options: GenerateOptions,
   attachments: AttachmentStore,
-  model: DeepSeekCatalogModel,
+  model: DeepSeekCatalogModel | undefined,
   signal: AbortSignal,
 ): Promise<Map<AttachmentId, RequestImageAttachment>> {
   const refs = new Map<AttachmentId, ImageAttachmentRef>()
@@ -559,7 +559,9 @@ export class DeepSeekAdapter extends LlmAdapter {
       placeholder: ref => offloadedImageText(ref, resolveImageAccess?.(ref)),
     })
     const requestOptions = requestMessages === options.messages ? options : { ...options, messages: [...requestMessages] }
-    const requestImages = attachments === undefined || model === undefined
+    // A custom-gateway model outside the catalog still gets images — with
+    // the default request policy rather than a per-model budget.
+    const requestImages = attachments === undefined
       ? new Map<AttachmentId, RequestImageAttachment>()
       : await prepareRequestImages(requestOptions, attachments, model, signal)
     let representation: 'file' | 'base64' = 'file'

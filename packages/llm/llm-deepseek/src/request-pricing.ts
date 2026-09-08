@@ -33,15 +33,15 @@ export const DEFAULT_REQUEST_IMAGE_MAX_BYTES = 1024 * 1024
  * @returns Complete pixel and encoded-byte budgets.
  * @internal
  */
-export function resolveRequestImagePolicy(model: DeepSeekCatalogModel): ImageRequestPolicy {
-  const maxPixels = model.imagePixelBudget === 'low'
+export function resolveRequestImagePolicy(model: DeepSeekCatalogModel | undefined): ImageRequestPolicy {
+  const maxPixels = model?.imagePixelBudget === 'low'
     ? DEFAULT_LOW_DETAIL_IMAGE_PIXEL_BUDGET
-    : model.imagePixelBudget ?? DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET
+    : model?.imagePixelBudget ?? DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET
   return {
     maxPixels,
-    maxBytes: model.imageMaxBytes === undefined
+    maxBytes: model?.imageMaxBytes === undefined
       ? DEFAULT_REQUEST_IMAGE_MAX_BYTES
-      : model.imageMaxBytes,
+      : model?.imageMaxBytes,
   }
 }
 
