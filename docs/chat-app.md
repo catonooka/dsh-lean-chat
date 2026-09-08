@@ -61,6 +61,14 @@ pnpm dsh --profile chat            # http://127.0.0.1:3095 (opens the browser)
 
 Flags: `--no-open`, `--port <n>`, `--host <h>` (loopback only).
 
+**Access model**: every request must be loopback-local, and the API
+(beyond the extension's two bridge routes) also requires this boot's
+session cookie — index.html hands it out as an HttpOnly SameSite=Strict
+cookie, so the served page authenticates transparently while bare
+scripts, other origins, and other installed extensions get 403. The
+companion extension passes only on `GET /api/chrome/next` and
+`POST /api/chrome/result`; the test probe is rate-limited.
+
 Environment:
 
 | Variable | Default | Meaning |
