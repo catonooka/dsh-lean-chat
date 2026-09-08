@@ -156,15 +156,22 @@ const X_EXTRACT = (limit: number): string => `(() => {
 class CdpConnection {
   private nextId = 1
   private readonly pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>()
+  private loadEmitted = false
+  private readonly loadWaiters: (() => void)[] = []
   private readonly socket: WebSocket
 
   private constructor(socket: WebSocket) {
     this.socket = socket
     this.socket.addEventListener('message', (event) => {
-      let message: { id?: number; result?: unknown; error?: { message?: string } }
+      let message: { id?: number; method?: string; result?: unknown; error?: { message?: string } }
       try {
         message = JSON.parse(String(event.data)) as typeof message
       } catch {
+        return
+      }
+      if (message.method === 'Page.loadEventFired') {
+        this.loadEmitted = true
+        for (const waiter of this.loadWaiters.splice(0)) waiter()
         return
       }
       if (message.id === undefined) return
@@ -174,6 +181,12 @@ class CdpConnection {
       if (message.error !== undefined) entry.reject(new Error(message.error.message ?? 'cdp error'))
       else entry.resolve(message.result)
     })
+  }
+
+  /** Resolves when the page fired its load event; an already-fired one counts. */
+  waitLoad(): Promise<void> {
+    if (this.loadEmitted) return Promise.resolve()
+    return new Promise((resolve) => { this.loadWaiters.push(resolve) })
   }
 
   static open(url: string, timeoutMs: number): Promise<CdpConnection> {
@@ -289,7 +302,8 @@ export class UserChromeSearchProvider implements WebSearchProvider {
   }
 
   /** Wait until the navigated page looks settled: complete load state, or the
-   * route's result markers, or the budget runs out. */
+   * route's result markers, or the budget runs out. The load event ends the
+   * wait the moment it fires; marker polling covers SPA-rendered results. */
   private async settle(connection: CdpConnection, route: SearchRoute, timeout: AbortSignal): Promise<void> {
     const marker = route.kind === 'x'
       ? 'document.querySelector(\'article[data-testid="tweet"]\') !== null'
@@ -307,7 +321,8 @@ export class UserChromeSearchProvider implements WebSearchProvider {
         await delay(400)
         return
       }
-      await delay(250)
+      // Sleep until the load event fires (checked on wake) or a poll tick.
+      await Promise.race([connection.waitLoad(), delay(350)])
     }
   }
 
