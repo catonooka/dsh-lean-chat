@@ -28,6 +28,14 @@
     - id: deepseek-llm-api-extensions
       name: '@deepseek-ai/dsh-deepseek-llm-api-extensions'
 
+    # Durable attachment storage: sniffed images and verbatim files under
+    # $DSH_HOME/attachments/v1. Mounting it is what lets the adapter prepare
+    # and send multimodal content.
+    - id: attachment-local
+      name: '@deepseek-ai/dsh-attachment-local'
+      config:
+        dshHome: !!js process.env.DSH_HOME ?? ''
+
     # Live model-route settings ($DSH_HOME/settings.yaml, hot-reloaded): the
     # chat settings panel writes a `llm-deepseek:` section through this
     # provider, swapping the adapter's base URL at runtime without a restart.

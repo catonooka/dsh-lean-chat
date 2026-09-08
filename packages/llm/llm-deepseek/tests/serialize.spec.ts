@@ -61,6 +61,7 @@ function imageOptions(
   return {
     representation: { kind: 'file' as const, resolveFileId },
     requestImages: new Map(refs.map(ref => [ref.attachmentId, requestVersion(ref)])),
+    requestVideos: new Map(),
     maxRequestImageBytes,
   }
 }
@@ -73,6 +74,7 @@ function inlineImageOptions(
   return {
     representation: { kind: 'base64' },
     requestImages: new Map(refs.map(ref => [ref.attachmentId, requestVersion(ref)])),
+    requestVideos: new Map(),
     maxRequestImageBytes,
     byteQuantum,
   }

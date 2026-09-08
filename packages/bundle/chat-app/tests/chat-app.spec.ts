@@ -7,6 +7,7 @@ import {
   activeProfile,
   applySettingsPatch,
   RateLimiter,
+  attachmentDescriptors,
   cachePolicyFor,
   evictableSessionIds,
   hasSessionCookie,
@@ -15,6 +16,7 @@ import {
   sortSessionsByActivity,
   normalizeSearchQuery,
   paginateSessions,
+  parseAttachment,
   parseSettingsFile,
   projectSurfaceEvent,
   resolveProviderFallback,
@@ -23,6 +25,7 @@ import {
   type Config,
 } from '../src/index.ts'
 import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
+import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import { interpretProbeOutcome, probeMessages } from '../src/capabilities.ts'
 
 function surfaceEvent(type: string, data: unknown): SessionEvent {
@@ -717,5 +720,72 @@ describe('cachePolicyFor', () => {
     expect(cachePolicyFor('/')).toEqual({ 'cache-control': 'no-cache' })
     expect(cachePolicyFor('/avatars/avatar-1.png')).toEqual({ 'cache-control': 'no-cache' })
     expect(cachePolicyFor('/assets-like/page')).toEqual({ 'cache-control': 'no-cache' })
+  })
+})
+
+describe('parseAttachment', () => {
+  const png1x1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+
+  it('decodes a valid image upload with a derived name', () => {
+    const parsed = parseAttachment({ kind: 'image', dataUrl: `data:image/png;base64,${png1x1}` })
+    expect(parsed.kind).toBe('image')
+    expect(parsed.mediaType).toBe('image/png')
+    expect(parsed.name).toBe('upload.png')
+    expect(parsed.data.byteLength).toBeGreaterThan(50)
+  })
+
+  it('keeps a provided name, uppercases nothing, and accepts video media types', () => {
+    const parsed = parseAttachment({ kind: 'video', name: '  clip.mp4  ', dataUrl: 'data:video/webm;base64,AAAA' })
+    expect(parsed.name).toBe('clip.mp4')
+    expect(parsed.mediaType).toBe('video/webm')
+    expect(parsed.data.byteLength).toBe(3)
+  })
+
+  it('rejects malformed payloads with pointed errors', () => {
+    expect(() => parseAttachment('nope')).toThrow('must be an object')
+    expect(() => parseAttachment({ kind: 'audio', dataUrl: 'data:audio/mp3;base64,AAAA' })).toThrow('image or video')
+    expect(() => parseAttachment({ kind: 'image' })).toThrow('dataUrl')
+    expect(() => parseAttachment({ kind: 'image', dataUrl: 'https://x/y.png' })).toThrow('base64 data URL')
+    expect(() => parseAttachment({ kind: 'image', dataUrl: 'data:image/bmp;base64,AAAA' })).toThrow('png, jpeg, webp')
+    expect(() => parseAttachment({ kind: 'video', dataUrl: 'data:video/mp4;base64,AAAA' })).not.toThrow()
+    expect(() => parseAttachment({ kind: 'video', dataUrl: 'data:image/png;base64,AAAA' })).toThrow('video/*')
+    expect(() => parseAttachment({ kind: 'image', dataUrl: 'data:image/png;base64,§§§§' })).toThrow('valid base64')
+    expect(() => parseAttachment({ kind: 'image', dataUrl: 'data:image/png;base64,' })).toThrow('not valid base64')
+  })
+
+  it('enforces per-kind size caps on decoded bytes', () => {
+    const eightMb = 'A'.repeat(Math.ceil(8 * 1024 * 1024 / 3) * 4)
+    expect(() => parseAttachment({ kind: 'image', dataUrl: `data:image/png;base64,${eightMb}AAAA` })).toThrow('at most 8MB')
+    const underVideo = 'A'.repeat(Math.ceil(8 * 1024 * 1024 / 3) * 4)
+    expect(parseAttachment({ kind: 'video', dataUrl: `data:video/mp4;base64,${underVideo}` }).data.byteLength)
+      .toBeGreaterThan(8 * 1024 * 1024 - 10)
+  })
+})
+
+describe('attachmentDescriptors and projection', () => {
+  const imageBlock = {
+    type: 'image',
+    attachment: { attachmentId: 'img-1', mediaType: 'image/png', bytes: 70, width: 1, height: 1 },
+  }
+  const videoBlock = {
+    type: 'video',
+    attachment: { attachmentId: 'vid-1', name: 'clip.mp4', bytes: 1690 },
+    mediaType: 'video/mp4',
+  }
+
+  it('describes image and video blocks with their durable refs', () => {
+    expect(attachmentDescriptors([imageBlock, videoBlock] as unknown as ContentBlock[])).toEqual([
+      { kind: 'image', attachmentId: 'img-1', mediaType: 'image/png', ref: imageBlock.attachment },
+      { kind: 'video', attachmentId: 'vid-1', mediaType: 'video/mp4', ref: videoBlock.attachment },
+    ])
+    expect(attachmentDescriptors(undefined)).toEqual([])
+  })
+
+  it('projects user messages with attachments, including attachment-only ones', () => {
+    const both = projectSurfaceEvent(surfaceEvent('user/message', { content: [imageBlock, { type: 'text', text: 'hi' }] }))
+    expect(both).toEqual({ role: 'user', text: 'hi', attachments: [{ kind: 'image', attachmentId: 'img-1', mediaType: 'image/png', ref: imageBlock.attachment }] })
+    const only = projectSurfaceEvent(surfaceEvent('user/message', { content: [videoBlock] }))
+    expect(only).toEqual({ role: 'user', attachments: [{ kind: 'video', attachmentId: 'vid-1', mediaType: 'video/mp4', ref: videoBlock.attachment }] })
+    expect(projectSurfaceEvent(surfaceEvent('user/message', { content: [] }))).toBeUndefined()
   })
 })

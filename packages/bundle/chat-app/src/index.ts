@@ -34,6 +34,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { createUserMessage, ReasoningEffortId, type ContentBlock } from '@deepseek-ai/dsh-llm'
+import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { SessionQueryError, SessionSearchCursor, type SessionSearchHit, type SessionSearchPage } from '@deepseek-ai/dsh-session-query'
 import type { AgentHandle } from '@deepseek-ai/dsh-agent'
@@ -589,6 +590,91 @@ export function truncateSnippet(text: string): string {
   return points.length <= SNIPPET_MAX_CODE_POINTS ? text : `${points.slice(0, SNIPPET_MAX_CODE_POINTS).join('')}…`
 }
 
+/** Message bodies may carry one inline attachment; the cap leaves base64 headroom. */
+const MESSAGE_BODY_CAP = 40_000_000
+
+/** Largest accepted decoded image bytes. */
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024
+
+/** Largest accepted decoded video bytes. */
+const MAX_VIDEO_BYTES = 25 * 1024 * 1024
+
+/** Media types the durable image store admits (it sniffs bytes anyway). */
+const IMAGE_MEDIA_TYPES: ReadonlySet<string> = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
+
+/** One validated upload, ready for the attachment store. */
+export interface ParsedAttachment {
+  kind: 'image' | 'video'
+  name: string
+  mediaType: string
+  data: Uint8Array
+}
+
+/**
+ * Validate one inline attachment payload: a `data:<media>;base64,…` URL with
+ * a kind-appropriate media type and size, plus an optional display name.
+ * @param body - the request's `attachment` field.
+ * @returns the decoded upload; throws with a user-readable reason.
+ */
+export function parseAttachment(body: unknown): ParsedAttachment {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) throw new Error('attachment must be an object')
+  const record = body as { kind?: unknown; name?: unknown; dataUrl?: unknown }
+  if (record.kind !== 'image' && record.kind !== 'video') throw new Error('attachment kind must be image or video')
+  if (typeof record.dataUrl !== 'string') throw new Error('attachment dataUrl must be a string')
+  const url = record.dataUrl
+  const semicolon = url.indexOf(';')
+  const comma = url.indexOf(',')
+  if (!url.startsWith('data:') || semicolon === -1 || comma < semicolon || url.slice(semicolon + 1, comma) !== 'base64') {
+    throw new Error('attachment dataUrl must be a base64 data URL')
+  }
+  const mediaType = url.slice(5, semicolon).toLowerCase()
+  const payload = url.slice(comma + 1)
+  if (payload === '' || !/^[A-Za-z0-9+/]+={0,2}$/.test(payload)) throw new Error('attachment dataUrl is not valid base64')
+  if (record.kind === 'image' && !IMAGE_MEDIA_TYPES.has(mediaType)) {
+    throw new Error(`image attachments must be png, jpeg, webp, or gif (got ${mediaType})`)
+  }
+  if (record.kind === 'video' && !mediaType.startsWith('video/')) {
+    throw new Error('video attachments must carry a video/* media type')
+  }
+  const data = Uint8Array.from(Buffer.from(payload, 'base64'))
+  const cap = record.kind === 'image' ? MAX_IMAGE_BYTES : MAX_VIDEO_BYTES
+  if (data.byteLength === 0) throw new Error('attachment is empty')
+  if (data.byteLength > cap) {
+    throw new Error(`${record.kind} attachments must be at most ${String(Math.round(cap / 1024 / 1024))}MB`)
+  }
+  const name = typeof record.name === 'string' ? record.name.trim().slice(0, 200) : ''
+  return { kind: record.kind, name: name === '' ? `upload.${mediaType.split('/')[1] ?? 'bin'}` : name, mediaType, data }
+}
+
+/** One attachment as the browser renders it: what it is and how to fetch it. */
+export interface ChatAttachment {
+  kind: 'image' | 'video'
+  attachmentId: string
+  mediaType: string
+  /** The durable reference, echoed back to fetch the bytes. */
+  ref: unknown
+}
+
+/**
+ * Project a message's non-text blocks into renderable attachment entries;
+ * text extraction stays with {@link textOf}.
+ * @param content - one message's content blocks.
+ * @returns the attachment descriptors, in order.
+ */
+export function attachmentDescriptors(content: readonly ContentBlock[] | undefined): ChatAttachment[] {
+  if (content === undefined) return []
+  const out: ChatAttachment[] = []
+  for (const block of content) {
+    if (block.type === 'image') {
+      const ref: ImageAttachmentRef = block.attachment
+      out.push({ kind: 'image', attachmentId: String(ref.attachmentId), mediaType: ref.mediaType, ref })
+    } else if (block.type === 'video') {
+      out.push({ kind: 'video', attachmentId: String(block.attachment.attachmentId), mediaType: block.mediaType, ref: block.attachment })
+    }
+  }
+  return out
+}
+
 /** The agent-creation options derived from settings. */
 interface ConversationOptions {
   provider: string
@@ -653,6 +739,7 @@ const MIME: Record<string, string> = {
 export interface ChatItem {
   role: 'user' | 'assistant' | 'tool'
   text?: string
+  attachments?: { kind: 'image' | 'video'; attachmentId: string; mediaType: string; ref?: unknown }[]
   name?: string
   query?: string
   searchQuestion?: string
@@ -661,12 +748,12 @@ export interface ChatItem {
 }
 
 /** Read and parse one JSON request body, size-capped. */
-async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+async function readJsonBody(req: IncomingMessage, maxBytes: number = MAX_BODY_BYTES): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = []
   let size = 0
   for await (const chunk of req) {
     size += (chunk as Buffer).length
-    if (size > MAX_BODY_BYTES) throw new Error('request body too large')
+    if (size > maxBytes) throw new Error('request body too large')
     chunks.push(chunk as Buffer)
   }
   const raw = Buffer.concat(chunks).toString('utf8')
@@ -820,9 +907,10 @@ export function projectSurfaceEvent(event: SessionEvent): ChatItem | undefined {
   switch (event.type) {
     case 'user/message': {
       const text = textOf(event.data.content)
+      const attachments = attachmentDescriptors(event.data.content)
       // Queue bookkeeping can produce empty user payloads; nothing to render.
-      if (text === '') return undefined
-      return { role: 'user', text }
+      if (text === '' && attachments.length === 0) return undefined
+      return { role: 'user', ...text !== '' ? { text } : {}, ...attachments.length > 0 ? { attachments } : {} }
     }
     case 'assistant/message': {
       const text = textOf(event.data.message.content)
@@ -1521,12 +1609,40 @@ export function apply(ctx: Context, config: Config): void {
         return
       }
       if (req.method === 'POST') {
-        const body = await readJsonBody(req)
+        // Attachments ride the same JSON body as base64 data URLs; the cap
+        // above leaves headroom for one video.
+        const body = await readJsonBody(req, MESSAGE_BODY_CAP)
         const text = body.text
-        if (typeof text !== 'string' || text.trim().length === 0) {
-          sendJson(res, 400, { error: 'text must be a non-empty string' })
+        if (typeof text !== 'string' || (text.trim().length === 0 && body.attachment === undefined)) {
+          sendJson(res, 400, { error: 'a message needs text or an attachment' })
           return
         }
+        let content: ContentBlock[] = []
+        if (body.attachment !== undefined) {
+          const store = ctx.get('attachments')
+          if (store === undefined) {
+            sendJson(res, 400, { error: 'attachment storage is not available in this composition' })
+            return
+          }
+          const parsed = parseAttachment(body.attachment)
+          if (parsed.kind === 'image') {
+            const [ref] = await store.saveImages([{
+              data: parsed.data,
+              mediaType: parsed.mediaType as import('@deepseek-ai/dsh-attachment').ImageMediaType,
+              ...parsed.name !== '' ? { name: parsed.name } : {},
+            }])
+            if (ref === undefined) throw new Error('the image was not stored')
+            content.push({ type: 'image', attachment: ref })
+          } else {
+            const ref = await store.saveFile({
+              data: parsed.data,
+              ...parsed.name !== '' ? { name: parsed.name } : {},
+            })
+            content.push({ type: 'video', attachment: ref, mediaType: parsed.mediaType })
+          }
+        }
+        const trimmed = text.trim()
+        if (trimmed !== '') content = [...content, { type: 'text', text: trimmed }]
         const handle = await getOrCreateAgent(sessionId)
         res.writeHead(200, {
           'content-type': 'text/event-stream',
@@ -1548,7 +1664,7 @@ export function apply(ctx: Context, config: Config): void {
           if (current.size === 0) streams.delete(sessionId)
         })
         handle.agent.followup(createUserMessage({
-          content: [{ type: 'text', text }],
+          content,
           source: { kind: 'user' },
         }))
         return
@@ -1562,6 +1678,41 @@ export function apply(ctx: Context, config: Config): void {
       const entry = handles.get(sessionId)
       if (entry !== undefined) entry.handle.agent.cancel({ kind: 'user' })
       sendJson(res, 200, { stopped: entry !== undefined })
+      return
+    }
+
+    // Attachment bytes for rendered history: the caller echoes the durable
+    // reference the projection handed it; digest verification inside the
+    // store makes a tampered reference fail closed. Content-addressed ids
+    // make the responses permanently cacheable.
+    if (req.method === 'POST' && parts.length === 1 && parts[0] === 'attachment') {
+      const body = await readJsonBody(req)
+      const store = ctx.get('attachments')
+      if (store === undefined
+        || (body.kind !== 'image' && body.kind !== 'video')
+        || typeof body.ref !== 'object' || body.ref === null
+        || typeof body.mediaType !== 'string' || !/^(image|video)\//.test(body.mediaType)) {
+        sendJson(res, 400, { error: 'attachment request must carry kind, mediaType, and ref' })
+        return
+      }
+      if (body.kind === 'image') {
+        const stored = await store.readImage(body.ref as unknown as ImageAttachmentRef)
+        res.writeHead(200, {
+          'content-type': stored.ref.mediaType,
+          'cache-control': 'public, max-age=31536000, immutable',
+        })
+        res.end(Buffer.from(stored.data))
+        return
+      }
+      const chunks: Buffer[] = []
+      for await (const chunk of store.readFileStream(body.ref as unknown as import('@deepseek-ai/dsh-attachment').FileAttachmentRef)) {
+        chunks.push(Buffer.from(chunk))
+      }
+      res.writeHead(200, {
+        'content-type': body.mediaType,
+        'cache-control': 'public, max-age=31536000, immutable',
+      })
+      res.end(Buffer.concat(chunks))
       return
     }
 
