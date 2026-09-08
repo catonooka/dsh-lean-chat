@@ -105,6 +105,26 @@ export interface ChatSettings {
 const MAX_PERSONA_LENGTH = 4000
 
 /**
+ * Order sidebar sessions by last activity — the title snapshot's refresh
+ * time, falling back to creation — newest first, so continuing an old
+ * conversation bumps it to the top the way a chat surface expects. Ties
+ * break by id ascending for a deterministic page order.
+ * @param records - session records in any order.
+ * @param activity - id → last-activity time, when known.
+ * @returns the records sorted newest-activity first.
+ */
+export function sortSessionsByActivity<T extends { header: { id: SessionId; createdAt: number } }>(
+  records: readonly T[],
+  activity: ReadonlyMap<string, number>,
+): T[] {
+  return [...records].sort((a, b) => {
+    const at = activity.get(String(a.header.id)) ?? a.header.createdAt
+    const bt = activity.get(String(b.header.id)) ?? b.header.createdAt
+    return bt - at || String(a.header.id).localeCompare(String(b.header.id))
+  })
+}
+
+/**
  * Validate one partial settings update. `null` clears an optional field.
  * Unknown keys are rejected so a drifted frontend fails loudly, not silently.
  * @param current - the settings in force before the patch.
@@ -570,6 +590,32 @@ export function apply(ctx: Context, config: Config): void {
   const bootApiKeyEnv = process.env.DEEPSEEK_API_KEY
   const bootBaseUrlEnv = process.env.DEEPSEEK_BASE_URL
 
+  // Last-activity ledger for the sidebar's recency order. The harness
+  // exposes no per-session lastPromptAt, and title snapshots only move when
+  // a title changes, so the surface keeps its own stamp per conversation —
+  // marked on every user message, persisted at turn end, capped to the most
+  // recent 500 entries.
+  const activityPath = dshHomePath('chat-activity.json')
+  const activity = new Map<string, number>()
+  try {
+    const rawActivity: unknown = JSON.parse(readFileSync(activityPath, 'utf8'))
+    if (typeof rawActivity === 'object' && rawActivity !== null && !Array.isArray(rawActivity)) {
+      for (const [id, stamp] of Object.entries(rawActivity as Record<string, unknown>)) {
+        if (typeof stamp === 'number' && Number.isFinite(stamp)) activity.set(id, stamp)
+      }
+    }
+  } catch {
+    // First run or a corrupt ledger; ordering falls back to title/creation.
+  }
+  let activityDirty = false
+  async function persistActivity(): Promise<void> {
+    if (!activityDirty) return
+    activityDirty = false
+    const entries = [...activity.entries()].sort((a, b) => b[1] - a[1]).slice(0, 500)
+    await mkdir(dirname(activityPath), { recursive: true })
+    await writeFile(activityPath, `${JSON.stringify(Object.fromEntries(entries), null, 2)}\n`, { mode: 0o600, flag: 'w' })
+  }
+
   /**
    * Push the key and endpoint into the live adapter seams. The key re-enters
    * `process.env`, which llm-deepseek re-reads on every request; the endpoint
@@ -710,6 +756,8 @@ export function apply(ctx: Context, config: Config): void {
     const sessionId = String(session.id)
     switch (event.type) {
       case 'user/message':
+        activity.set(sessionId, Date.now())
+        activityDirty = true
         broadcast(sessionId, { t: 'user', text: textOf(event.data.content) })
         break
       case 'assistant/message':
@@ -748,6 +796,10 @@ export function apply(ctx: Context, config: Config): void {
         break
       }
       case 'turn/end': {
+        void persistActivity().catch((error: unknown) => {
+          const reason = error instanceof Error ? error.message : String(error)
+          console.error(`chat-app: could not persist the activity ledger because ${reason}`)
+        })
         broadcast(sessionId, { t: 'turn-end', reason: event.data.reason.kind })
         const open = streams.get(sessionId)
         if (open !== undefined) {
@@ -878,25 +930,35 @@ export function apply(ctx: Context, config: Config): void {
     }
 
     if (req.method === 'GET' && parts.length === 1 && parts[0] === 'sessions') {
-      // The corpus lists newest-first deterministically; pagination is a
-      // slice, and titles are read for the page only.
+      // The list is ordered by last activity — a continued old conversation
+      // rises to the top — then paginated. The activity stamp merges the
+      // surface's own ledger (every user message), the title-refresh time,
+      // and creation as the floor.
       const records = (await ctx.sessionQuery.listSessions())
         .filter(record => record.header.origin !== 'subagent')
+      const titleOf = await titleMapOf(records)
+      const activityOf = new Map<string, number>()
+      for (const record of records) {
+        const id = String(record.header.id)
+        activityOf.set(id, Math.max(
+          activity.get(id) ?? 0,
+          titleOf.get(id)?.updatedAt ?? 0,
+          record.header.createdAt,
+        ))
+      }
       const { page, total } = paginateSessions(
-        records,
+        sortSessionsByActivity(records, activityOf),
         url.searchParams.get('limit'),
         url.searchParams.get('offset'),
       )
-      const titleOf = await titleMapOf(page)
       sendJson(res, 200, {
         sessions: page.map((record) => {
           const id = String(record.header.id)
-          const title = titleOf.get(id)
           return {
             id,
-            title: title?.text ?? 'New chat',
+            title: titleOf.get(id)?.text ?? 'New chat',
             createdAt: record.header.createdAt,
-            updatedAt: title?.updatedAt ?? record.header.createdAt,
+            updatedAt: activityOf.get(id) ?? record.header.createdAt,
             live: record.live,
           }
         }),

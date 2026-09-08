@@ -5,6 +5,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   applySettingsPatch,
+  sortSessionsByActivity,
   normalizeSearchQuery,
   paginateSessions,
   parseSettingsFile,
@@ -13,7 +14,7 @@ import {
   type ChatSettings,
   type Config,
 } from '../src/index.ts'
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 
 function surfaceEvent(type: string, data: unknown): SessionEvent {
   return {
@@ -295,5 +296,43 @@ describe('projectSurfaceEvent — malformed meta corners', () => {
       .toEqual({ role: 'user', text: '   ' })
     expect(projectSurfaceEvent(surfaceEvent('assistant/message', { message: { content: [{ type: 'text', text: ' ' }] } })))
       .toEqual({ role: 'assistant', text: ' ' })
+  })
+})
+
+describe('sortSessionsByActivity', () => {
+  const sessions = [
+    { header: { id: SessionId('newest'), createdAt: 300 } },
+    { header: { id: SessionId('middle'), createdAt: 200 } },
+    { header: { id: SessionId('oldest'), createdAt: 100 } },
+  ]
+
+  it('bumps a continued old conversation above newer, untouched ones', () => {
+    const ordered = sortSessionsByActivity(sessions, new Map([['oldest', 999]]))
+    expect(ordered.map(session => session.header.id)).toEqual(['oldest', 'newest', 'middle'])
+  })
+
+  it('falls back to creation time when no activity stamp exists', () => {
+    expect(sortSessionsByActivity(sessions, new Map()).map(session => session.header.id))
+      .toEqual(['newest', 'middle', 'oldest'])
+  })
+
+  it('prefers activity over creation when both exist', () => {
+    const ordered = sortSessionsByActivity(sessions, new Map([['newest', 50], ['middle', 400]]))
+    expect(ordered.map(session => session.header.id)).toEqual(['middle', 'oldest', 'newest'])
+  })
+
+  it('breaks activity ties by id ascending for a deterministic page order', () => {
+    const tied = [
+      { header: { id: SessionId('b'), createdAt: 100 } },
+      { header: { id: SessionId('a'), createdAt: 100 } },
+    ]
+    expect(sortSessionsByActivity(tied, new Map()).map(session => session.header.id)).toEqual(['a', 'b'])
+  })
+
+  it('does not mutate the input and handles an empty list', () => {
+    const input = [{ header: { id: SessionId('x'), createdAt: 1 } }]
+    sortSessionsByActivity(input, new Map())
+    expect(input).toHaveLength(1)
+    expect(sortSessionsByActivity([], new Map())).toEqual([])
   })
 })
