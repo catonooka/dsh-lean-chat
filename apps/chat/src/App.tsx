@@ -249,12 +249,24 @@ export default function App(): JSX.Element {
   // accumulate without rewriting committed history items.
   const [streamText, setStreamText] = useState('')
 
+  // The conversation whose history has already been landed on the bottom.
+  const anchoredSessionRef = useRef('')
+
   useEffect(() => {
     const thread = threadRef.current
     if (thread === null) return
+    if (anchoredSessionRef.current !== activeId) {
+      // Opening a conversation loads its history with the view at the top;
+      // land on the newest message instead of the oldest.
+      if (items.length > 0) {
+        anchoredSessionRef.current = activeId
+        thread.scrollTop = thread.scrollHeight
+      }
+      return
+    }
     const nearBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 120
     if (nearBottom) thread.scrollTop = thread.scrollHeight
-  }, [items, streamText])
+  }, [activeId, items, streamText])
 
   const startNewChat = useCallback(() => {
     if (streaming) return
