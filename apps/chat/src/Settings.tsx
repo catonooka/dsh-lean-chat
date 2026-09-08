@@ -1,7 +1,7 @@
 /** The settings panel: every runtime-configurable option of the chat surface. */
 
 import { useEffect, useState, type JSX } from 'react'
-import { fetchModels, updateConfig, type AppConfig, type SettingsPatch } from './api.ts'
+import { fetchModels, fetchProviders, updateConfig, type AppConfig, type ProviderInfo, type SettingsPatch } from './api.ts'
 
 export type Theme = 'system' | 'light' | 'dark'
 
@@ -62,7 +62,12 @@ export function SettingsPanel({ config, theme, onTheme, onSaved, onClose }: Sett
     config.searchTool === 'user-chrome' ? 'user-chrome' : 'tiny-metasearch')
   const [models, setModels] = useState<string[]>([])
   const [loadingModels, setLoadingModels] = useState(false)
+  const [providers, setProviders] = useState<ProviderInfo[]>([])
   const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    fetchProviders().then(setProviders).catch(() => { /* the row falls back to raw text */ })
+  }, [])
   const [error, setError] = useState<string | undefined>(undefined)
 
   useEffect(() => {
@@ -122,12 +127,31 @@ export function SettingsPanel({ config, theme, onTheme, onSaved, onClose }: Sett
 
         <label className="settings-row">
           <span className="settings-label">Provider</span>
-          <input
-            type="text"
-            value={provider}
-            spellCheck={false}
-            onChange={(event) => { setProvider(event.target.value) }}
-          />
+          {providers.length > 0
+            ? (
+              <select
+                aria-label="Provider"
+                value={providers.some(candidate => candidate.id === provider) ? provider : ''}
+                onChange={(event) => {
+                  if (event.target.value !== '') setProvider(event.target.value)
+                }}
+              >
+                {!providers.some(candidate => candidate.id === provider) ? <option value="">{provider}</option> : undefined}
+                {providers.map(candidate => (
+                  <option key={candidate.id} value={candidate.id}>
+                    {candidate.name === candidate.id ? candidate.id : `${candidate.name} (${candidate.id})`}
+                  </option>
+                ))}
+              </select>
+            )
+            : (
+              <input
+                type="text"
+                value={provider}
+                spellCheck={false}
+                onChange={(event) => { setProvider(event.target.value) }}
+              />
+            )}
         </label>
 
         <label className="settings-row">

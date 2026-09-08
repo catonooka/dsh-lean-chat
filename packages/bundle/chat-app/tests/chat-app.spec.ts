@@ -10,6 +10,7 @@ import {
   paginateSessions,
   parseSettingsFile,
   projectSurfaceEvent,
+  resolveProviderFallback,
   truncateSnippet,
   type ChatSettings,
   type Config,
@@ -334,5 +335,22 @@ describe('sortSessionsByActivity', () => {
     sortSessionsByActivity(input, new Map())
     expect(input).toHaveLength(1)
     expect(sortSessionsByActivity([], new Map())).toEqual([])
+  })
+})
+
+describe('resolveProviderFallback', () => {
+  it('keeps a registered current provider', () => {
+    expect(resolveProviderFallback('deepseek-official', ['deepseek-official'], 'deepseek-official'))
+      .toBe('deepseek-official')
+  })
+
+  it('heals an unregistered provider to the fallback, then to the first route', () => {
+    expect(resolveProviderFallback('local LLM', ['deepseek-official'], 'deepseek-official'))
+      .toBe('deepseek-official')
+    expect(resolveProviderFallback('local LLM', ['pi-ai', 'deepseek-official'], 'gone')).toBe('pi-ai')
+  })
+
+  it('keeps the fallback when nothing is registered at all', () => {
+    expect(resolveProviderFallback('local LLM', [], 'deepseek-official')).toBe('deepseek-official')
   })
 })

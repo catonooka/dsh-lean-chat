@@ -100,6 +100,16 @@ export function fetchModels(): Promise<string[]> {
   return fetchJson<{ models: string[] }>('/api/models').then(body => body.models)
 }
 
+export interface ProviderInfo {
+  id: string
+  name: string
+}
+
+/** Adapter routes this composition registers; `provider` must be one. */
+export function fetchProviders(): Promise<ProviderInfo[]> {
+  return fetchJson<{ providers: ProviderInfo[] }>('/api/providers').then(body => body.providers)
+}
+
 export function updateConfig(patch: SettingsPatch): Promise<AppConfig> {
   return fetchJson<AppConfig>('/api/config', {
     method: 'PUT',

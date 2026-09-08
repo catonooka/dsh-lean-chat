@@ -41,7 +41,7 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 export const name = 'chat-app'
 
 /** Services required before the chat surface can mount. */
-export const inject = ['webServer', 'agents', 'sessionQuery']
+export const inject = ['webServer', 'agents', 'sessionQuery', 'llm']
 
 /** Persona used when no explicit one is set; empty panel input means this too. */
 export const DEFAULT_PERSONA = 'You are a helpful assistant.'
@@ -103,6 +103,25 @@ export interface ChatSettings {
 
 /** Longest accepted persona text; the persona is the whole system prompt. */
 const MAX_PERSONA_LENGTH = 4000
+
+/**
+ * Resolve a usable provider route: keep the current one when an adapter
+ * serves it, else prefer the composition fallback, else the first
+ * registered route (empty registry keeps the fallback as-is).
+ * @param current - the persisted provider route.
+ * @param registered - provider ids with a registered adapter.
+ * @param fallback - the composition's default route.
+ * @returns a provider id that an adapter serves, when any exist.
+ */
+export function resolveProviderFallback(
+  current: string,
+  registered: readonly string[],
+  fallback: string,
+): string {
+  if (registered.includes(current)) return current
+  if (registered.includes(fallback)) return fallback
+  return registered[0] ?? fallback
+}
 
 /**
  * Order sidebar sessions by last activity — the title snapshot's refresh
@@ -639,6 +658,24 @@ export function apply(ctx: Context, config: Config): void {
   }
 
   void applyLiveModelSettings()
+
+  /**
+   * A persisted provider that no adapter serves — a hand-edited settings
+   * file, or a typo from a free-text picker — would fail every model call
+   * with NO_ADAPTER; heal it before the first request.
+   */
+  {
+    const registered = ctx.llm.listProviders().map(provider => provider.id)
+    const healed = resolveProviderFallback(settings.provider, registered, config.provider)
+    if (healed !== settings.provider) {
+      console.warn(`chat-app: provider "${settings.provider}" has no registered adapter; using "${healed}"`)
+      settings.provider = healed
+      void persistSettings(settingsPath, settings).catch((error: unknown) => {
+        const reason = error instanceof Error ? error.message : String(error)
+        console.error(`chat-app: could not persist the healed provider because ${reason}`)
+      })
+    }
+  }
   const handles = new Map<string, { handle: AgentHandle; options: ConversationOptions }>()
   const streams = new Map<string, Set<ServerResponse>>()
 
@@ -885,8 +922,20 @@ export function apply(ctx: Context, config: Config): void {
       if (req.method === 'GET') {
         sendJson(res, 200, settingsJson(settings))
         return
-      }      if (req.method === 'PUT') {
+      }
+      if (req.method === 'PUT') {
         const body = await readJsonBody(req)
+        // Provider is a registry route, not a free-form name: reject one no
+        // adapter serves, listing the valid ids, before anything applies.
+        if (typeof body.provider === 'string' && body.provider.trim() !== settings.provider) {
+          const registered = ctx.llm.listProviders().map(provider => provider.id)
+          if (!registered.includes(body.provider.trim())) {
+            sendJson(res, 400, {
+              error: `unknown provider "${body.provider.trim()}"; registered adapters: ${registered.join(', ')}`,
+            })
+            return
+          }
+        }
         const next = applySettingsPatch(settings, body)
         Object.assign(settings, next)
         await applyLiveModelSettings().catch((error: unknown) => {
@@ -907,6 +956,14 @@ export function apply(ctx: Context, config: Config): void {
     // Model picker data: proxy the OpenAI-compatible /models list from the
     // currently configured endpoint, server-side, so the key never reaches
     // the browser and CORS never applies.
+    // Provider picker data: the adapter routes this composition registers.
+    if (req.method === 'GET' && parts.length === 1 && parts[0] === 'providers') {
+      sendJson(res, 200, {
+        providers: ctx.llm.listProviders().map(provider => ({ id: provider.id, name: provider.name })),
+      })
+      return
+    }
+
     if (req.method === 'GET' && parts.length === 1 && parts[0] === 'models') {
       const base = (settings.baseUrl ?? process.env.DEEPSEEK_BASE_URL ?? PUBLIC_BASE_URL).replace(/\/+$/, '')
       const apiKey = process.env.DEEPSEEK_API_KEY ?? ''
