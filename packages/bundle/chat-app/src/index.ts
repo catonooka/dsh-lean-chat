@@ -523,6 +523,28 @@ export function apply(ctx: Context, config: Config): void {
     return titleOf
   }
 
+  /**
+   * Mint an agent for one session id: `create` for a conversation that does
+   * not exist yet, `resume` when it is already known (persisted on disk, or
+   * adopted into memory by a history read) — `create` refuses those ids with
+   * "session already exists".
+   */
+  async function createOrResumeAgent(sessionId: string, options: ConversationOptions): Promise<AgentHandle> {
+    try {
+      return await ctx.agents.create({
+        sessionId: SessionId(sessionId),
+        meta: { cwd: process.cwd() },
+        agentOptions: options,
+      })
+    } catch (error: unknown) {
+      if (!(error instanceof Error) || !error.message.includes('already exists')) throw error
+      return await ctx.agents.resume({
+        resumeSessionId: SessionId(sessionId),
+        agentOptions: options,
+      })
+    }
+  }
+
   /** Resolve one agent by session id, creating (or resuming) it on demand. */
   async function getOrCreateAgent(sessionId: string): Promise<AgentHandle> {
     const options: ConversationOptions = {
@@ -539,11 +561,7 @@ export function apply(ctx: Context, config: Config): void {
       handles.delete(sessionId)
       await existing.handle.dispose()
     }
-    const handle = await ctx.agents.create({
-      sessionId: SessionId(sessionId),
-      meta: { cwd: process.cwd() },
-      agentOptions: options,
-    })
+    const handle = await createOrResumeAgent(sessionId, options)
     handles.set(sessionId, { handle, options })
     ctx.effect(() => () => {
       // A settings swap may have disposed this handle already; only the
