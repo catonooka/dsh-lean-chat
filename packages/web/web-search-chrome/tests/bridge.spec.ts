@@ -163,3 +163,52 @@ describe('job shape', () => {
     await webSettlement
   })
 })
+
+describe('bridge — long-poll and settlement corners', () => {
+  it('serves one job to the earliest parked long-poll only', async () => {
+    const created = bridge()
+    const first = created.nextJob(10_000)
+    const second = created.nextJob(10_000)
+    const settlement = created.enqueue(webJob, 10_000)
+    await expect(first).resolves.toMatchObject({ query: 'dsh chat' })
+    created.dispose()
+    await expect(second).resolves.toBeNull()
+    await expect(settlement).resolves.toMatchObject({ ok: false })
+  })
+
+  it('reports the timeout budget in the failure text', async () => {
+    const created = bridge()
+    await expect(created.enqueue(webJob, 25)).resolves.toEqual({
+      ok: false,
+      error: 'the extension did not answer within 25ms',
+    })
+  })
+
+  it('treats a non-array sources payload as no sources, not a failure', async () => {
+    const created = bridge()
+    const settlement = created.enqueue(webJob, 60)
+    const job = await created.nextJob(5)
+    expect(created.settle({ id: job?.id, ok: true, sources: 'nope' })).toBe(true)
+    await expect(settlement).resolves.toEqual({ ok: true, sources: [] })
+  })
+
+  it('accepts a settlement exactly once per job', async () => {
+    const created = bridge()
+    const settlement = created.enqueue(webJob, 60)
+    const job = await created.nextJob(5)
+    expect(created.settle({ id: job?.id, ok: false, error: 'first' })).toBe(true)
+    expect(created.settle({ id: job?.id, ok: false, error: 'second' })).toBe(false)
+    await expect(settlement).resolves.toEqual({ ok: false, error: 'first' })
+  })
+
+  it('resolves an immediate empty long-poll at wait zero', async () => {
+    const created = bridge()
+    await expect(created.nextJob(0)).resolves.toBeNull()
+  })
+
+  it('stays connected across clock skew when the heartbeat is in the future', () => {
+    const created = bridge()
+    created.markSeen(5_000)
+    expect(created.seenWithin(15_000, 1_000)).toBe(true)
+  })
+})
