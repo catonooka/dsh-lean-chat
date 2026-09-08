@@ -996,6 +996,45 @@ export function projectSurfaceEvent(event: SessionEvent): ChatItem | undefined {
 }
 
 /**
+ * Fold retried turns out of the history view. The durable ledger is
+ * append-only, so a retry re-follows-up with the same content blocks; the
+ * view mirrors what the user saw live — one question row, the latest answer
+ * — by hiding the duplicate question and the answer it superseded. The
+ * ledger itself keeps every turn. Distinct questions are never folded, even
+ * when repeated much later as brand-new turns with other content between.
+ * @param items - projected chat items in ledger order.
+ * @returns the items with retried exchanges collapsed to their latest turn.
+ */
+export function collapseRetriedUserTurns(items: readonly ChatItem[]): ChatItem[] {
+  const kept: ChatItem[] = []
+  const seen = new Map<string, number>()
+  const keyOf = (item: ChatItem): string =>
+    `${item.text ?? ''}\u0000${JSON.stringify(item.attachments ?? [])}`
+  for (const item of items) {
+    if (item.role !== 'user') {
+      kept.push(item)
+      continue
+    }
+    const key = keyOf(item)
+    const original = seen.get(key)
+    if (original === undefined) {
+      seen.set(key, kept.length)
+      kept.push(item)
+      continue
+    }
+    // A retry of an earlier question: everything after that question's row
+    // is the superseded exchange; drop it and refresh the index map.
+    kept.length = original + 1
+    seen.clear()
+    for (let index = 0; index < kept.length; index++) {
+      const candidate = kept[index]
+      if (candidate !== undefined && candidate.role === 'user') seen.set(keyOf(candidate), index)
+    }
+  }
+  return kept
+}
+
+/**
  * Dist location is workspace knowledge of this bundle: anchored on the
  * frontend package manifest, never user config. A readable index is a
  * request-time concern, but a checkout without `pnpm run build` has no page:
@@ -1705,7 +1744,7 @@ export function apply(ctx: Context, config: Config): void {
           const projected = projectSurfaceEvent(event)
           if (projected !== undefined) items.push(projected)
         }
-        sendJson(res, 200, { sessionId, items })
+        sendJson(res, 200, { sessionId, items: collapseRetriedUserTurns(items) })
         return
       }
       if (req.method === 'POST') {
@@ -1794,6 +1833,62 @@ export function apply(ctx: Context, config: Config): void {
       const entry = handles.get(sessionId)
       if (entry !== undefined) entry.handle.agent.cancel({ kind: 'user' })
       sendJson(res, 200, { stopped: entry !== undefined })
+      return
+    }
+
+    // Re-run the trailing user turn: after a failed exchange (error, empty
+    // reply) or to regenerate an unwanted answer. The ledger is append-only,
+    // so the retry re-follows-up with the same content blocks — attachment
+    // refs are durable and ride along verbatim — and the history view folds
+    // the duplicate user row when nothing answered the first attempt.
+    if (req.method === 'POST' && parts.length === 3 && parts[0] === 'sessions' && parts[2] === 'retry') {
+      const sessionId = parts[1] as string
+      if (!/^[a-zA-Z0-9-]{1,64}$/.test(sessionId)) {
+        sendJson(res, 400, { error: 'invalid session id' })
+        return
+      }
+      const open = streams.get(sessionId)
+      if (open !== undefined && open.size > 0) {
+        sendJson(res, 409, { error: 'this conversation is still streaming' })
+        return
+      }
+      const surface = await ctx.sessionQuery.readSurface(SessionId(sessionId))
+      let content: ContentBlock[] | undefined
+      for (let index = surface.events.length - 1; index >= 0; index--) {
+        const event = surface.events[index]
+        if (event !== undefined && event.type === 'user/message') {
+          content = event.data.content as ContentBlock[]
+          break
+        }
+      }
+      if (content === undefined || content.length === 0) {
+        sendJson(res, 400, { error: 'nothing to retry' })
+        return
+      }
+      const handle = await getOrCreateAgent(sessionId)
+      res.writeHead(200, {
+        'content-type': 'text/event-stream',
+        'cache-control': 'no-cache',
+        connection: 'keep-alive',
+        'x-accel-buffering': 'no',
+      })
+      res.write(':connected\n\n')
+      let retryStream = streams.get(sessionId)
+      if (retryStream === undefined) {
+        retryStream = new Set()
+        streams.set(sessionId, retryStream)
+      }
+      retryStream.add(res)
+      res.on('close', () => {
+        const current = streams.get(sessionId)
+        if (current === undefined) return
+        current.delete(res)
+        if (current.size === 0) streams.delete(sessionId)
+      })
+      handle.agent.followup(createUserMessage({
+        content,
+        source: { kind: 'user' },
+      }))
       return
     }
 

@@ -256,6 +256,17 @@ export async function sendMessage(
       ...attachment !== undefined ? { attachment: { kind: attachment.kind, name: attachment.name, dataUrl: attachment.dataUrl } } : {},
     }),
   })
+  await readEventStream(response, onEvent)
+}
+
+/** Re-run the last user turn (after a failure or to regenerate) and dispatch its stream. */
+export async function retrySession(sessionId: string, onEvent: (event: StreamEvent) => void): Promise<void> {
+  const response = await fetchWithSessionHeal(`/api/sessions/${sessionId}/retry`, { method: 'POST' })
+  await readEventStream(response, onEvent)
+}
+
+/** Verify one SSE response and pump its `data:` frames to the callback. */
+async function readEventStream(response: Response, onEvent: (event: StreamEvent) => void): Promise<void> {
   if (!response.ok || response.body === null) {
     let message = `${String(response.status)} ${response.statusText}`
     try {

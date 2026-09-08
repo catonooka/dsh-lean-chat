@@ -7,6 +7,7 @@ import {
   fetchConfig,
   fetchMessages,
   listSessions,
+  retrySession,
   searchSessions,
   sendMessage,
   stopSession,
@@ -18,12 +19,14 @@ import {
   type OutgoingAttachment,
   type SearchHit,
   type SessionSummary,
+  type StreamEvent,
 } from './api.ts'
 import { renderMarkdown } from './markdown.ts'
 import { SettingsPanel, applyTheme, readStoredTheme, storeTheme, type Theme } from './Settings.tsx'
 import { AvatarModal } from './AvatarModal.tsx'
 import { BOT_AVATAR_SRC, avatarSrc, readStoredAvatar, storeAvatar } from './avatar.ts'
 import { DeltaBatcher } from './delta.ts'
+import { copyToClipboard } from './clipboard.ts'
 
 const ACTIVE_KEY = 'dsh-chat-active'
 const COLLAPSED_KEY = 'dsh-chat-collapsed'
@@ -75,6 +78,51 @@ export function classifyPastedFile(file: { type: string; name: string }): Pasted
   const extension = dot === -1 ? '' : file.name.slice(dot + 1).toLowerCase()
   if (TEXT_FILE_EXTENSIONS.has(extension)) return 'text'
   return 'file'
+}
+
+/** Hover actions for one message: copy its text, quote it into the composer
+ * as a reply, and on the latest assistant turn run the turn again. */
+function MessageActions({ text, onReply, onRetry }: { text: string; onReply: () => void; onRetry?: () => void }): JSX.Element {
+  const [copied, setCopied] = useState(false)
+  const copy = async (): Promise<void> => {
+    if (await copyToClipboard(text)) {
+      setCopied(true)
+      window.setTimeout(() => { setCopied(false) }, 1400)
+    }
+  }
+  return (
+    <div className="msg-actions">
+      <button type="button" aria-label="Copy message" title="Copy" onClick={() => { void copy() }}>
+        {copied
+          ? (
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          )
+          : (
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
+              <path d="M10.5 3.5v-1a1 1 0 0 0-1-1h-7a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h1" fill="none" stroke="currentColor" strokeWidth="1.4" />
+            </svg>
+          )}
+      </button>
+      <button type="button" aria-label="Reply quoting this message" title="Reply" onClick={onReply}>
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M14 7.5c0 3-2.7 4.5-6 4.5-.7 0-1.4-.1-2-.2L3 14l.9-2.7C2.7 10.5 2 9.5 2 7.5 2 4.5 4.7 3 8 3s6 1.5 6 4.5z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+        </svg>
+      </button>
+      {onRetry !== undefined
+        ? (
+          <button type="button" aria-label="Try again" title="Try again" onClick={onRetry}>
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              <path d="M13.7 1.8v3h-3" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+        )
+        : undefined}
+    </div>
+  )
 }
 
 function BubbleAttachment({ attachment }: { attachment: ChatAttachment }): JSX.Element {
@@ -465,81 +513,67 @@ export default function App(): JSX.Element {
     textareaRef.current?.focus()
   }, [streaming])
 
-  const send = useCallback(async (): Promise<void> => {
-    const text = draft.trim()
-    const outgoing = attachment
-    if ((text === '' && outgoing === undefined) || streaming) return
-    setDraft('')
-    setAttachment(undefined)
+  /**
+   * Drive one model turn and stream it into the view. Both sends and retries
+   * share this: `drive` performs the fetch and pumps SSE events back.
+   */
+  const runTurn = useCallback(async (drive: (onEvent: (event: StreamEvent) => void) => Promise<void>): Promise<void> => {
     setStreaming(true)
     setStreamText('')
-    setItems(previous => [...previous, {
-      role: 'user' as const,
-      ...text !== '' ? { text } : {},
-      ...outgoing !== undefined
-        ? {
-          attachments: [{
-            kind: outgoing.kind,
-            name: outgoing.name,
-            mediaType: outgoing.dataUrl.slice(5, outgoing.dataUrl.indexOf(';')),
-            localUrl: outgoing.kind === 'file' ? undefined : outgoing.dataUrl,
-          }],
-        }
-        : {},
-    }])
     let sawAssistant = false
     // Deltas land in coarse batches so the tree and the markdown parser run
     // at frame cadence, not once per token; order-critical events flush first.
     const batcher = new DeltaBatcher((chunk) => { setStreamText(previous => previous + chunk) })
-    try {
-      await sendMessage(activeId, text, outgoing, (event) => {
-        switch (event.t) {
-          case 'user':
-            break
-          case 'delta':
-            sawAssistant = true
-            batcher.push(event.text)
-            break
-          case 'assistant':
-            batcher.flushNow()
-            sawAssistant = true
-            setStreamText(event.text)
-            break
-          case 'tool-start':
-            batcher.flushNow()
-            setItems(previous => [...previous, { role: 'tool', name: event.name, query: event.query, running: true }])
-            break
-          case 'tool-end':
-            batcher.flushNow()
-            setItems((previous) => {
-              const next = [...previous]
-              for (let index = next.length - 1; index >= 0; index--) {
-                const candidate = next[index]
-                if (candidate.role === 'tool' && candidate.running === true) {
-                  next[index] = {
-                    role: 'tool',
-                    name: event.name,
-                    query: event.query,
-                    searchQuestion: event.searchQuestion,
-                    searchedAt: event.searchedAt,
-                    sources: event.sources,
-                    text: event.text,
-                  }
-                  break
+    const onEvent = (event: StreamEvent): void => {
+      switch (event.t) {
+        case 'user':
+          break
+        case 'delta':
+          sawAssistant = true
+          batcher.push(event.text)
+          break
+        case 'assistant':
+          batcher.flushNow()
+          sawAssistant = true
+          setStreamText(event.text)
+          break
+        case 'tool-start':
+          batcher.flushNow()
+          setItems(previous => [...previous, { role: 'tool', name: event.name, query: event.query, running: true }])
+          break
+        case 'tool-end':
+          batcher.flushNow()
+          setItems((previous) => {
+            const next = [...previous]
+            for (let index = next.length - 1; index >= 0; index--) {
+              const candidate = next[index]
+              if (candidate.role === 'tool' && candidate.running === true) {
+                next[index] = {
+                  role: 'tool',
+                  name: event.name,
+                  query: event.query,
+                  searchQuestion: event.searchQuestion,
+                  searchedAt: event.searchedAt,
+                  sources: event.sources,
+                  text: event.text,
                 }
+                break
               }
-              return next
-            })
-            break
-          case 'status':
-            break
-          case 'error':
-            setError(event.message)
-            break
-          case 'turn-end':
-            break
-        }
-      })
+            }
+            return next
+          })
+          break
+        case 'status':
+          break
+        case 'error':
+          setError(event.message)
+          break
+        case 'turn-end':
+          break
+      }
+    }
+    try {
+      await drive(onEvent)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -554,7 +588,60 @@ export default function App(): JSX.Element {
       setStreaming(false)
       refreshSessions()
     }
-  }, [activeId, attachment, draft, refreshSessions, streaming])
+  }, [refreshSessions])
+
+  const send = useCallback(async (): Promise<void> => {
+    const text = draft.trim()
+    const outgoing = attachment
+    if ((text === '' && outgoing === undefined) || streaming) return
+    setDraft('')
+    // A programmatic value change never fires onChange, so the inline height
+    // the typing grew the textarea to would stick after sending; reset it.
+    const node = textareaRef.current
+    if (node !== null) node.style.height = 'auto'
+    setAttachment(undefined)
+    setItems(previous => [...previous, {
+      role: 'user' as const,
+      ...text !== '' ? { text } : {},
+      ...outgoing !== undefined
+        ? {
+          attachments: [{
+            kind: outgoing.kind,
+            name: outgoing.name,
+            mediaType: outgoing.dataUrl.slice(5, outgoing.dataUrl.indexOf(';')),
+            localUrl: outgoing.kind === 'file' ? undefined : outgoing.dataUrl,
+          }],
+        }
+        : {},
+    }])
+    await runTurn(onEvent => sendMessage(activeId, text, outgoing, onEvent))
+  }, [activeId, attachment, draft, runTurn, streaming])
+
+  /** Re-run the trailing user turn: after a failure, or to regenerate. */
+  const retry = useCallback(async (): Promise<void> => {
+    if (streaming || items.length === 0) return
+    // Drop the stale answer rows: everything after the last user row goes.
+    setItems((previous) => {
+      let cut = previous.length
+      while (cut > 0 && previous[cut - 1]?.role !== 'user') cut--
+      return cut === previous.length ? previous : previous.slice(0, cut)
+    })
+    await runTurn(onEvent => retrySession(activeId, onEvent))
+  }, [activeId, items.length, runTurn, streaming])
+
+  /** Quote one message into the composer as a reply. */
+  const quoteIntoDraft = useCallback((text: string): void => {
+    const quote = text.trim().slice(0, 300).split('\n').map(line => `> ${line}`).join('\n')
+    setDraft(previous => `${previous === '' ? '' : `${previous}\n\n`}${quote}\n\n`)
+    requestAnimationFrame(() => {
+      const node = textareaRef.current
+      if (node === null) return
+      node.style.height = 'auto'
+      node.style.height = `${String(Math.min(node.scrollHeight, 200))}px`
+      node.focus()
+      node.setSelectionRange(node.value.length, node.value.length)
+    })
+  }, [])
 
   const stop = useCallback(() => {
     stopSession(activeId).catch(() => { /* the stream ends on its own */ })
@@ -704,6 +791,14 @@ export default function App(): JSX.Element {
                   if (item.role === 'user') {
                     return (
                       <div key={index} className="row user">
+                        {item.text !== undefined && item.text !== ''
+                          ? (
+                            <MessageActions
+                              text={item.text}
+                              onReply={() => { quoteIntoDraft(item.text ?? '') }}
+                            />
+                          )
+                          : undefined}
                         <div className="user-bubble">
                           {(item.attachments ?? []).map((one, at) => <BubbleAttachment key={at} attachment={one} />)}
                           {item.text}
@@ -722,6 +817,15 @@ export default function App(): JSX.Element {
                     <div key={index} className="row assistant">
                       <div className="assistant-avatar" aria-hidden="true"><img src={BOT_AVATAR_SRC} alt="" draggable={false} /></div>
                       <AssistantText text={item.text ?? ''} streaming={false} />
+                      {!streaming && index === items.length - 1 && item.text !== undefined && item.text !== ''
+                        ? (
+                          <MessageActions
+                            text={item.text}
+                            onReply={() => { quoteIntoDraft(item.text ?? '') }}
+                            onRetry={() => { void retry() }}
+                          />
+                        )
+                        : undefined}
                     </div>
                   )
                 })}
@@ -743,6 +847,19 @@ export default function App(): JSX.Element {
                       </div>
                     )
                     : undefined)}
+                {!streaming && items.length > 0 && items[items.length - 1]?.role !== 'assistant'
+                  ? (
+                    <div className="retry-hint">
+                      <button type="button" onClick={() => { void retry() }}>
+                        <svg viewBox="0 0 16 16" aria-hidden="true">
+                          <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                          <path d="M13.7 1.8v3h-3" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                        Try again
+                      </button>
+                    </div>
+                  )
+                  : undefined}
               </div>
             )}
         </div>

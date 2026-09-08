@@ -9,6 +9,7 @@ import {
   RateLimiter,
   attachmentDescriptors,
   cachePolicyFor,
+  collapseRetriedUserTurns,
   modalityClaim,
   evictableSessionIds,
   hasSessionCookie,
@@ -23,6 +24,7 @@ import {
   projectSurfaceEvent,
   resolveProviderFallback,
   truncateSnippet,
+  type ChatItem,
   type ChatSettings,
   type Config,
 } from '../src/index.ts'
@@ -848,5 +850,54 @@ describe('parseSessionToken', () => {
     expect(parseSessionToken('short')).toBeUndefined()
     expect(parseSessionToken('has space in it and that is not a token at all')).toBeUndefined()
     expect(parseSessionToken('§§not-ascii§§')).toBeUndefined()
+  })
+})
+
+describe('collapseRetriedUserTurns', () => {
+  const user = (text: string, attachments?: ChatItem['attachments']): ChatItem =>
+    ({ role: 'user', ...attachments !== undefined ? { attachments } : {}, ...text !== '' ? { text } : {} })
+
+  it('drops the duplicate question of a failed retry (no answer came)', () => {
+    const items: ChatItem[] = [user('hi'), user('hi'), { role: 'assistant', text: 'hello there' }]
+    expect(collapseRetriedUserTurns(items)).toEqual([user('hi'), { role: 'assistant', text: 'hello there' }])
+  })
+
+  it('folds a regenerate to the latest answer', () => {
+    const items: ChatItem[] = [
+      user('hi'), { role: 'assistant', text: 'first try' }, user('hi'), { role: 'assistant', text: 'second try' },
+    ]
+    expect(collapseRetriedUserTurns(items)).toEqual([user('hi'), { role: 'assistant', text: 'second try' }])
+  })
+
+  it('keeps every turn of distinct questions, repeats included, when content differs', () => {
+    const items: ChatItem[] = [user('hi'), { role: 'assistant', text: 'a' }, user('hi again'), { role: 'assistant', text: 'b' }]
+    expect(collapseRetriedUserTurns(items)).toEqual(items)
+  })
+
+  it('folds repeated retries to the newest answer', () => {
+    const items: ChatItem[] = [
+      user('q'), { role: 'assistant', text: 'one' }, user('q'), { role: 'assistant', text: 'two' },
+      user('q'), { role: 'assistant', text: 'three' },
+    ]
+    expect(collapseRetriedUserTurns(items)).toEqual([user('q'), { role: 'assistant', text: 'three' }])
+  })
+
+  it('a retry supersedes later distinct exchanges, keeping only the newest tail', () => {
+    const items: ChatItem[] = [
+      user('a'), { role: 'assistant', text: '1' }, user('b'), { role: 'assistant', text: '2' },
+      user('a'), { role: 'assistant', text: 'retry answer' },
+    ]
+    expect(collapseRetriedUserTurns(items)).toEqual([
+      user('a'), { role: 'assistant', text: 'retry answer' },
+    ])
+  })
+
+  it('compares attachments as part of the question identity', () => {
+    const a = [{ attachmentId: 'a', kind: 'image' as const, mediaType: 'image/png', ref: { id: 'a' } }]
+    const b = [{ attachmentId: 'b', kind: 'image' as const, mediaType: 'image/png', ref: { id: 'b' } }]
+    const items: ChatItem[] = [user('', a), { role: 'assistant', text: 'x' }, user('', b)]
+    expect(collapseRetriedUserTurns(items)).toEqual(items)
+    expect(collapseRetriedUserTurns([user('', a), user('', a)])).toEqual([user('', a)])
+    expect(collapseRetriedUserTurns([])).toEqual([])
   })
 })

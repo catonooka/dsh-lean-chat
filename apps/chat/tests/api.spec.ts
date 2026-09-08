@@ -12,6 +12,7 @@ import {
   fetchModels,
   fetchProviders,
   listSessions,
+  retrySession,
   searchSessions,
   sendMessage,
   stopSession,
@@ -238,5 +239,29 @@ describe('session-cookie self-heal', () => {
     const { fetchConfig } = await import('../src/api.ts')
     await expect(fetchConfig()).rejects.toThrow('local requests only')
     expect(count).toBe(1)
+  })
+})
+
+describe('retrySession', () => {
+  it('posts to the retry route with no body and parses the shared SSE stream', async () => {
+    const response = {
+      ok: true,
+      status: 200,
+      body: sseBody(['data: {"t":"delta","text":"re"}\n\n', 'data: {"t":"assistant","text":"retry answer"}\n\n']),
+    } as unknown as Response
+    const mock = stubFetch(() => response)
+    const seen: string[] = []
+    await retrySession('sess-1', (event) => {
+      if (event.t === 'delta' || event.t === 'assistant') seen.push(event.text)
+    })
+    expect(seen).toEqual(['re', 'retry answer'])
+    expect(mock.mock.calls[0]?.[0]).toBe('/api/sessions/sess-1/retry')
+    expect(mock.mock.calls[0]?.[1]?.method).toBe('POST')
+    expect(mock.mock.calls[0]?.[1]?.body).toBeUndefined()
+  })
+
+  it('surfaces the server error for a stream-less conversation', async () => {
+    stubFetch(() => jsonResponse(400, { error: 'nothing to retry' }))
+    await expect(retrySession('sess-1', () => {})).rejects.toThrow('nothing to retry')
   })
 })

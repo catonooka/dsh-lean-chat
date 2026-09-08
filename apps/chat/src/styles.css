@@ -463,7 +463,9 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .icon-btn:hover { background: var(--hover); color: var(--fg); }
 .icon-btn svg { width: 16px; height: 16px; }
 
-.thread { flex: 1; overflow-y: auto; scroll-behavior: smooth; }
+/* Instant scrolling: the streaming autoscroll fires at frame cadence, and
+   smooth animations would compete with every batch, jittering the view. */
+.thread { flex: 1; overflow-y: auto; }
 
 .welcome {
   height: 100%;
@@ -578,6 +580,48 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 /* ── tool chip ────────────────────────────────────────────────────────────── */
 
 .row.tool { padding-left: 40px; }
+
+/* ── per-message actions ─────────────────────────────────────────────────── */
+
+.msg-actions {
+  display: flex;
+  gap: 2px;
+  flex: none;
+  align-self: center;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.row:hover .msg-actions,
+.msg-actions:focus-within { opacity: 1; }
+.row.assistant .msg-actions { align-self: flex-start; margin-top: 3px; }
+.msg-actions button {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  color: var(--fg-muted);
+  transition: background 120ms ease, color 120ms ease;
+}
+.msg-actions button:hover { background: var(--hover); color: var(--fg); }
+.msg-actions svg { width: 14px; height: 14px; }
+
+.retry-hint { display: flex; justify-content: center; padding: 2px 0 6px; }
+.retry-hint button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 13px;
+  color: var(--fg-muted);
+  background: var(--bg);
+  transition: background 120ms ease, color 120ms ease;
+}
+.retry-hint button:hover { background: var(--hover); color: var(--fg); }
+.retry-hint svg { width: 13px; height: 13px; }
 
 .tool-chip-wrap { display: flex; flex-direction: column; gap: 6px; max-width: 100%; }
 
