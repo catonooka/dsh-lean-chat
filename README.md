@@ -29,6 +29,9 @@ endpoint** — DeepSeek, an mLLM gateway, or a local Ollama/vLLM.
 
 Requires Node `^22.19.0 || >=24.0.0` and pnpm (`corepack enable` sorts it).
 
+> **Heads-up:** the install pulls the full upstream monorepo — expect a few
+> minutes and a couple of GB in `node_modules`.
+
 ```sh
 git clone https://github.com/catonooka/dsh-lean-chat.git
 cd dsh-lean-chat
