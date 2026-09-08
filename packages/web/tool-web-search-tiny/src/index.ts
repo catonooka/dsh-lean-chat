@@ -74,28 +74,34 @@ const LATEST_KEYWORDS: readonly string[] = [
 ]
 
 /**
- * Strip years the generator invented for time-relative queries. When the raw
- * query names no year but matches relative-time vocabulary, any year in the
- * generated question came from the model's memory (often a stale cutoff),
- * so it is removed and the current stamp is applied instead. Queries whose
- * raw form already names a year — historical or version contexts — keep the
- * generator's output verbatim.
+ * Strip years the model invented for time-relative queries — including ones
+ * baked into the raw tool-call arguments by a conversation model that did not
+ * know the date. A "now"-class query naming any other year is contradictory
+ * ("today 2025"), so every non-current year is replaced by the full current
+ * date; a "freshness"-class query loses only years older than the current
+ * one. Queries without time-relative vocabulary pass through verbatim, so
+ * historical and version contexts keep their years.
  * @param question - the generated search question.
  * @param rawQuery - the model-supplied query the question was generated from.
  * @param now - the reference time (injectable for tests).
  * @returns the question with stale invented years replaced by the current stamp.
  */
 export function resolveStaleYear(question: string, rawQuery: string, now: Date = new Date()): string {
-  if (/\b(?:19|20)\d{2}\b/u.test(rawQuery)) return question
   const haystack = rawQuery.toLowerCase()
   const nowClass = NOW_KEYWORDS.some(keyword => haystack.includes(keyword.toLowerCase()))
   const latestClass = !nowClass && LATEST_KEYWORDS.some(keyword => haystack.includes(keyword.toLowerCase()))
   if (!nowClass && !latestClass) return question
-  const stripped = question.replace(/\b(?:19|20)\d{2}\b/u, '').replace(/\s{2,}/gu, ' ').trim()
+  const currentYear = now.getUTCFullYear()
+  const years = (question.match(/\b(?:19|20)\d{2}\b/gu) ?? []).map(Number)
+  const stale = nowClass
+    ? years.some(year => year !== currentYear)
+    : years.some(year => year < currentYear)
+  if (!stale) return question
+  const stripped = question.replace(/\b(?:19|20)\d{2}\b/gu, '').replace(/\s{2,}/gu, ' ').trim()
   if (nowClass) {
-    return `${stripped} ${String(now.getUTCFullYear())}-${pad2(now.getUTCMonth() + 1)}-${pad2(now.getUTCDate())}`
+    return `${stripped} ${String(currentYear)}-${pad2(now.getUTCMonth() + 1)}-${pad2(now.getUTCDate())}`
   }
-  return `${stripped} ${String(now.getUTCFullYear())}`
+  return `${stripped} ${String(currentYear)}`
 }
 
 /** Zero-pad one month/day component of a UTC date stamp. */

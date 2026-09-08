@@ -382,6 +382,18 @@ export function apply(ctx: Context, config: Config): void {
     }
   })
 
+  // The conversation model must know what day it is, or it bakes its stale
+  // training-cutoff year into time-relative tool calls ("giá vàng hôm nay
+  // 2025"). One dynamic line right after the persona is the leanest honest
+  // fix: ~10 tokens, evaluated per request.
+  ctx.inject(['systemPrompt'], (promptCtx) => {
+    promptCtx.systemPrompt.section({
+      name: 'app:current-date',
+      order: promptCtx.systemPrompt.getSectionOrder('DEPLOYMENT_PERSONA_SUFFIX'),
+      text: () => `Current date: ${new Date().toISOString().slice(0, 10)} (UTC).`,
+    })
+  })
+
   ctx.on('agent/assistant-stream', ({ agent, frame }) => {
     if (frame.type !== 'chunk' || frame.chunk.type !== 'text-delta') return
     broadcast(String(agent.session.id), { t: 'delta', text: frame.chunk.text })

@@ -62,17 +62,24 @@ describe('resolveStaleYear', () => {
     expect(resolveStaleYear('giá vàng hôm nay 2025', 'giá vàng hôm nay', NOW)).toBe('giá vàng hôm nay 2026-09-08')
   })
 
-  it('replaces stale years with the current year on freshness-class queries', () => {
-    expect(resolveStaleYear('newest Ubuntu LTS 2024', 'newest Ubuntu LTS', NOW)).toBe('newest Ubuntu LTS 2026')
+  it('strips stale years baked into the raw tool-call arguments by the conversation model', () => {
+    expect(resolveStaleYear('giá cà phê hôm nay 2025', 'giá cà phê hôm nay 2025', NOW)).toBe('giá cà phê hôm nay 2026-09-08')
+    expect(resolveStaleYear('weather today 2025', 'weather today 2025', NOW)).toBe('weather today 2026-09-08')
   })
 
-  it('keeps years the raw query named, and leaves non-time queries alone', () => {
+  it('keeps the current year on now-class queries and drops only older years on freshness-class', () => {
+    expect(resolveStaleYear('giá vàng hôm nay 2026', 'giá vàng hôm nay 2026', NOW)).toBe('giá vàng hôm nay 2026')
+    expect(resolveStaleYear('newest Ubuntu LTS 2024', 'newest Ubuntu LTS', NOW)).toBe('newest Ubuntu LTS 2026')
+    expect(resolveStaleYear('newest Ubuntu LTS 2027 roadmap', 'newest Ubuntu LTS 2027 roadmap', NOW)).toBe('newest Ubuntu LTS 2027 roadmap')
+  })
+
+  it('keeps years the raw query named without time vocabulary, and leaves non-time queries alone', () => {
     expect(resolveStaleYear('F1 2025 season review', 'F1 2025 season review', NOW)).toBe('F1 2025 season review')
     expect(resolveStaleYear('best phở District 1', 'best phở District 1', NOW)).toBe('best phở District 1')
   })
 
-  it('collapses the double space left by stripping the year', () => {
-    expect(resolveStaleYear('weather today  2025', 'weather today', NOW)).toBe('weather today 2026-09-08')
+  it('strips multiple stale years and collapses the whitespace', () => {
+    expect(resolveStaleYear('weather today  2024 vs 2025', 'weather today 2024 vs 2025', NOW)).toBe('weather today vs 2026-09-08')
   })
 })
 
