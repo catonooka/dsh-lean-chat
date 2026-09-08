@@ -669,26 +669,60 @@ function chromeCors(req: IncomingMessage): Record<string, string> {
   return { 'access-control-allow-origin': typeof origin === 'string' && origin.startsWith('chrome-extension://') ? origin : '*' }
 }
 
-/** Whether one request is local: a loopback Host and, when present, a loopback
- * or companion-extension Origin (the bridge extension is trusted local — its
- * result posts are cross-origin from a `chrome-extension://` origin).
+/** Whether one request is local: a loopback Host and, when present, a
+ * loopback Origin. Cross-origin `chrome-extension://` requests are NOT local —
+ * the companion extension passes only through {@link isLocalOrBridgeRequest},
+ * which admits exactly the two bridge routes.
  * @param req - the incoming request; only `headers` is read.
- * @returns whether the request may talk to the local API at all.
+ * @returns whether the request counts as loopback-local.
  */
-export function isLocalRequest(req: Pick<IncomingMessage, 'headers'>): boolean {
+/** Whether the request's Host header names this machine's loopback. */
+function hasLoopbackHost(req: Pick<IncomingMessage, 'headers'>): boolean {
   const raw = (req.headers.host ?? '').toLowerCase()
   // A bracketed IPv6 host keeps its colons; anything else splits at the port.
   const hostname = raw.startsWith('[') ? raw.slice(0, raw.indexOf(']') + 1) : raw.split(':')[0] ?? ''
-  if (hostname !== '127.0.0.1' && hostname !== 'localhost' && hostname !== '[::1]') return false
+  return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '[::1]'
+}
+
+export function isLocalRequest(req: Pick<IncomingMessage, 'headers'>): boolean {
+  if (!hasLoopbackHost(req)) return false
   const origin = req.headers.origin
   if (origin === undefined) return true
-  if (origin.startsWith('chrome-extension://')) return true
   try {
     const originHost = new URL(origin).hostname.toLowerCase()
     return originHost === '127.0.0.1' || originHost === 'localhost' || originHost === '::1'
   } catch {
     return false
   }
+}
+
+/** The only routes the companion extension may reach cross-origin: the
+ * long-poll and its result post (plus the preflight the post needs). */
+export function isExtensionBridgePath(method: string, parts: readonly string[]): boolean {
+  if (parts.length !== 2 || parts[0] !== 'chrome') return false
+  if (parts[1] === 'next') return method === 'GET' || method === 'OPTIONS'
+  if (parts[1] === 'result') return method === 'POST' || method === 'OPTIONS'
+  return false
+}
+
+/**
+ * The API's locality gate: loopback-local requests pass everywhere; a
+ * `chrome-extension://` origin passes only on the two bridge routes, so a
+ * rogue extension can serve search jobs but read and change nothing else.
+ * @param req - the incoming request (headers and method are read).
+ * @param parts - the routed path segments after the `/api` prefix.
+ * @returns whether the request may proceed.
+ */
+export function isLocalOrBridgeRequest(
+  req: Pick<IncomingMessage, 'headers' | 'method'>,
+  parts: readonly string[],
+): boolean {
+  if (isLocalRequest(req)) return true
+  if (!hasLoopbackHost(req)) return false
+  const origin = req.headers.origin
+  return typeof origin === 'string'
+    && origin.startsWith('chrome-extension://')
+    && isExtensionBridgePath(req.method ?? '', parts)
 }
 
 /** Extract the joined text of one message's content blocks. */
@@ -1189,14 +1223,15 @@ export function apply(ctx: Context, config: Config): void {
   })
 
   async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!isLocalRequest(req)) {
-      sendJson(res, 403, { error: 'local requests only' })
-      return
-    }
     const url = new URL(req.url ?? '/', 'http://x')
     const parts = url.pathname.split('/').filter(segment => segment !== '')
     // parts[0] is 'api' (the registered prefix).
     if (parts.length >= 1 && parts[0] === 'api') parts.shift()
+    // Route first, gate second: the extension carve-out needs the path.
+    if (!isLocalOrBridgeRequest(req, parts)) {
+      sendJson(res, 403, { error: 'local requests only' })
+      return
+    }
 
     if (parts.length === 1 && parts[0] === 'config') {
       if (req.method === 'GET') {

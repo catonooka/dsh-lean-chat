@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 import {
   activeProfile,
   applySettingsPatch,
+  isLocalOrBridgeRequest,
   isLocalRequest,
   sortSessionsByActivity,
   normalizeSearchQuery,
@@ -497,8 +498,8 @@ describe('isLocalRequest', () => {
     expect(isLocalRequest(request({}))).toBe(false)
   })
 
-  it('trusts any chrome-extension origin and loopback origins only', () => {
-    expect(isLocalRequest(request({ host: '127.0.0.1', origin: 'chrome-extension://jeamfjgfbbpcjdpdmejleaclmhblnolc' }))).toBe(true)
+  it('accepts loopback origins only — extension origins are not local', () => {
+    expect(isLocalRequest(request({ host: '127.0.0.1', origin: 'chrome-extension://jeamfjgfbbpcjdpdmejleaclmhblnolc' }))).toBe(false)
     expect(isLocalRequest(request({ host: '127.0.0.1', origin: 'http://127.0.0.1:5173' }))).toBe(true)
     expect(isLocalRequest(request({ host: '127.0.0.1', origin: 'http://localhost:5173' }))).toBe(true)
     expect(isLocalRequest(request({ host: '127.0.0.1', origin: 'http://[::1]:5173' }))).toBe(false)
@@ -508,6 +509,37 @@ describe('isLocalRequest', () => {
     expect(isLocalRequest(request({ host: '127.0.0.1', origin: 'https://evil.example' }))).toBe(false)
     expect(isLocalRequest(request({ host: '127.0.0.1', origin: 'chrome-extension:' }))).toBe(false)
     expect(isLocalRequest(request({ host: '127.0.0.1', origin: '::not a url' }))).toBe(false)
+  })
+})
+
+describe('isLocalOrBridgeRequest', () => {
+  const request = (headers: Record<string, string>, method = 'GET'): { headers: Record<string, string>; method: string } =>
+    ({ headers, method })
+  const extension = { origin: 'chrome-extension://jeamfjgfbbpcjdpdmejleaclmhblnolc' }
+
+  it('admits an extension origin on exactly the two bridge routes', () => {
+    expect(isLocalOrBridgeRequest(request({ host: '127.0.0.1', ...extension }, 'GET'), ['chrome', 'next'])).toBe(true)
+    expect(isLocalOrBridgeRequest(request({ host: '127.0.0.1', ...extension }, 'POST'), ['chrome', 'result'])).toBe(true)
+    expect(isLocalOrBridgeRequest(request({ host: '127.0.0.1', ...extension }, 'OPTIONS'), ['chrome', 'result'])).toBe(true)
+  })
+
+  it('rejects an extension origin everywhere else', () => {
+    for (const [method, parts] of [
+      ['GET', ['chrome', 'status']] as const,
+      ['POST', ['chrome', 'test']] as const,
+      ['POST', ['chrome', 'next']] as const,
+      ['GET', ['chrome', 'result']] as const,
+      ['GET', ['sessions']] as const,
+      ['PUT', ['config']] as const,
+      ['GET', ['sessions', 'abc', 'messages']] as const,
+    ]) {
+      expect(isLocalOrBridgeRequest(request({ host: '127.0.0.1', ...extension }, method), [...parts])).toBe(false)
+    }
+  })
+
+  it('still passes every loopback request regardless of path', () => {
+    expect(isLocalOrBridgeRequest(request({ host: '127.0.0.1' }), ['sessions'])).toBe(true)
+    expect(isLocalOrBridgeRequest(request({ host: 'example.com', ...extension }), ['chrome', 'next'])).toBe(false)
   })
 })
 
