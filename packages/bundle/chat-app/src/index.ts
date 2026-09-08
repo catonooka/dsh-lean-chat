@@ -22,12 +22,13 @@
 
 import { randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { chmod, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname, extname, join, resolve, sep } from 'node:path'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { TinyMetasearchProvider } from '@deepseek-ai/dsh-web-search-tiny/src/provider.ts'
-import { UserChromeSearchProvider } from '@deepseek-ai/dsh-web-search-chrome/src/provider.ts'
+import { ExtensionBridge } from '@deepseek-ai/dsh-web-search-chrome/src/bridge.ts'
+import { routeSearchTarget, toSources, UserChromeSearchProvider } from '@deepseek-ai/dsh-web-search-chrome/src/provider.ts'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -394,6 +395,13 @@ const MAX_SEARCH_QUERY_CHARS = 500
 /** Longest snippet served per search hit, in code points. */
 const SNIPPET_MAX_CODE_POINTS = 240
 
+/** Heartbeat window for calling the extension connected; its long-poll cycle
+ * stays well under this, and a running search marks seen on its result post. */
+const EXTENSION_TTL_MS = 15_000
+
+/** How long a bridged search may wait for the extension before failing. */
+const EXTENSION_JOB_TIMEOUT_MS = 9_000
+
 const HTML_MIME = 'text/html; charset=utf-8'
 
 const MIME: Record<string, string> = {
@@ -546,6 +554,20 @@ function escapesRoot(distRoot: string, target: string): boolean {
   return target !== root && !target.startsWith(root + sep)
 }
 
+/**
+ * Where the companion extension's load-unpacked folder sits in this checkout,
+ * when it does — the settings panel prints this so connecting is copy-paste.
+ */
+function resolveExtensionPath(): string | undefined {
+  try {
+    const require = createRequire(import.meta.url)
+    const candidate = join(dirname(require.resolve('@deepseek-ai/dsh-web-search-chrome/package.json')), 'extension')
+    return existsSync(candidate) ? candidate : undefined
+  } catch {
+    return undefined
+  }
+}
+
 /** Serve the built dist over the fallback seat: assets by MIME, `/` as index. */
 async function serveStatic(req: IncomingMessage, res: ServerResponse, distRoot: string): Promise<void> {
   if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -595,6 +617,7 @@ async function serveStatic(req: IncomingMessage, res: ServerResponse, distRoot: 
  */
 export function apply(ctx: Context, config: Config): void {
   const distRoot = resolveDistRoot()
+  const extensionPath = resolveExtensionPath()
   // Runtime settings: boot-time config (which folds the env seeds) overlaid
   // with the persisted panel edits, mutable through PUT /api/config.
   const settingsPath = dshHomePath('chat-settings.json')
@@ -681,19 +704,49 @@ export function apply(ctx: Context, config: Config): void {
 
   // The web seam pins one provider id at boot, so the pinned id is a
   // chat-owned selector: every search dispatches to the engine the settings
-  // panel last chose — the keyless built-in, or the user's own Chrome.
+  // panel last chose — the keyless built-in, or the user's own Chrome. The
+  // Chrome side prefers the companion extension (invisible, no debug port)
+  // and falls back to the CDP engine when the extension is not connected.
   const tinyEngine = new TinyMetasearchProvider({ timeoutMs: 10_000, wikipedia: true })
   const chromeEngine = new UserChromeSearchProvider({
     cdpPort: config.chromeCdpPort,
     timeoutMs: 12_000,
     webEngine: config.chromeWebEngine,
   })
+  const extensionBridge = new ExtensionBridge()
+  type ChromeSearchOutcome = {
+    engine: 'extension' | 'cdp'
+    result: Awaited<ReturnType<UserChromeSearchProvider['search']>>
+  }
+  async function userChromeSearch(
+    request: Parameters<UserChromeSearchProvider['search']>[0],
+    signal?: AbortSignal,
+  ): Promise<ChromeSearchOutcome> {
+    if (extensionBridge.seenWithin(EXTENSION_TTL_MS)) {
+      const route = routeSearchTarget(request.query, config.chromeWebEngine)
+      const settlement = await extensionBridge.enqueue({
+        kind: route.kind,
+        query: route.query,
+        url: route.url,
+        engine: route.kind === 'x' ? 'x' : config.chromeWebEngine,
+        maxResults: request.maxResults ?? 5,
+      }, EXTENSION_JOB_TIMEOUT_MS)
+      if (!settlement.ok) throw new Error(`user-chrome: the extension search failed: ${settlement.error}`)
+      return {
+        engine: 'extension',
+        result: { sources: toSources(settlement.sources, request.maxResults ?? 5), truncated: false },
+      }
+    }
+    return { engine: 'cdp', result: await chromeEngine.search(request, signal) }
+  }
   ctx.inject(['web'], (webCtx) => {
     webCtx.web.registerSearchProvider({
       id: 'chat-selector',
       available: () => true,
       search: (request, signal) =>
-        (settings.searchTool === 'user-chrome' ? chromeEngine : tinyEngine).search(request, signal),
+        settings.searchTool === 'user-chrome'
+          ? userChromeSearch(request, signal).then(outcome => outcome.result)
+          : tinyEngine.search(request, signal),
     })
   })
 
@@ -1129,6 +1182,58 @@ export function apply(ctx: Context, config: Config): void {
       const entry = handles.get(sessionId)
       if (entry !== undefined) entry.handle.agent.cancel({ kind: 'user' })
       sendJson(res, 200, { stopped: entry !== undefined })
+      return
+    }
+
+    // Chrome-bridge endpoints. The extension long-polls `next` and runs the
+    // job with the user's cookies; every request refreshes its heartbeat.
+    // `status` and `test` feed the settings panel's connection row.
+    if (req.method === 'GET' && parts.length === 2 && parts[0] === 'chrome' && parts[1] === 'next') {
+      extensionBridge.markSeen()
+      const waitRaw = Number.parseInt(url.searchParams.get('wait') ?? '', 10)
+      const waitSeconds = Math.min(Math.max(Number.isFinite(waitRaw) ? waitRaw : 25, 1), 55)
+      const job = await extensionBridge.nextJob(waitSeconds * 1000)
+      sendJson(res, 200, { job })
+      return
+    }
+
+    if (req.method === 'POST' && parts.length === 2 && parts[0] === 'chrome' && parts[1] === 'result') {
+      extensionBridge.markSeen()
+      const body = await readJsonBody(req)
+      sendJson(res, 200, { accepted: extensionBridge.settle(body) })
+      return
+    }
+
+    if (req.method === 'GET' && parts.length === 2 && parts[0] === 'chrome' && parts[1] === 'status') {
+      sendJson(res, 200, {
+        extension: extensionBridge.seenWithin(EXTENSION_TTL_MS),
+        cdp: await chromeEngine.probe(),
+        ...extensionPath !== undefined ? { extensionPath } : {},
+      })
+      return
+    }
+
+    if (req.method === 'POST' && parts.length === 2 && parts[0] === 'chrome' && parts[1] === 'test') {
+      const body = await readJsonBody(req)
+      const query = typeof body.query === 'string' && body.query.trim() !== '' ? body.query.trim() : 'hello world'
+      const startedAt = Date.now()
+      try {
+        const outcome = await userChromeSearch({ query, maxResults: 5 })
+        sendJson(res, 200, {
+          ok: true,
+          engine: outcome.engine,
+          count: outcome.result.sources.length,
+          sample: outcome.result.sources.slice(0, 3).map(source => source.title),
+          ms: Date.now() - startedAt,
+        })
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error)
+        sendJson(res, 200, {
+          ok: false,
+          engine: extensionBridge.seenWithin(EXTENSION_TTL_MS) ? 'extension' : 'cdp',
+          error: message,
+        })
+      }
       return
     }
 
