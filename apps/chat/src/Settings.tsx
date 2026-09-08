@@ -359,6 +359,9 @@ export function SettingsPanel({ config, theme, onTheme, avatar, onAvatar, onAppl
             placeholder="default endpoint"
             onChange={(event) => { setBaseUrl(event.target.value) }}
           />
+          {isCleartextEndpoint(baseUrl)
+            ? <span className="settings-hint cleartext-warning">This http:// endpoint receives your API key in cleartext.</span>
+            : undefined}
           <span className="settings-hint">Any OpenAI-compatible gateway; empty means the launch default.</span>
         </label>
 
@@ -561,6 +564,11 @@ export function SettingsPanel({ config, theme, onTheme, avatar, onAvatar, onAppl
       </div>
     </div>
   )
+}
+
+/** Whether an endpoint URL would carry the API key unencrypted. */
+export function isCleartextEndpoint(url: string): boolean {
+  return /^\s*http:\/\/[^\s]/i.test(url)
 }
 
 /** One verdict cell: ✓ accepted, ✗ rejected, ? the probe could not tell. */

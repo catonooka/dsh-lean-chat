@@ -736,3 +736,5 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 }
 
 .welcome-mark img { padding: 2px; box-sizing: border-box; }
+
+.cleartext-warning { color: var(--error-fg); }

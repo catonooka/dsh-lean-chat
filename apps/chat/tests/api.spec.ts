@@ -157,3 +157,15 @@ describe('sendMessage callback failures', () => {
       .rejects.toThrow('render exploded')
   })
 })
+
+describe('isCleartextEndpoint', () => {
+  it('flags plain http endpoints and passes https or empty values', async () => {
+    const { isCleartextEndpoint } = await import('../src/Settings.tsx')
+    expect(isCleartextEndpoint('http://localhost:11434/v1')).toBe(true)
+    expect(isCleartextEndpoint('  http://192.168.1.5/v1 ')).toBe(true)
+    expect(isCleartextEndpoint('https://mllm.example/v1')).toBe(false)
+    expect(isCleartextEndpoint('HTTPS://x')).toBe(false)
+    expect(isCleartextEndpoint('')).toBe(false)
+    expect(isCleartextEndpoint('http:// ')).toBe(false)
+  })
+})
