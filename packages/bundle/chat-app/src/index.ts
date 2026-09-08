@@ -449,18 +449,28 @@ async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknow
 }
 
 /** Send one JSON response. */
-function sendJson(res: ServerResponse, status: number, value: unknown): void {
+function sendJson(res: ServerResponse, status: number, value: unknown, headers: Record<string, string> = {}): void {
   const body = JSON.stringify(value)
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...headers })
   res.end(body)
 }
 
-/** Whether one request is local: a loopback Host and, when present, a loopback Origin. */
+/** Reflect the bridge extension's origin so its service worker can read the
+ * response; anything else gets the wildcard (still loopback-gated). */
+function chromeCors(req: IncomingMessage): Record<string, string> {
+  const origin = req.headers.origin
+  return { 'access-control-allow-origin': typeof origin === 'string' && origin.startsWith('chrome-extension://') ? origin : '*' }
+}
+
+/** Whether one request is local: a loopback Host and, when present, a loopback
+ * or companion-extension Origin (the bridge extension is trusted local — its
+ * result posts are cross-origin from a `chrome-extension://` origin). */
 function isLocalRequest(req: IncomingMessage): boolean {
   const hostname = (req.headers.host ?? '').toLowerCase().split(':')[0] ?? ''
   if (hostname !== '127.0.0.1' && hostname !== 'localhost' && hostname !== '[::1]') return false
   const origin = req.headers.origin
   if (origin === undefined) return true
+  if (origin.startsWith('chrome-extension://')) return true
   try {
     const originHost = new URL(origin).hostname.toLowerCase()
     return originHost === '127.0.0.1' || originHost === 'localhost' || originHost === '::1'
@@ -1187,20 +1197,36 @@ export function apply(ctx: Context, config: Config): void {
 
     // Chrome-bridge endpoints. The extension long-polls `next` and runs the
     // job with the user's cookies; every request refreshes its heartbeat.
-    // `status` and `test` feed the settings panel's connection row.
+    // `status` and `test` feed the settings panel's connection row. Responses
+    // carry a reflecting CORS allow-origin so the extension's service worker
+    // can read what it asked for, and OPTIONS answers its JSON preflights.
+    if (req.method === 'OPTIONS' && parts.length >= 2 && parts[0] === 'chrome') {
+      const origin = typeof req.headers.origin === 'string' && req.headers.origin.startsWith('chrome-extension://')
+        ? req.headers.origin
+        : '*'
+      res.writeHead(204, {
+        'access-control-allow-origin': origin,
+        'access-control-allow-methods': 'GET, POST',
+        'access-control-allow-headers': 'content-type',
+        'access-control-max-age': '86400',
+      })
+      res.end()
+      return
+    }
+
     if (req.method === 'GET' && parts.length === 2 && parts[0] === 'chrome' && parts[1] === 'next') {
       extensionBridge.markSeen()
       const waitRaw = Number.parseInt(url.searchParams.get('wait') ?? '', 10)
       const waitSeconds = Math.min(Math.max(Number.isFinite(waitRaw) ? waitRaw : 25, 1), 55)
       const job = await extensionBridge.nextJob(waitSeconds * 1000)
-      sendJson(res, 200, { job })
+      sendJson(res, 200, { job }, chromeCors(req))
       return
     }
 
     if (req.method === 'POST' && parts.length === 2 && parts[0] === 'chrome' && parts[1] === 'result') {
       extensionBridge.markSeen()
       const body = await readJsonBody(req)
-      sendJson(res, 200, { accepted: extensionBridge.settle(body) })
+      sendJson(res, 200, { accepted: extensionBridge.settle(body) }, chromeCors(req))
       return
     }
 
@@ -1209,7 +1235,7 @@ export function apply(ctx: Context, config: Config): void {
         extension: extensionBridge.seenWithin(EXTENSION_TTL_MS),
         cdp: await chromeEngine.probe(),
         ...extensionPath !== undefined ? { extensionPath } : {},
-      })
+      }, chromeCors(req))
       return
     }
 
@@ -1225,14 +1251,14 @@ export function apply(ctx: Context, config: Config): void {
           count: outcome.result.sources.length,
           sample: outcome.result.sources.slice(0, 3).map(source => source.title),
           ms: Date.now() - startedAt,
-        })
+        }, chromeCors(req))
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error)
         sendJson(res, 200, {
           ok: false,
           engine: extensionBridge.seenWithin(EXTENSION_TTL_MS) ? 'extension' : 'cdp',
           error: message,
-        })
+        }, chromeCors(req))
       }
       return
     }
