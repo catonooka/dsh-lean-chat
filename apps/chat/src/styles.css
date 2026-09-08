@@ -290,6 +290,41 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 
 .settings-hint { font-size: 12px; color: var(--fg-muted); }
 
+.chrome-connection { display: inline-flex; align-items: center; gap: 6px; }
+
+.chrome-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--fg-muted);
+  opacity: 0.5;
+}
+
+.chrome-dot.on { background: #2da44e; opacity: 1; }
+
+.chrome-row { display: flex; gap: 8px; margin-top: 6px; }
+
+.chrome-help {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-sidebar);
+  font-size: 12.5px;
+}
+
+.chrome-help p { margin: 0 0 6px; }
+.chrome-help ol { margin: 0 0 8px; padding-left: 18px; }
+.chrome-help code { font-size: 11.5px; word-break: break-all; }
+.chrome-help pre {
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow-x: auto;
+}
+.chrome-help pre code { word-break: normal; }
+
 .settings-panel input[type='text'],
 .settings-panel input[type='password'],
 .settings-panel select,

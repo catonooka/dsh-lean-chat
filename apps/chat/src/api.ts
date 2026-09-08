@@ -118,6 +118,37 @@ export function updateConfig(patch: SettingsPatch): Promise<AppConfig> {
   })
 }
 
+/** Whether each chrome engine answers right now. */
+export interface ChromeStatus {
+  extension: boolean
+  cdp: boolean
+  extensionPath?: string
+}
+
+/** Connection state of the chrome engines (extension heartbeat, debug port). */
+export function fetchChromeStatus(): Promise<ChromeStatus> {
+  return fetchJson<ChromeStatus>('/api/chrome/status')
+}
+
+/** One real search run through whichever chrome engine is connected. */
+export interface ChromeTestOutcome {
+  ok: boolean
+  engine?: 'extension' | 'cdp'
+  count?: number
+  sample?: string[]
+  ms?: number
+  error?: string
+}
+
+/** Run a probe search through the user-chrome engine and report how it went. */
+export function testChromeSearch(query?: string): Promise<ChromeTestOutcome> {
+  return fetchJson<ChromeTestOutcome>('/api/chrome/test', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(query === undefined ? {} : { query }),
+  })
+}
+
 export function stopSession(sessionId: string): Promise<void> {
   return fetchJson(`/api/sessions/${sessionId}/stop`, { method: 'POST' }).then(() => undefined)
 }

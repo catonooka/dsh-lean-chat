@@ -1,7 +1,17 @@
 /** The settings panel: every runtime-configurable option of the chat surface. */
 
 import { useEffect, useState, type JSX } from 'react'
-import { fetchModels, fetchProviders, updateConfig, type AppConfig, type ProviderInfo, type SettingsPatch } from './api.ts'
+import {
+  fetchChromeStatus,
+  fetchModels,
+  fetchProviders,
+  testChromeSearch,
+  updateConfig,
+  type AppConfig,
+  type ChromeStatus,
+  type ProviderInfo,
+  type SettingsPatch,
+} from './api.ts'
 
 export type Theme = 'system' | 'light' | 'dark'
 
@@ -64,11 +74,33 @@ export function SettingsPanel({ config, theme, onTheme, onSaved, onClose }: Sett
   const [loadingModels, setLoadingModels] = useState(false)
   const [providers, setProviders] = useState<ProviderInfo[]>([])
   const [saving, setSaving] = useState(false)
+  const [chromeStatus, setChromeStatus] = useState<ChromeStatus | undefined>(undefined)
+  const [chromeTesting, setChromeTesting] = useState(false)
+  const [chromeTest, setChromeTest] = useState<string | undefined>(undefined)
+  const [showChromeHelp, setShowChromeHelp] = useState(false)
 
   useEffect(() => {
     fetchProviders().then(setProviders).catch(() => { /* the row falls back to raw text */ })
   }, [])
   const [error, setError] = useState<string | undefined>(undefined)
+
+  // The connection row lives only while "Your Chrome" is selected, and its
+  // state is the server's view (the extension's heartbeat), so it polls.
+  useEffect(() => {
+    if (searchTool !== 'user-chrome') return
+    let cancelled = false
+    const refresh = (): void => {
+      fetchChromeStatus()
+        .then((status) => { if (!cancelled) setChromeStatus(status) })
+        .catch(() => { /* status stays stale; the test button reports real errors */ })
+    }
+    refresh()
+    const timer = window.setInterval(refresh, 4000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [searchTool])
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
@@ -86,6 +118,22 @@ export function SettingsPanel({ config, theme, onTheme, onSaved, onClose }: Sett
       setError(err instanceof Error ? err.message : String(err))
     } finally {
       setLoadingModels(false)
+    }
+  }
+
+  const runChromeTest = async (): Promise<void> => {
+    setChromeTesting(true)
+    setChromeTest(undefined)
+    try {
+      const outcome = await testChromeSearch('latest ai news')
+      setChromeTest(outcome.ok
+        ? `${outcome.engine ?? 'chrome'} · ${String(outcome.count ?? 0)} results · ${((outcome.ms ?? 0) / 1000).toFixed(1)}s`
+        : `${outcome.engine ?? 'chrome'}: ${outcome.error ?? 'failed'}`)
+      fetchChromeStatus().then(setChromeStatus).catch(() => undefined)
+    } catch (err: unknown) {
+      setChromeTest(err instanceof Error ? err.message : String(err))
+    } finally {
+      setChromeTesting(false)
     }
   }
 
@@ -286,10 +334,65 @@ export function SettingsPanel({ config, theme, onTheme, onSaved, onClose }: Sett
             ))}
           </div>
           <span className="settings-hint">
-            Your Chrome runs the search in your logged-in browser (start Chrome with
-            {' '}--remote-debugging-port=9222). The model can prefix a query with x: to search your X.
+            Your Chrome runs the search with this browser's logins — the companion extension, or the debug
+            {' '}port as a fallback. The model can prefix a query with x: to search your X.
           </span>
         </div>
+
+        {searchTool === 'user-chrome'
+          ? (
+            <div className="settings-row">
+              <span className="settings-label">
+                Chrome connection
+                <span className="settings-value chrome-connection">
+                  <span
+                    className={chromeStatus?.extension === true || chromeStatus?.cdp === true ? 'chrome-dot on' : 'chrome-dot'}
+                    aria-hidden="true"
+                  />
+                  {chromeStatus?.extension === true
+                    ? 'extension connected'
+                    : chromeStatus?.cdp === true
+                      ? 'debug port connected'
+                      : chromeStatus === undefined ? 'checking…' : 'not connected'}
+                </span>
+              </span>
+              <div className="chrome-row">
+                <button
+                  type="button"
+                  className="models-load"
+                  disabled={chromeTesting}
+                  onClick={() => { void runChromeTest() }}
+                >
+                  {chromeTesting ? '…' : 'Test search'}
+                </button>
+                <button
+                  type="button"
+                  className="models-load"
+                  aria-expanded={showChromeHelp}
+                  onClick={() => { setShowChromeHelp(!showChromeHelp) }}
+                >
+                  {showChromeHelp ? 'Hide steps' : 'How to connect'}
+                </button>
+              </div>
+              {chromeTest !== undefined ? <span className="settings-hint">{chromeTest}</span> : undefined}
+              {showChromeHelp
+                ? (
+                  <div className="chrome-help">
+                    <p><strong>Extension</strong> — invisible searches, no debug port:</p>
+                    <ol>
+                      <li>Open <code>chrome://extensions</code></li>
+                      <li>Turn on <em>Developer mode</em></li>
+                      <li><em>Load unpacked</em> → <code>{chromeStatus?.extensionPath ?? '…/dsh-lean-chat/packages/web/web-search-chrome/extension'}</code></li>
+                    </ol>
+                    <p>Different port? Set it once in the extension's options after loading.</p>
+                    <p><strong>Debug port</strong> — quit Chrome fully, then relaunch:</p>
+                    <pre><code>open -na "Google Chrome" --args --remote-debugging-port=9222</code></pre>
+                  </div>
+                )
+                : undefined}
+            </div>
+          )
+          : undefined}
 
         <div className="settings-row">
           <span className="settings-label">Theme</span>
