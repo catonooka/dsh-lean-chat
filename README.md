@@ -17,8 +17,9 @@ endpoint** — DeepSeek, an mLLM gateway, or a local Ollama/vLLM.
   a tiny [companion extension](packages/web/web-search-chrome/extension/README.md)
   runs searches inside your logged-in browser (no debug port, no tab), with a
   CDP fallback; `x:`-prefixed queries search your own X account.
-- **Multimodal aware** — a one-click probe tells you whether the active model
-  accepts image and video input.
+- **Multimodal input** — the probe gates a clip button; attach images and
+  videos (≤ 8MB / 25MB) that ride the message to the model and render in
+  history.
 - **Clean UI** — collapsible sidebar, full-text chat search, lazy-loaded
   history, streaming with batched rendering, avatars, light/dark theme.
 - **Hardened localhost surface** — loopback-only, boot-minted HttpOnly session

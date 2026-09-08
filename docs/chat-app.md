@@ -83,6 +83,18 @@ Environment:
 | `DSH_CHAT_PERSONA` | `You are a helpful assistant.` | The whole system prompt |
 | `DSH_CHAT_WEB_ENGINE` | `google` | General engine the user-chrome searches use: `google`, `bing`, or `duckduckgo` |
 
+### Image and video input
+
+The composer grows a clip button once the ability probe says the active
+model accepts images or video (the accept list filters to the supported
+kinds). One attachment rides a message as a base64 data URL — images up
+to 8MB (png/jpeg/webp/gif, byte-sniffed by the durable store under
+`$DSH_HOME/attachments`), videos up to 25MB (stored verbatim). The
+model receives them as `image_url`/`video_url` parts; reloaded history
+renders attachments from digest-verified storage. The profile opts into
+`uncataloguedImageInput` on the adapter so custom-gateway models take
+attachments instead of placeholder text.
+
 ### The companion extension
 
 `packages/web/web-search-chrome/extension/` is a load-unpacked MV3 extension
