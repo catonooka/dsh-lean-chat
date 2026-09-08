@@ -6,11 +6,17 @@
 
 import type { WebSearchSource } from '@deepseek-ai/dsh-web'
 
+/** Decode one numeric entity's code point, substituting U+FFFD for values
+ * outside the Unicode range so a hostile page cannot throw out of parsing. */
+function codePointSafe(value: number): string {
+  return Number.isInteger(value) && value >= 0 && value <= 0x10ffff ? String.fromCodePoint(value) : '�'
+}
+
 /** Decode the handful of HTML entities DuckDuckGo and Wikipedia emit in text fields. */
 export function decodeEntities(value: string): string {
   return value
-    .replace(/&#x([0-9a-f]+);/giu, (_whole, hex: string) => String.fromCodePoint(Number.parseInt(hex, 16)))
-    .replace(/&#(\d+);/gu, (_whole, dec: string) => String.fromCodePoint(Number(dec)))
+    .replace(/&#x([0-9a-f]+);/giu, (_whole, hex: string) => codePointSafe(Number.parseInt(hex, 16)))
+    .replace(/&#(\d+);/gu, (_whole, dec: string) => codePointSafe(Number(dec)))
     .replace(/&quot;/gu, '"')
     .replace(/&apos;/gu, "'")
     .replace(/&#39;/gu, "'")
@@ -77,12 +83,17 @@ export interface DuckDuckGoParse {
  */
 export function parseDuckDuckGoHtml(html: string): DuckDuckGoParse {
   const links: { url: string; title: string }[] = []
-  for (const match of html.matchAll(/<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gu)) {
-    const href = match[1] ?? ''
+  // Attribute-order agnostic: take whole anchor tags, then pull the class and
+  // href out of each — DuckDuckGo has shipped both orderings over time.
+  for (const match of html.matchAll(/<a\b[^>]*>([\s\S]*?)<\/a>/gu)) {
+    const tag = (match[0] ?? '').slice(0, match[0].indexOf('>'))
+    if (!/class="result__a"/u.test(tag)) continue
+    const href = /\shref="([^"]+)"/u.exec(tag)?.[1] ?? ''
+    if (href === '') continue
     if (/\/\/duckduckgo\.com\/y\.js/u.test(href) || /ad_domain=/u.test(href)) continue
     const url = unwrapDuckDuckGoHref(decodeEntities(href))
     if (url === undefined) continue
-    const title = htmlToText(match[2] ?? '')
+    const title = htmlToText(match[1] ?? '')
     if (title === '') continue
     links.push({ url, title })
   }

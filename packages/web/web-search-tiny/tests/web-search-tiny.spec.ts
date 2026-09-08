@@ -123,3 +123,92 @@ describe('mergeResults', () => {
     expect(merged.truncated).toBe(true)
   })
 })
+
+describe('decodeEntities — corners', () => {
+  it('substitutes U+FFFD for out-of-range numeric entities instead of throwing', () => {
+    expect(decodeEntities('&#x110000;')).toBe('�')
+    expect(decodeEntities('&#1114112;')).toBe('�')
+    expect(() => decodeEntities('&#x10FFFF;')).not.toThrow()
+    expect(decodeEntities('&#x10FFFF;')).toBe(String.fromCodePoint(0x10ffff))
+  })
+})
+
+describe('htmlToText — corners', () => {
+  it('collapses nested tags, newlines, and entities in one pass', () => {
+    expect(htmlToText('<b>a<i>b</i></b>\n  c &amp; d')).toBe('ab c & d')
+    expect(htmlToText('&#x1F600; smile')).toBe('😀 smile')
+  })
+})
+
+describe('parseDuckDuckGoHtml — attribute-order corners', () => {
+  it('parses anchors whether href precedes or follows class', () => {
+    const html = [
+      '<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fa.example%2F">A</a>',
+      '<a href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fb.example%2F" class="result__a">B</a>',
+      '<a rel="nofollow" data-x="1" class="result__a" href="https://c.example/">C</a>',
+    ].join('')
+    expect(parseDuckDuckGoHtml(html).links).toEqual([
+      { url: 'https://a.example/', title: 'A' },
+      { url: 'https://b.example/', title: 'B' },
+      { url: 'https://c.example/', title: 'C' },
+    ])
+  })
+
+  it('drops anchors whose title strips to nothing and hrefs that unwrap to nothing', () => {
+    const html = [
+      '<a class="result__a" href="https://keep.example/">real</a>',
+      '<a class="result__a" href="https://empty.example/"><span></span></a>',
+      '<a class="result__a" href="//duckduckgo.com/l/?rut=abc">no uddg</a>',
+    ].join('')
+    expect(parseDuckDuckGoHtml(html).links).toEqual([{ url: 'https://keep.example/', title: 'real' }])
+  })
+
+  it('pairs snippets by index and ignores unterminated snippet markup', () => {
+    const html = '<div class="result__snippet">one</div><span class="result__snippet">two</span>'
+      + '<td class="result__snippet">never closed'
+    expect(parseDuckDuckGoHtml(html).snippets).toEqual(['one', 'two'])
+  })
+})
+
+describe('unwrapDuckDuckGoHref — corners', () => {
+  it('rejects uddg targets that are not absolute http(s) URLs', () => {
+    expect(unwrapDuckDuckGoHref('//duckduckgo.com/l/?uddg=javascript%3Aalert(1)')).toBeUndefined()
+    expect(unwrapDuckDuckGoHref('//duckduckgo.com/l/?uddg=%2Frelative%2Fpath')).toBeUndefined()
+    expect(unwrapDuckDuckGoHref('//duckduckgo.com/l/?rut=x')).toBeUndefined()
+  })
+
+  it('accepts uppercase schemes and keeps the query string verbatim', () => {
+    expect(unwrapDuckDuckGoHref('HTTPS://EXAMPLE.COM/P?Q=1&R=2')).toBe('https://example.com/P?Q=1&R=2')
+  })
+})
+
+describe('wikipediaHitToSource — corners', () => {
+  it('encodes titles with underscores and strips markup from snippets', () => {
+    const source = wikipediaHitToSource({ title: 'Ho Chi Minh City', snippet: 'largest <b>city</b> &amp; hub', timestamp: '2026-01-02T03:04:05Z' })
+    expect(source?.url).toBe('https://en.wikipedia.org/wiki/Ho_Chi_Minh_City')
+    expect(source?.snippet).toBe('largest city & hub')
+    expect(source?.publishedAt).toBe('2026-01-02T03:04:05Z')
+  })
+
+  it('omits non-string snippet and timestamp instead of failing', () => {
+    expect(wikipediaHitToSource({ title: 'X', snippet: 7, timestamp: null })).toEqual({ url: 'https://en.wikipedia.org/wiki/X', title: 'X' })
+  })
+})
+
+describe('mergeResults — corners', () => {
+  it('dedupes trailing-slash variants but never slices bare origins', () => {
+    const merged = mergeResults(
+      [{ url: 'https://a.example' }, { url: 'https://b.example/' }],
+      [{ url: 'https://a.example/' }],
+      5,
+    )
+    expect(merged.sources.map(source => source.url)).toEqual(['https://a.example', 'https://b.example/'])
+    expect(merged.truncated).toBe(false)
+  })
+
+  it('flags truncation exactly when the cap drops a result', () => {
+    expect(mergeResults([{ url: 'https://a' }, { url: 'https://b' }], [], 2).truncated).toBe(false)
+    expect(mergeResults([{ url: 'https://a' }, { url: 'https://b' }], [], 1).truncated).toBe(true)
+    expect(mergeResults([{ url: 'https://a' }], [], 0).sources).toEqual([])
+  })
+})
