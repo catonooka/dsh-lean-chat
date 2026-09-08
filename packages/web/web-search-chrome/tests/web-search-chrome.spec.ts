@@ -62,3 +62,62 @@ describe('provider id', () => {
     expect(CHROME_PROVIDER_ID).toBe('user-chrome')
   })
 })
+
+describe('routeSearchTarget — corners', () => {
+  it('accepts an uppercase X: prefix', () => {
+    const route = routeSearchTarget('X: from:me dsh')
+    expect(route.kind).toBe('x')
+    expect(route.query).toBe('from:me dsh')
+  })
+
+  it('does not treat xx: or x_ as the X prefix', () => {
+    expect(routeSearchTarget('xx: from:me').kind).toBe('web')
+    expect(routeSearchTarget('x_ something').kind).toBe('web')
+  })
+
+  it('strips repeated site markers and collapses the leftovers', () => {
+    const route = routeSearchTarget('site:x.com từ site:twitter.com giá vàng')
+    expect(route.kind).toBe('x')
+    expect(route.query).toBe('từ giá vàng')
+  })
+
+  it('encodes reserved characters in every engine URL', () => {
+    const query = 'a&b=c #1'
+    for (const engine of ['google', 'bing', 'duckduckgo'] as const) {
+      const route = routeSearchTarget(query, engine)
+      expect(route.kind).toBe('web')
+      expect(route.url).toBe(`https://${engine === 'google' ? 'www.google.com/search' : engine === 'bing' ? 'www.bing.com/search' : 'duckduckgo.com/'}?q=${encodeURIComponent(query)}`)
+    }
+    expect(routeSearchTarget('x:a b&c').url).toBe(`https://x.com/search?q=${encodeURIComponent('a b&c')}&f=live`)
+  })
+})
+
+describe('toSources — corners', () => {
+  it('returns nothing for a zero budget', () => {
+    expect(toSources([{ title: 'a', url: 'https://a' }], 0)).toEqual([])
+  })
+
+  it('drops whitespace-only titles and urls', () => {
+    expect(toSources([
+      { title: '   ', url: 'https://a' },
+      { title: 'a', url: '   ' },
+      { title: 'a', url: 'https://a' },
+    ], 5)).toEqual([{ title: 'a', url: 'https://a' }])
+  })
+
+  it('caps before pushing, not after', () => {
+    const sources = toSources([
+      { title: 'a', url: 'https://a' },
+      { title: 'b', url: 'https://b' },
+    ], 1)
+    expect(sources).toEqual([{ title: 'a', url: 'https://a' }])
+  })
+
+  it('keeps urls distinct when they differ only past the origin', () => {
+    const sources = toSources([
+      { title: 'a', url: 'https://x/1' },
+      { title: 'b', url: 'https://x/2' },
+    ], 5)
+    expect(sources).toHaveLength(2)
+  })
+})

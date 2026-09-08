@@ -45,7 +45,7 @@ export function routeSearchTarget(query: string, engine: WebEngine = 'google'): 
     query: q,
     url: `https://x.com/search?q=${encodeURIComponent(q)}&f=live`,
   })
-  if (query.startsWith('x:')) {
+  if (query.toLowerCase().startsWith('x:')) {
     const rest = query.slice(2).trim()
     if (rest !== '') return xSearch(rest)
   }
@@ -76,7 +76,8 @@ export function toSources(hits: readonly RawHit[], maxResults: number): WebSearc
   const seen = new Set<string>()
   const sources: WebSearchSource[] = []
   for (const hit of hits) {
-    if (hit.url === '' || hit.title === '') continue
+    if (sources.length >= maxResults) break
+    if (hit.url.trim() === '' || hit.title.trim() === '') continue
     if (seen.has(hit.url)) continue
     seen.add(hit.url)
     sources.push({
@@ -85,7 +86,6 @@ export function toSources(hits: readonly RawHit[], maxResults: number): WebSearc
       ...hit.snippet !== undefined && hit.snippet !== '' ? { snippet: hit.snippet } : {},
       ...hit.publishedAt !== undefined && hit.publishedAt !== '' ? { publishedAt: hit.publishedAt } : {},
     })
-    if (sources.length >= maxResults) break
   }
   return sources
 }
