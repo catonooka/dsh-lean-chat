@@ -32,10 +32,99 @@ export const DEFAULT_MAX_RESULTS = 5
 /** Default cooperative tool-call timeout budget in milliseconds. */
 export const DEFAULT_TIMEOUT_MS = 45_000
 
-/** Standing instruction for the internal search-question generator call. */
-export const GENERATOR_SYSTEM = 'Rewrite the input as one concise, self-contained web search query '
-  + '(resolve pronouns and missing context; keep names and version numbers). '
-  + 'Reply with the query alone: no quotes, no explanation, at most 200 characters.'
+/**
+ * Standing instruction for the internal search-question generator call. The
+ * current time is appended per call (auxiliary prompt, never conversation
+ * context) so relative time expressions resolve to absolute dates, and the
+ * query stays in the user's own language.
+ */
+export function generatorSystem(now: Date = new Date()): string {
+  return 'Rewrite the input as one concise, self-contained web search query '
+    + '(resolve pronouns and missing context; keep names and version numbers). '
+    + 'Keep the query in the input\'s language. '
+    + 'Resolve every relative time expression (today, this week, latest, hiện tại, hôm nay, mới nhất, 今天, 最新, hoy, aujourd\'hui, heute, 最新 …) '
+    + 'to absolute dates derived ONLY from the current time below — that time is authoritative; never substitute a year from memory. '
+    + 'Reply with the query alone: no quotes, no explanation, at most 200 characters. '
+    + `Current time: ${now.toISOString()} (${['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][now.getUTCDay()]}).`
+}
+
+/** Relative "now" vocabulary across languages: matches earn a full date stamp. */
+const NOW_KEYWORDS: readonly string[] = [
+  'today', 'right now', 'currently', 'tonight', 'this morning', 'this evening', 'this week', 'yesterday', 'tomorrow',
+  'hôm nay', 'hom nay', 'hôm qua', 'hom qua', 'ngày mai', 'ngay mai', 'hiện tại', 'hien tai', 'bây giờ', 'bay gio',
+  '今天', '今日', '昨天', '明天', '现在', '現在', '目前', '当前', '當前', '本周', '本週',
+  'hoy', 'ayer', 'mañana', 'manana',
+  "aujourd'hui", 'aujourdhui', 'hier', 'demain', 'actuellement',
+  'heute', 'gestern', 'morgen', 'derzeit',
+  'oggi', 'ieri', 'domani',
+  '今日', '昨日', '明日', '現在', '今日',
+  '현재', '오늘', '어제', '내일',
+]
+
+/** Relative "freshness" vocabulary across languages: matches earn a year stamp. */
+const LATEST_KEYWORDS: readonly string[] = [
+  'latest', 'newest', 'most recent', 'recent', 'breaking', 'current', 'up to date', 'updated',
+  'mới nhất', 'moi nhat', 'mới ra', 'moi ra', 'gần đây', 'gan day', 'vừa ra mắt', 'vua ra mat',
+  '最新', '最近', '最新版', '最近の',
+  'más reciente', 'mas reciente', 'último', 'ultimo', 'última', 'ultima', 'reciente',
+  'dernière', 'dernier', 'derniere', 'le plus récent',
+  'neueste', 'aktuell', 'jüngste', 'aktualne',
+  'ultimo', 'recente', 'attuale',
+  '최신', '최근',
+]
+
+/**
+ * Strip years the generator invented for time-relative queries. When the raw
+ * query names no year but matches relative-time vocabulary, any year in the
+ * generated question came from the model's memory (often a stale cutoff),
+ * so it is removed and the current stamp is applied instead. Queries whose
+ * raw form already names a year — historical or version contexts — keep the
+ * generator's output verbatim.
+ * @param question - the generated search question.
+ * @param rawQuery - the model-supplied query the question was generated from.
+ * @param now - the reference time (injectable for tests).
+ * @returns the question with stale invented years replaced by the current stamp.
+ */
+export function resolveStaleYear(question: string, rawQuery: string, now: Date = new Date()): string {
+  if (/\b(?:19|20)\d{2}\b/u.test(rawQuery)) return question
+  const haystack = rawQuery.toLowerCase()
+  const nowClass = NOW_KEYWORDS.some(keyword => haystack.includes(keyword.toLowerCase()))
+  const latestClass = !nowClass && LATEST_KEYWORDS.some(keyword => haystack.includes(keyword.toLowerCase()))
+  if (!nowClass && !latestClass) return question
+  const stripped = question.replace(/\b(?:19|20)\d{2}\b/u, '').replace(/\s{2,}/gu, ' ').trim()
+  if (nowClass) {
+    return `${stripped} ${String(now.getUTCFullYear())}-${pad2(now.getUTCMonth() + 1)}-${pad2(now.getUTCDate())}`
+  }
+  return `${stripped} ${String(now.getUTCFullYear())}`
+}
+
+/** Zero-pad one month/day component of a UTC date stamp. */
+function pad2(value: number): string {
+  return String(value).padStart(2, '0')
+}
+
+/**
+ * Keyless time-stamp fallback: when a query carries a relative-time keyword
+ * in any listed language but no explicit year, stamp the current UTC date
+ * (full date for "now" words, year for "freshness" words) so search engines
+ * stop returning stale pages. Queries that already name a year pass through.
+ * @param query - the search question after any generator rewrite.
+ * @param now - the reference time (injectable for tests).
+ * @returns the query with a date stamp appended, or the query unchanged.
+ */
+export function withCurrentDate(query: string, now: Date = new Date()): string {
+  if (/\b(?:19|20)\d{2}\b/u.test(query)) return query
+  const haystack = query.toLowerCase()
+  const hasNow = NOW_KEYWORDS.some(keyword => haystack.includes(keyword.toLowerCase()))
+  if (hasNow) {
+    return `${query} ${String(now.getUTCFullYear())}-${pad2(now.getUTCMonth() + 1)}-${pad2(now.getUTCDate())}`
+  }
+  const hasLatest = LATEST_KEYWORDS.some(keyword => haystack.includes(keyword.toLowerCase()))
+  if (hasLatest) {
+    return `${query} ${String(now.getUTCFullYear())}`
+  }
+  return query
+}
 
 /** Output-token cap for the generator call. */
 export const GENERATOR_MAX_TOKENS = 64
@@ -160,9 +249,10 @@ export async function generateSearchQuestion(
     for await (const chunk of ctx.llm.stream({
       provider,
       model,
-      system: GENERATOR_SYSTEM,
+      system: generatorSystem(),
       messages: [message],
       maxTokens: GENERATOR_MAX_TOKENS,
+      temperature: 0,
       signal: generatorSignal,
     })) {
       if (chunk.type === 'text-delta') text += chunk.text
@@ -268,9 +358,12 @@ export function apply(ctx: Context, config: Config): void {
     // Provider reads do not mutate parent-agent state.
     isConcurrencySafe: () => true,
     async execute(args: WebSearchTinyArgs, exec): Promise<WebSearchTinyValue> {
-      const searchQuestion = resolved.generateQuestion
+      const generated = resolved.generateQuestion
         ? await generateSearchQuestion(ctx, args.query, resolved.generatorProvider, resolved.generatorModel, exec.signal)
         : args.query
+      // A generator that invented a stale year for a time-relative query
+      // loses it; the keyless stamp then applies the current date.
+      const searchQuestion = withCurrentDate(resolveStaleYear(generated, args.query))
       const result = await ctx.web.search({ query: searchQuestion, maxResults: resolved.maxResults }, exec.signal)
       return {
         query: args.query,

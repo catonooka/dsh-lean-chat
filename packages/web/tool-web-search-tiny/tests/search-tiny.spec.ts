@@ -8,9 +8,14 @@ import {
   Config,
   EXTERNAL_WEB_CONTENT_NOTICE,
   formatSearchOutput,
+  generatorSystem,
+  resolveStaleYear,
   sanitizeGeneratedQuestion,
+  withCurrentDate,
   type WebSearchTinyValue,
 } from '../src/index.ts'
+
+const NOW = new Date('2026-09-08T03:12:04.236Z')
 
 function value(overrides: Partial<WebSearchTinyValue> = {}): WebSearchTinyValue {
   return {
@@ -30,6 +35,56 @@ function value(overrides: Partial<WebSearchTinyValue> = {}): WebSearchTinyValue 
     ...overrides,
   }
 }
+
+describe('withCurrentDate', () => {
+  it('stamps a full UTC date on "now" vocabulary across languages', () => {
+    expect(withCurrentDate('thời tiết hôm nay tại Hà Nội', NOW)).toBe('thời tiết hôm nay tại Hà Nội 2026-09-08')
+    expect(withCurrentDate('今天上海天气', NOW)).toBe('今天上海天气 2026-09-08')
+    expect(withCurrentDate('tiempo hoy en Madrid', NOW)).toBe('tiempo hoy en Madrid 2026-09-08')
+    expect(withCurrentDate("météo aujourd'hui à Paris", NOW)).toBe("météo aujourd'hui à Paris 2026-09-08")
+  })
+
+  it('stamps only the year on "freshness" vocabulary', () => {
+    expect(withCurrentDate('latest Node.js version', NOW)).toBe('latest Node.js version 2026')
+    expect(withCurrentDate('phien ban moi nhat cua Node.js', NOW)).toBe('phien ban moi nhat cua Node.js 2026')
+    expect(withCurrentDate('Node.js 最新版本', NOW)).toBe('Node.js 最新版本 2026')
+    expect(withCurrentDate('최신 뉴스', NOW)).toBe('최신 뉴스 2026')
+  })
+
+  it('leaves queries that already name a year or carry no time word untouched', () => {
+    expect(withCurrentDate('Node.js 24 LTS features', NOW)).toBe('Node.js 24 LTS features')
+    expect(withCurrentDate('best phở in District 1', NOW)).toBe('best phở in District 1')
+  })
+})
+
+describe('resolveStaleYear', () => {
+  it('replaces a generator-invented stale year with the current date on now-class queries', () => {
+    expect(resolveStaleYear('giá vàng hôm nay 2025', 'giá vàng hôm nay', NOW)).toBe('giá vàng hôm nay 2026-09-08')
+  })
+
+  it('replaces stale years with the current year on freshness-class queries', () => {
+    expect(resolveStaleYear('newest Ubuntu LTS 2024', 'newest Ubuntu LTS', NOW)).toBe('newest Ubuntu LTS 2026')
+  })
+
+  it('keeps years the raw query named, and leaves non-time queries alone', () => {
+    expect(resolveStaleYear('F1 2025 season review', 'F1 2025 season review', NOW)).toBe('F1 2025 season review')
+    expect(resolveStaleYear('best phở District 1', 'best phở District 1', NOW)).toBe('best phở District 1')
+  })
+
+  it('collapses the double space left by stripping the year', () => {
+    expect(resolveStaleYear('weather today  2025', 'weather today', NOW)).toBe('weather today 2026-09-08')
+  })
+})
+
+describe('generatorSystem', () => {
+  it('carries the current time and the language/time-resolution instructions', () => {
+    const system = generatorSystem(NOW)
+    expect(system).toContain('2026-09-08T03:12:04.236Z')
+    expect(system).toContain('Tuesday')
+    expect(system).toContain("the input's language")
+    expect(system).toContain('absolute dates')
+  })
+})
 
 describe('sanitizeGeneratedQuestion', () => {
   it('keeps a clean generated question', () => {
