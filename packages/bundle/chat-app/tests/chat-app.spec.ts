@@ -4,7 +4,9 @@
 
 import { describe, expect, it } from 'vitest'
 import {
+  activeProfile,
   applySettingsPatch,
+  isLocalRequest,
   sortSessionsByActivity,
   normalizeSearchQuery,
   paginateSessions,
@@ -476,5 +478,110 @@ describe('resolveProviderFallback', () => {
 
   it('keeps the fallback when nothing is registered at all', () => {
     expect(resolveProviderFallback('local LLM', [], 'deepseek-official')).toBe('deepseek-official')
+  })
+})
+
+describe('isLocalRequest', () => {
+  const request = (headers: Record<string, string>): { headers: Record<string, string> } => ({ headers })
+
+  it('accepts every loopback host form, with or without a port', () => {
+    for (const host of ['127.0.0.1', '127.0.0.1:3095', 'localhost', 'localhost:3095', '[::1]:3095']) {
+      expect(isLocalRequest(request({ host }))).toBe(true)
+    }
+  })
+
+  it('rejects a non-loopback host before looking at anything else', () => {
+    expect(isLocalRequest(request({ host: 'example.com:3095' }))).toBe(false)
+    expect(isLocalRequest(request({ host: '192.168.1.5:3095' }))).toBe(false)
+    expect(isLocalRequest(request({}))).toBe(false)
+  })
+
+  it('trusts any chrome-extension origin and loopback origins only', () => {
+    expect(isLocalRequest(request({ host: '127.0.0.1', origin: 'chrome-extension://jeamfjgfbbpcjdpdmejleaclmhblnolc' }))).toBe(true)
+    expect(isLocalRequest(request({ host: '127.0.0.1', origin: 'http://127.0.0.1:5173' }))).toBe(true)
+    expect(isLocalRequest(request({ host: '127.0.0.1', origin: 'http://localhost:5173' }))).toBe(true)
+    expect(isLocalRequest(request({ host: '127.0.0.1', origin: 'http://[::1]:5173' }))).toBe(false)
+  })
+
+  it('rejects remote and malformed origins on an otherwise local host', () => {
+    expect(isLocalRequest(request({ host: '127.0.0.1', origin: 'https://evil.example' }))).toBe(false)
+    expect(isLocalRequest(request({ host: '127.0.0.1', origin: 'chrome-extension:' }))).toBe(false)
+    expect(isLocalRequest(request({ host: '127.0.0.1', origin: '::not a url' }))).toBe(false)
+  })
+})
+
+describe('activeProfile', () => {
+  it('returns the active profile and falls back to the first on a stale id', () => {
+    expect(activeProfile(twoProfiles).id).toBe('a')
+    const stale: ChatSettings = { ...twoProfiles, activeProfileId: 'gone' }
+    expect(activeProfile(stale).id).toBe('a')
+  })
+
+  it('answers a synthetic profile for an empty list rather than crashing', () => {
+    const empty: ChatSettings = { ...baseSettings, profiles: [], activeProfileId: 'x' }
+    expect(activeProfile(empty)).toEqual({ id: 'default', name: 'Default', model: '' })
+  })
+})
+
+describe('applySettingsPatch — profile list corners', () => {
+  const many: ChatSettings = {
+    ...baseSettings,
+    profiles: Array.from({ length: 20 }, (_, index) => ({ id: `p${String(index)}`, name: `P${String(index)}`, model: 'm' })),
+    activeProfileId: 'p0',
+  }
+
+  it('refuses a new profile at the cap and truncates oversized file lists to it', () => {
+    expect(() => applySettingsPatch(many, { newProfile: {} })).toThrow('at most 20 profiles')
+    const oversized = applySettingsPatch(many, {
+      profiles: [...many.profiles, { id: 'extra', name: 'Extra', model: 'm' }],
+    })
+    expect(oversized.profiles).toHaveLength(20)
+    expect(oversized.profiles.some(profile => profile.id === 'extra')).toBe(false)
+  })
+
+  it('rejects malformed profile operations with pointed errors', () => {
+    expect(() => applySettingsPatch(twoProfiles, { switchProfile: 7 as unknown as string })).toThrow('profile id')
+    expect(() => applySettingsPatch(twoProfiles, { renameProfile: 'nope' })).toThrow('must be an object')
+    expect(() => applySettingsPatch(twoProfiles, { newProfile: { name: 7 as unknown as string } })).toThrow('name must be a string')
+    expect(() => applySettingsPatch(twoProfiles, { deleteProfile: null })).toThrow('must be an object')
+    expect(() => applySettingsPatch(twoProfiles, { deleteProfile: { id: '' } })).toThrow('needs a profile id')
+  })
+
+  it('accepts a profile name at the exact cap and trims before measuring', () => {
+    const edge = 'x'.repeat(60)
+    expect(applySettingsPatch(twoProfiles, { renameProfile: { id: 'a', name: `  ${edge}  ` } }).profiles[0]?.name).toBe(edge)
+  })
+
+  it('does not mutate the current settings while patching', () => {
+    const frozen = JSON.parse(JSON.stringify(twoProfiles)) as ChatSettings
+    applySettingsPatch(twoProfiles, { model: 'changed', deleteProfile: { id: 'b' } })
+    expect(twoProfiles).toEqual(frozen)
+  })
+})
+
+describe('parseSettingsFile — hostile profile files', () => {
+  it('heals an active id that no profile matches', () => {
+    const parsed = parseSettingsFile(JSON.stringify({
+      profiles: [{ id: 'a', name: 'A', model: 'm' }],
+      activeProfileId: 'zz',
+    }), baseConfig)
+    expect(parsed.activeProfileId).toBe('a')
+  })
+
+  it('falls back to defaults on duplicate profile ids', () => {
+    const raw = JSON.stringify({ profiles: [{ id: 'a', name: 'A', model: 'm' }, { id: 'a', name: 'B', model: 'm' }] })
+    expect(parseSettingsFile(raw, baseConfig)).toEqual(baseSettings)
+  })
+
+  it('falls back to defaults when a legacy file is invalid mid-patch', () => {
+    const raw = JSON.stringify({ model: 'm2', baseUrl: 'ftp://bad' })
+    expect(parseSettingsFile(raw, baseConfig)).toEqual(baseSettings)
+  })
+
+  it('drops blank optional fields while keeping valid ones in file profiles', () => {
+    const parsed = parseSettingsFile(JSON.stringify({
+      profiles: [{ id: 'a', name: ' A ', model: ' m ', baseUrl: '  ', apiKey: '  ' }],
+    }), baseConfig)
+    expect(parsed.profiles).toEqual([{ id: 'a', name: 'A', model: 'm' }])
   })
 })

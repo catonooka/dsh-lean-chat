@@ -240,8 +240,16 @@ export function applySettingsPatch(
       case 'switchProfile':
       case 'activeProfileId': {
         if (typeof value !== 'string' || value === '') throw new Error(`${key} must be a profile id`)
-        if (!next.profiles.some(profile => profile.id === value)) throw new Error(`unknown profile "${value}"`)
-        next.activeProfileId = value
+        if (next.profiles.some(profile => profile.id === value)) {
+          next.activeProfileId = value
+          break
+        }
+        // `switchProfile` is a live client operation and fails loudly;
+        // `activeProfileId` is the file-format key and heals to the first
+        // profile, so one stale id never discards a whole settings file.
+        if (key === 'switchProfile') throw new Error(`unknown profile "${value}"`)
+        const first = next.profiles[0]
+        if (first !== undefined) next.activeProfileId = first.id
         break
       }
       case 'renameProfile': {
@@ -441,13 +449,15 @@ export function parseSettingsFile(raw: string | undefined, defaults: Config): Ch
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return base
   const record = parsed as Record<string, unknown>
-  // A legacy flat file names its migrated profile after the gateway host.
-  const migrating = base.profiles[0]
-  if (migrating !== undefined && record.profiles === undefined && typeof record.baseUrl === 'string') {
-    migrating.name = deriveProfileName(record.baseUrl)
-  }
   try {
-    return applySettingsPatch(base, record)
+    const applied = applySettingsPatch(base, record)
+    // A legacy flat file names its migrated profile after the gateway host —
+    // derived only once the whole overlay proved valid.
+    const migrating = applied.profiles[0]
+    if (migrating !== undefined && record.profiles === undefined && typeof record.baseUrl === 'string') {
+      migrating.name = deriveProfileName(record.baseUrl)
+    }
+    return applied
   } catch {
     return base
   }
@@ -660,9 +670,14 @@ function chromeCors(req: IncomingMessage): Record<string, string> {
 
 /** Whether one request is local: a loopback Host and, when present, a loopback
  * or companion-extension Origin (the bridge extension is trusted local — its
- * result posts are cross-origin from a `chrome-extension://` origin). */
-function isLocalRequest(req: IncomingMessage): boolean {
-  const hostname = (req.headers.host ?? '').toLowerCase().split(':')[0] ?? ''
+ * result posts are cross-origin from a `chrome-extension://` origin).
+ * @param req - the incoming request; only `headers` is read.
+ * @returns whether the request may talk to the local API at all.
+ */
+export function isLocalRequest(req: Pick<IncomingMessage, 'headers'>): boolean {
+  const raw = (req.headers.host ?? '').toLowerCase()
+  // A bracketed IPv6 host keeps its colons; anything else splits at the port.
+  const hostname = raw.startsWith('[') ? raw.slice(0, raw.indexOf(']') + 1) : raw.split(':')[0] ?? ''
   if (hostname !== '127.0.0.1' && hostname !== 'localhost' && hostname !== '[::1]') return false
   const origin = req.headers.origin
   if (origin === undefined) return true
