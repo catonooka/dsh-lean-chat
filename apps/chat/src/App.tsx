@@ -19,6 +19,7 @@ import { renderMarkdown } from './markdown.ts'
 import { SettingsPanel, applyTheme, readStoredTheme, storeTheme, type Theme } from './Settings.tsx'
 import { AvatarModal } from './AvatarModal.tsx'
 import { BOT_AVATAR_SRC, avatarSrc, readStoredAvatar, storeAvatar } from './avatar.ts'
+import { DeltaBatcher } from './delta.ts'
 
 const ACTIVE_KEY = 'dsh-chat-active'
 const COLLAPSED_KEY = 'dsh-chat-collapsed'
@@ -288,6 +289,9 @@ export default function App(): JSX.Element {
     setStreamText('')
     setItems(previous => [...previous, { role: 'user', text }])
     let sawAssistant = false
+    // Deltas land in coarse batches so the tree and the markdown parser run
+    // at frame cadence, not once per token; order-critical events flush first.
+    const batcher = new DeltaBatcher((chunk) => { setStreamText(previous => previous + chunk) })
     try {
       await sendMessage(activeId, text, (event) => {
         switch (event.t) {
@@ -295,16 +299,19 @@ export default function App(): JSX.Element {
             break
           case 'delta':
             sawAssistant = true
-            setStreamText(previous => previous + event.text)
+            batcher.push(event.text)
             break
           case 'assistant':
+            batcher.flushNow()
             sawAssistant = true
             setStreamText(event.text)
             break
           case 'tool-start':
+            batcher.flushNow()
             setItems(previous => [...previous, { role: 'tool', name: event.name, query: event.query, running: true }])
             break
           case 'tool-end':
+            batcher.flushNow()
             setItems((previous) => {
               const next = [...previous]
               for (let index = next.length - 1; index >= 0; index--) {
@@ -337,6 +344,7 @@ export default function App(): JSX.Element {
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
+      batcher.dispose()
       // Commit the streamed text into the item list, then clear the draft.
       setStreamText((current) => {
         if (sawAssistant && current !== '') {
