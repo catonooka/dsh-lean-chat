@@ -4,7 +4,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AVATAR_COUNT, avatarSrc, normalizeAvatar, readStoredAvatar, storeAvatar } from '../src/avatar.ts'
+import { AVATAR_COUNT, BOT_AVATAR_SRC, avatarSrc, normalizeAvatar, readStoredAvatar, storeAvatar } from '../src/avatar.ts'
 
 describe('normalizeAvatar', () => {
   it('accepts each avatar number as a stored string', () => {
@@ -51,6 +51,12 @@ describe('stored avatar', () => {
     const store = storage()
     store.set('dsh-chat-avatar', '99')
     expect(readStoredAvatar()).toBeNull()
+  })
+})
+
+describe('bot avatar', () => {
+  it('points at the served chat bot image', () => {
+    expect(BOT_AVATAR_SRC).toBe('bot-avatar.png')
   })
 })
 

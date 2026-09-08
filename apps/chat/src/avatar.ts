@@ -28,6 +28,9 @@ export function storeAvatar(avatar: number): void {
   localStorage.setItem(AVATAR_KEY, String(avatar))
 }
 
+/** The chat bot's avatar, shown on every assistant message. */
+export const BOT_AVATAR_SRC = 'bot-avatar.png'
+
 /** The served image URL of one avatar tile. */
 export function avatarSrc(avatar: number): string {
   return `avatars/avatar-${String(avatar)}.png`

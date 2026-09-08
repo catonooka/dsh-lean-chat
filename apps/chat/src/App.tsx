@@ -18,7 +18,7 @@ import {
 import { renderMarkdown } from './markdown.ts'
 import { SettingsPanel, applyTheme, readStoredTheme, storeTheme, type Theme } from './Settings.tsx'
 import { AvatarModal } from './AvatarModal.tsx'
-import { avatarSrc, readStoredAvatar, storeAvatar } from './avatar.ts'
+import { BOT_AVATAR_SRC, avatarSrc, readStoredAvatar, storeAvatar } from './avatar.ts'
 
 const ACTIVE_KEY = 'dsh-chat-active'
 const COLLAPSED_KEY = 'dsh-chat-collapsed'
@@ -490,7 +490,7 @@ export default function App(): JSX.Element {
           {items.length === 0 && streamText === ''
             ? (
               <div className="welcome">
-                <div className="welcome-mark">dsh</div>
+                <div className="welcome-mark" aria-hidden="true"><img src={BOT_AVATAR_SRC} alt="" draggable={false} /></div>
                 <div className="welcome-title">What can I help with?</div>
               </div>
             )
@@ -513,7 +513,7 @@ export default function App(): JSX.Element {
                   }
                   return (
                     <div key={index} className="row assistant">
-                      <div className="assistant-avatar" aria-hidden="true">dsh</div>
+                      <div className="assistant-avatar" aria-hidden="true"><img src={BOT_AVATAR_SRC} alt="" draggable={false} /></div>
                       <AssistantText text={item.text ?? ''} streaming={false} />
                     </div>
                   )
@@ -521,7 +521,7 @@ export default function App(): JSX.Element {
                 {streaming && (streamText !== '' || items.every(item => item.role !== 'tool' || item.running !== true))
                   ? (
                     <div className="row assistant">
-                      <div className="assistant-avatar" aria-hidden="true">dsh</div>
+                      <div className="assistant-avatar" aria-hidden="true"><img src={BOT_AVATAR_SRC} alt="" draggable={false} /></div>
                       {streamText === '' ? <div className="assistant-text thinking">Thinking…</div> : <AssistantText text={streamText} streaming />}
                     </div>
                   )
@@ -531,7 +531,7 @@ export default function App(): JSX.Element {
                   : (streaming && items.some(item => item.role === 'tool' && item.running === true)
                     ? (
                       <div className="row assistant">
-                        <div className="assistant-avatar" aria-hidden="true">dsh</div>
+                        <div className="assistant-avatar" aria-hidden="true"><img src={BOT_AVATAR_SRC} alt="" draggable={false} /></div>
                         <div className="assistant-text thinking">Searching the web…</div>
                       </div>
                     )
