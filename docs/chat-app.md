@@ -99,14 +99,22 @@ extension. Without the extension, "Your Chrome" falls back to the CDP engine
 ### Settings panel
 
 The user row at the bottom of the sidebar opens the settings panel. It edits
-the conversation model route (provider, model, thinking level, temperature)
-and the system prompt at runtime: `PUT /api/config` validates the patch,
-persists it to `$DSH_HOME/chat-settings.json`, and applies it from the next
-message on — a model change swaps the session's agent while its durable
-history keeps the conversation. Temperature and the persona apply
+the conversation model route (provider profile, model, thinking level,
+temperature) and the system prompt at runtime: `PUT /api/config` validates
+the patch, persists it to `$DSH_HOME/chat-settings.json`, and applies it from
+the next message on — a model change swaps the session's agent while its
+durable history keeps the conversation. Temperature and the persona apply
 immediately (both are evaluated per request). The env vars above are only
 the seed defaults for a fresh home; the persisted file wins afterwards.
 Theme (system / light / dark) is a browser preference stored client-side.
+
+**Provider profiles**: the panel's Profile row switches between saved
+endpoints, each with a user-chosen name and its own model, base URL, and
+API key (rename / new / delete in the row; the rows below edit whichever
+profile is selected). All profiles ride the same OpenAI-compatible adapter
+route — the fixed `provider` field is registry plumbing, not a choice. A
+legacy flat settings file migrates onto one profile named after its
+gateway's host.
 
 Any OpenAI-compatible gateway can serve the conversation model this way, e.g.
 an mLLM endpoint:
