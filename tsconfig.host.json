@@ -274,6 +274,7 @@
     { "path": "./packages/web/web-search-perplexity" },
     { "path": "./packages/web/web-search-deepseek" },
     { "path": "./packages/web/web-search-tiny" },
+    { "path": "./packages/web/web-search-chrome" },
     { "path": "./packages/web/web-fetch-http" },
     { "path": "./packages/web/tool-web" },
     { "path": "./packages/web/tool-web-search-tiny" },

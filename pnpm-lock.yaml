@@ -10421,6 +10421,19 @@ importers:
         specifier: workspace:^
         version: link:../web
 
+  packages/web/web-search-chrome:
+    dependencies:
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../vendor/schemastery
+        version: link:../../../vendor/schemastery
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      '@deepseek-ai/dsh-web':
+        specifier: workspace:^
+        version: link:../web
+
   packages/web/web-search-deepseek:
     dependencies:
       '@deepseek-ai/schemastery':
