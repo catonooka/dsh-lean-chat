@@ -87,19 +87,64 @@ export const Config: z<Config> = z.object({
   chromeWebEngine: z.union([z.const('google'), z.const('bing'), z.const('duckduckgo')]).default('google'),
 })
 
-/** Everything the settings panel can change while the app runs. */
-export interface ChatSettings {
-  provider: string
+/** One saved provider profile: a named model route the panel can switch to.
+ * The adapter route (`provider`) is global and registry-fixed; everything
+ * endpoint-specific — model, base URL, key — is per-profile. */
+export interface ProviderProfile {
+  /** Stable id; renaming never changes it. */
+  id: string
+  /** User-chosen display name. */
+  name: string
   model: string
-  reasoningEffort?: 'off' | 'low' | 'high' | 'max'
-  temperature?: number
-  persona: string
   /** OpenAI-compatible endpoint base overriding `$DEEPSEEK_BASE_URL`. */
   baseUrl?: string
   /** API key overriding `$DEEPSEEK_API_KEY`; persisted owner-only, never served. */
   apiKey?: string
+}
+
+/** Everything the settings panel can change while the app runs. */
+export interface ChatSettings {
+  provider: string
+  /** Saved provider profiles; the active one is what requests use. */
+  profiles: ProviderProfile[]
+  /** Which profile the panel last switched to. */
+  activeProfileId: string
+  /** Adapter reasoning effort for conversation agents (thinking level). */
+  reasoningEffort?: 'off' | 'low' | 'high' | 'max'
+  /** Sampling temperature applied to every conversation request. */
+  temperature?: number
+  persona: string
   /** Which engine the pinned chat-selector provider dispatches to. */
   searchTool: 'tiny-metasearch' | 'user-chrome'
+}
+
+/** Longest accepted profile display name. */
+const MAX_PROFILE_NAME_LENGTH = 60
+
+/** Most profiles worth keeping in one panel. */
+const MAX_PROFILES = 20
+
+/**
+ * The profile settings edits apply to: the active one, else the first — the
+ * settings file always holds at least one, so this never misses.
+ * @param settings - the settings in force.
+ * @returns the profile model calls and panel edits target.
+ */
+export function activeProfile(settings: ChatSettings): ProviderProfile {
+  return settings.profiles.find(profile => profile.id === settings.activeProfileId)
+    ?? settings.profiles[0]
+    ?? { id: 'default', name: 'Default', model: '' }
+}
+
+/** A migrated profile's display name: the endpoint's host, else plain. */
+function deriveProfileName(baseUrl: string | undefined): string {
+  if (baseUrl === undefined) return 'Default'
+  try {
+    const host = new URL(baseUrl).hostname
+    return host === '' ? 'Default' : host
+  } catch {
+    return 'Default'
+  }
 }
 
 /** Longest accepted persona text; the persona is the whole system prompt. */
@@ -147,22 +192,101 @@ export function sortSessionsByActivity<T extends { header: { id: SessionId; crea
 /**
  * Validate one partial settings update. `null` clears an optional field.
  * Unknown keys are rejected so a drifted frontend fails loudly, not silently.
+ * The flat `model`/`baseUrl`/`apiKey` keys edit the active profile (a switch
+ * in the same patch is applied first, whatever the key order).
  * @param current - the settings in force before the patch.
  * @param patch - the request body.
+ * @param makeId - id mint for `newProfile`; injectable for deterministic tests.
  * @returns the next settings; throws on any invalid value.
  */
-export function applySettingsPatch(current: ChatSettings, patch: Record<string, unknown>): ChatSettings {
-  const next: ChatSettings = { ...current }
-  for (const [key, value] of Object.entries(patch)) {
+export function applySettingsPatch(
+  current: ChatSettings,
+  patch: Record<string, unknown>,
+  makeId: () => string = () => randomUUID().slice(0, 8),
+): ChatSettings {
+  const next: ChatSettings = { ...current, profiles: current.profiles.map(profile => ({ ...profile })) }
+  // A switch must land before any field edits so the edits target the profile
+  // the request switches to, whatever order the body's keys arrived in.
+  // Unshifting in reverse priority leaves them front-first in list order.
+  const entries = Object.entries(patch)
+  for (const key of ['activeProfileId', 'switchProfile', 'profiles']) {
+    const at = entries.findIndex(([entryKey]) => entryKey === key)
+    if (at !== -1) {
+      const moved = entries.splice(at, 1)[0]
+      if (moved !== undefined) entries.unshift(moved)
+    }
+  }
+  const mintId = (): string => {
+    for (;;) {
+      const id = makeId()
+      if (!next.profiles.some(profile => profile.id === id)) return id
+    }
+  }
+  for (const [key, value] of entries) {
     switch (key) {
       case 'provider': {
         if (typeof value !== 'string' || value.trim() === '') throw new Error('provider must be a non-empty string')
         next.provider = value.trim()
         break
       }
+      case 'profiles': {
+        next.profiles = coerceProfiles(value)
+        const first = next.profiles[0]
+        if (first !== undefined && !next.profiles.some(profile => profile.id === next.activeProfileId)) {
+          next.activeProfileId = first.id
+        }
+        break
+      }
+      case 'switchProfile':
+      case 'activeProfileId': {
+        if (typeof value !== 'string' || value === '') throw new Error(`${key} must be a profile id`)
+        if (!next.profiles.some(profile => profile.id === value)) throw new Error(`unknown profile "${value}"`)
+        next.activeProfileId = value
+        break
+      }
+      case 'renameProfile': {
+        const op = profileOpId(value, 'renameProfile')
+        if (typeof (value as { name?: unknown }).name !== 'string') throw new Error('renameProfile needs a name')
+        const profile = next.profiles.find(entry => entry.id === op)
+        if (profile === undefined) throw new Error(`unknown profile "${op}"`)
+        const name = ((value as { name: string }).name).trim()
+        if (name === '') throw new Error('profile name must be a non-empty string')
+        if (name.length > MAX_PROFILE_NAME_LENGTH) {
+          throw new Error(`profile name must be at most ${String(MAX_PROFILE_NAME_LENGTH)} characters`)
+        }
+        profile.name = name
+        break
+      }
+      case 'newProfile': {
+        if (next.profiles.length >= MAX_PROFILES) {
+          throw new Error(`at most ${String(MAX_PROFILES)} profiles can be saved`)
+        }
+        const requested = profileOpName(value, 'newProfile')
+        const base = activeProfile(next)
+        const created: ProviderProfile = {
+          id: mintId(),
+          name: requested ?? `Profile ${String(next.profiles.length + 1)}`,
+          model: base.model,
+          ...base.baseUrl !== undefined ? { baseUrl: base.baseUrl } : {},
+          ...base.apiKey !== undefined ? { apiKey: base.apiKey } : {},
+        }
+        next.profiles.push(created)
+        next.activeProfileId = created.id
+        break
+      }
+      case 'deleteProfile': {
+        const id = profileOpId(value, 'deleteProfile')
+        if (next.profiles.length <= 1) throw new Error('the last profile cannot be deleted')
+        const index = next.profiles.findIndex(entry => entry.id === id)
+        if (index === -1) throw new Error(`unknown profile "${id}"`)
+        next.profiles.splice(index, 1)
+        const remaining = next.profiles[0]
+        if (next.activeProfileId === id && remaining !== undefined) next.activeProfileId = remaining.id
+        break
+      }
       case 'model': {
         if (typeof value !== 'string' || value.trim() === '') throw new Error('model must be a non-empty string')
-        next.model = value.trim()
+        activeProfile(next).model = value.trim()
         break
       }
       case 'reasoningEffort': {
@@ -195,14 +319,15 @@ export function applySettingsPatch(current: ChatSettings, patch: Record<string, 
         break
       }
       case 'baseUrl': {
+        const target = activeProfile(next)
         if (value === null) {
-          delete next.baseUrl
+          delete target.baseUrl
           break
         }
         if (typeof value !== 'string') throw new Error('baseUrl must be a string')
         const trimmed = value.trim().replace(/\/+$/, '')
         if (trimmed === '') {
-          delete next.baseUrl
+          delete target.baseUrl
           break
         }
         try {
@@ -211,19 +336,20 @@ export function applySettingsPatch(current: ChatSettings, patch: Record<string, 
         } catch {
           throw new Error('baseUrl must be a valid http(s) URL')
         }
-        next.baseUrl = trimmed
+        target.baseUrl = trimmed
         break
       }
       case 'apiKey': {
+        const target = activeProfile(next)
         if (value === null) {
-          delete next.apiKey
+          delete target.apiKey
           break
         }
         if (typeof value !== 'string' || value.trim() === '') throw new Error('apiKey must be a non-empty string')
         if (value.length > MAX_API_KEY_LENGTH) {
           throw new Error(`apiKey must be at most ${String(MAX_API_KEY_LENGTH)} characters`)
         }
-        next.apiKey = value.trim()
+        target.apiKey = value.trim()
         break
       }
       case 'searchTool': {
@@ -240,10 +366,58 @@ export function applySettingsPatch(current: ChatSettings, patch: Record<string, 
   return next
 }
 
+/** Validate an unknown payload as profile entries; throws when none survive. */
+function coerceProfiles(value: unknown): ProviderProfile[] {
+  if (!Array.isArray(value)) throw new Error('profiles must be an array')
+  const profiles = value.map((entry): ProviderProfile | undefined => {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return undefined
+    const candidate = entry as Record<string, unknown>
+    if (typeof candidate.id !== 'string' || candidate.id === '') return undefined
+    if (typeof candidate.name !== 'string' || candidate.name.trim() === '') return undefined
+    if (typeof candidate.model !== 'string' || candidate.model.trim() === '') return undefined
+    return {
+      id: candidate.id,
+      name: candidate.name.trim(),
+      model: candidate.model.trim(),
+      ...typeof candidate.baseUrl === 'string' && candidate.baseUrl.trim() !== '' ? { baseUrl: candidate.baseUrl } : {},
+      ...typeof candidate.apiKey === 'string' && candidate.apiKey.trim() !== '' ? { apiKey: candidate.apiKey } : {},
+    }
+  }).filter((entry): entry is ProviderProfile => entry !== undefined)
+  if (profiles.length === 0) throw new Error('profiles must hold at least one valid profile')
+  if (new Set(profiles.map(profile => profile.id)).size !== profiles.length) {
+    throw new Error('profile ids must be unique')
+  }
+  return profiles.slice(0, MAX_PROFILES)
+}
+
+/** Pull the id out of a profile-operation body, or explain what is missing. */
+function profileOpId(value: unknown, op: string): string {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error(`${op} must be an object`)
+  const id = (value as { id?: unknown }).id
+  if (typeof id !== 'string' || id === '') throw new Error(`${op} needs a profile id`)
+  return id
+}
+
+/** Pull an optional trimmed name out of a profile-operation body. */
+function profileOpName(value: unknown, op: string): string | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error(`${op} must be an object`)
+  const name = (value as { name?: unknown }).name
+  if (name === undefined) return undefined
+  if (typeof name !== 'string') throw new Error(`${op} name must be a string`)
+  const trimmed = name.trim()
+  if (trimmed === '') return undefined
+  if (trimmed.length > MAX_PROFILE_NAME_LENGTH) {
+    throw new Error(`profile name must be at most ${String(MAX_PROFILE_NAME_LENGTH)} characters`)
+  }
+  return trimmed
+}
+
 /**
  * Load settings over the config defaults from the persisted JSON file's
  * contents. A missing or corrupt file falls back to the defaults — settings
- * are convenience, never a boot gate.
+ * are convenience, never a boot gate. A legacy flat file (model/baseUrl/
+ * apiKey without profiles) migrates onto a single default profile named
+ * after its endpoint's host.
  * @param raw - the file contents, or `undefined` when no file exists yet.
  * @param defaults - boot-time defaults (config, which folds the env seeds).
  * @returns the settings in force.
@@ -251,7 +425,8 @@ export function applySettingsPatch(current: ChatSettings, patch: Record<string, 
 export function parseSettingsFile(raw: string | undefined, defaults: Config): ChatSettings {
   const base: ChatSettings = {
     provider: defaults.provider,
-    model: defaults.model,
+    profiles: [{ id: 'default', name: 'Default', model: defaults.model }],
+    activeProfileId: 'default',
     ...defaults.reasoningEffort !== undefined ? { reasoningEffort: defaults.reasoningEffort } : {},
     ...defaults.temperature !== undefined ? { temperature: defaults.temperature } : {},
     persona: defaults.persona === '' ? DEFAULT_PERSONA : defaults.persona,
@@ -265,39 +440,60 @@ export function parseSettingsFile(raw: string | undefined, defaults: Config): Ch
     return base
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return base
+  const record = parsed as Record<string, unknown>
+  // A legacy flat file names its migrated profile after the gateway host.
+  const migrating = base.profiles[0]
+  if (migrating !== undefined && record.profiles === undefined && typeof record.baseUrl === 'string') {
+    migrating.name = deriveProfileName(record.baseUrl)
+  }
   try {
-    return applySettingsPatch(base, parsed as Record<string, unknown>)
+    return applySettingsPatch(base, record)
   } catch {
     return base
   }
 }
 
-/** Project settings into the JSON body served by `GET /api/config`. The API
- * key itself never crosses to the browser; only its presence does. */
+/** Project settings into the JSON body served by `GET /api/config`. The
+ * active profile supplies the flat fields; per-profile API keys never cross
+ * to the browser, only their presence does. */
 function settingsJson(settings: ChatSettings): Record<string, unknown> {
+  const active = activeProfile(settings)
   return {
     provider: settings.provider,
-    model: settings.model,
+    model: active.model,
     ...settings.reasoningEffort !== undefined ? { reasoningEffort: settings.reasoningEffort } : {},
     ...settings.temperature !== undefined ? { temperature: settings.temperature } : {},
     persona: settings.persona,
-    ...settings.baseUrl !== undefined ? { baseUrl: settings.baseUrl } : {},
-    apiKeySet: settings.apiKey !== undefined,
+    ...active.baseUrl !== undefined ? { baseUrl: active.baseUrl } : {},
+    apiKeySet: active.apiKey !== undefined,
     searchTool: settings.searchTool,
+    activeProfileId: settings.activeProfileId,
+    profiles: settings.profiles.map(profile => ({
+      id: profile.id,
+      name: profile.name,
+      model: profile.model,
+      ...profile.baseUrl !== undefined ? { baseUrl: profile.baseUrl } : {},
+      apiKeySet: profile.apiKey !== undefined,
+    })),
   }
 }
 
 /** Persist settings to disk; failures log but never break the request. The
- * file can hold an API key, so it is owner-only. */
+ * file can hold API keys, so it is owner-only. */
 async function persistSettings(path: string, settings: ChatSettings): Promise<void> {
   const body = `${JSON.stringify({
     provider: settings.provider,
-    model: settings.model,
+    profiles: settings.profiles.map(profile => ({
+      id: profile.id,
+      name: profile.name,
+      model: profile.model,
+      ...profile.baseUrl !== undefined ? { baseUrl: profile.baseUrl } : {},
+      ...profile.apiKey !== undefined ? { apiKey: profile.apiKey } : {},
+    })),
+    activeProfileId: settings.activeProfileId,
     ...settings.reasoningEffort !== undefined ? { reasoningEffort: settings.reasoningEffort } : {},
     ...settings.temperature !== undefined ? { temperature: settings.temperature } : {},
     persona: settings.persona,
-    ...settings.baseUrl !== undefined ? { baseUrl: settings.baseUrl } : {},
-    ...settings.apiKey !== undefined ? { apiKey: settings.apiKey } : {},
     searchTool: settings.searchTool,
   }, null, 2)}\n`
   await mkdir(dirname(path), { recursive: true, mode: 0o700 })
@@ -669,16 +865,18 @@ export function apply(ctx: Context, config: Config): void {
   }
 
   /**
-   * Push the key and endpoint into the live adapter seams. The key re-enters
-   * `process.env`, which llm-deepseek re-reads on every request; the endpoint
-   * goes through the settings service's `llm-deepseek` section, which the
-   * adapter re-resolves live (and `$DSH_HOME/settings.yaml` persists).
+   * Push the active profile's key and endpoint into the live adapter seams.
+   * The key re-enters `process.env`, which llm-deepseek re-reads on every
+   * request; the endpoint goes through the settings service's `llm-deepseek`
+   * section, which the adapter re-resolves live (and `$DSH_HOME/settings.yaml`
+   * persists).
    */
   async function applyLiveModelSettings(): Promise<void> {
-    const apiKey = settings.apiKey ?? bootApiKeyEnv
+    const active = activeProfile(settings)
+    const apiKey = active.apiKey ?? bootApiKeyEnv
     if (apiKey === undefined) delete process.env.DEEPSEEK_API_KEY
     else process.env.DEEPSEEK_API_KEY = apiKey
-    const baseURL = settings.baseUrl ?? bootBaseUrlEnv
+    const baseURL = active.baseUrl ?? bootBaseUrlEnv
     if (baseURL === undefined) return
     const settingsService = ctx.get('settings')
     if (settingsService === undefined) return
@@ -817,7 +1015,7 @@ export function apply(ctx: Context, config: Config): void {
   async function getOrCreateAgent(sessionId: string): Promise<AgentHandle> {
     const options: ConversationOptions = {
       provider: settings.provider,
-      model: settings.model,
+      model: activeProfile(settings).model,
       ...settings.reasoningEffort !== undefined ? { reasoningEffort: ReasoningEffortId(settings.reasoningEffort) } : {},
     }
     const existing = handles.get(sessionId)
@@ -1028,7 +1226,8 @@ export function apply(ctx: Context, config: Config): void {
     }
 
     if (req.method === 'GET' && parts.length === 1 && parts[0] === 'models') {
-      const base = (settings.baseUrl ?? process.env.DEEPSEEK_BASE_URL ?? PUBLIC_BASE_URL).replace(/\/+$/, '')
+      const active = activeProfile(settings)
+      const base = (active.baseUrl ?? process.env.DEEPSEEK_BASE_URL ?? PUBLIC_BASE_URL).replace(/\/+$/, '')
       const apiKey = process.env.DEEPSEEK_API_KEY ?? ''
       const response = await fetch(`${base}/models`, {
         ...apiKey !== '' ? { headers: { authorization: `Bearer ${apiKey}` } } : {},

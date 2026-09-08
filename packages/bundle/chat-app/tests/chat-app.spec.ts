@@ -88,15 +88,31 @@ const baseConfig: Config = {
 
 const baseSettings: ChatSettings = {
   provider: 'deepseek-official',
-  model: 'deepseek-chat',
+  profiles: [{ id: 'default', name: 'Default', model: 'deepseek-chat' }],
+  activeProfileId: 'default',
   persona: 'You are a helpful assistant.',
   searchTool: 'tiny-metasearch',
 }
 
+const twoProfiles: ChatSettings = {
+  ...baseSettings,
+  profiles: [
+    { id: 'a', name: 'Gateway A', model: 'model-a', baseUrl: 'https://a.example/v1', apiKey: 'key-a' },
+    { id: 'b', name: 'Gateway B', model: 'model-b' },
+  ],
+  activeProfileId: 'a',
+}
+
 describe('applySettingsPatch', () => {
-  it('applies each field and trims route strings', () => {
+  it('applies each field, trims route strings, and edits the active profile', () => {
     expect(applySettingsPatch(baseSettings, { provider: ' p ', model: ' m ', reasoningEffort: 'high', temperature: 0.3 }))
-      .toEqual({ ...baseSettings, provider: 'p', model: 'm', reasoningEffort: 'high', temperature: 0.3 })
+      .toEqual({
+        ...baseSettings,
+        provider: 'p',
+        reasoningEffort: 'high',
+        temperature: 0.3,
+        profiles: [{ id: 'default', name: 'Default', model: 'm' }],
+      })
   })
 
   it('clears optional fields with null and normalizes an empty persona', () => {
@@ -113,20 +129,85 @@ describe('applySettingsPatch', () => {
     expect(() => applySettingsPatch(baseSettings, { persona: 7 })).toThrow()
   })
 
-  it('trims and validates baseUrl and apiKey, clearing with null', () => {
-    expect(applySettingsPatch(baseSettings, { baseUrl: ' https://gw.example/v1/ ' }).baseUrl).toBe('https://gw.example/v1')
+  it('trims and validates the active profile baseUrl and apiKey, clearing with null', () => {
+    const withBase = applySettingsPatch(baseSettings, { baseUrl: ' https://gw.example/v1/ ' })
+    expect(withBase.profiles[0]?.baseUrl).toBe('https://gw.example/v1')
     expect(() => applySettingsPatch(baseSettings, { baseUrl: 'ftp://gw.example' })).toThrow('http(s) URL')
     expect(() => applySettingsPatch(baseSettings, { baseUrl: 'not a url' })).toThrow('http(s) URL')
     const withKey = applySettingsPatch(baseSettings, { apiKey: ' sk-abc ' })
-    expect(withKey.apiKey).toBe('sk-abc')
+    expect(withKey.profiles[0]?.apiKey).toBe('sk-abc')
     expect(() => applySettingsPatch(baseSettings, { apiKey: '   ' })).toThrow('non-empty')
-    expect(applySettingsPatch(withKey, { apiKey: null }).apiKey).toBeUndefined()
+    expect(applySettingsPatch(withKey, { apiKey: null }).profiles[0]?.apiKey).toBeUndefined()
   })
 
   it('switches the search tool between the two engines only', () => {
     expect(applySettingsPatch(baseSettings, { searchTool: 'user-chrome' }).searchTool).toBe('user-chrome')
     expect(applySettingsPatch(baseSettings, { searchTool: 'tiny-metasearch' }).searchTool).toBe('tiny-metasearch')
     expect(() => applySettingsPatch(baseSettings, { searchTool: 'deepseek-official' })).toThrow('searchTool')
+  })
+})
+
+describe('provider profiles', () => {
+  it('switches the active profile and rejects unknown ids', () => {
+    expect(applySettingsPatch(twoProfiles, { switchProfile: 'b' }).activeProfileId).toBe('b')
+    expect(() => applySettingsPatch(twoProfiles, { switchProfile: 'zz' })).toThrow('unknown profile "zz"')
+    expect(() => applySettingsPatch(twoProfiles, { activeProfileId: '' })).toThrow('profile id')
+  })
+
+  it('applies field edits after a switch, whatever the key order', () => {
+    const switched = applySettingsPatch(twoProfiles, { model: 'm-b', baseUrl: 'https://b.example/v1', switchProfile: 'b' })
+    expect(switched.activeProfileId).toBe('b')
+    expect(switched.profiles.find(profile => profile.id === 'b')).toMatchObject({ model: 'm-b', baseUrl: 'https://b.example/v1' })
+    expect(switched.profiles.find(profile => profile.id === 'a')).toMatchObject({ model: 'model-a', baseUrl: 'https://a.example/v1' })
+
+    const reordered = applySettingsPatch(twoProfiles, { switchProfile: 'b', apiKey: 'kb' })
+    expect(reordered.profiles.find(profile => profile.id === 'b')?.apiKey).toBe('kb')
+  })
+
+  it('renames with trimming and rejects empty, oversized, or unknown targets', () => {
+    expect(applySettingsPatch(twoProfiles, { renameProfile: { id: 'a', name: '  My gateway  ' } }).profiles[0]?.name)
+      .toBe('My gateway')
+    expect(() => applySettingsPatch(twoProfiles, { renameProfile: { id: 'a', name: '  ' } })).toThrow('non-empty')
+    expect(() => applySettingsPatch(twoProfiles, { renameProfile: { id: 'a', name: 'x'.repeat(61) } })).toThrow('at most 60')
+    expect(() => applySettingsPatch(twoProfiles, { renameProfile: { id: 'zz', name: 'n' } })).toThrow('unknown profile')
+    expect(() => applySettingsPatch(twoProfiles, { renameProfile: { id: 'a' } })).toThrow('needs a name')
+  })
+
+  it('creates a profile copying the active endpoint, activates it, and mints a fresh id', () => {
+    let calls = 0
+    const created = applySettingsPatch(twoProfiles, { newProfile: { name: ' Sandbox ' } }, () => {
+      calls += 1
+      return calls === 1 ? 'a' : 'fresh'
+    })
+    expect(created.profiles).toHaveLength(3)
+    expect(created.activeProfileId).toBe('fresh')
+    expect(created.profiles.find(profile => profile.id === 'fresh')).toMatchObject({
+      name: 'Sandbox', model: 'model-a', baseUrl: 'https://a.example/v1', apiKey: 'key-a',
+    })
+    expect(applySettingsPatch(twoProfiles, { newProfile: {} }).profiles[2]?.name).toBe('Profile 3')
+  })
+
+  it('deletes a profile, refusing the last one and reactivating the survivor', () => {
+    expect(() => applySettingsPatch(baseSettings, { deleteProfile: { id: 'default' } })).toThrow('last profile')
+    expect(() => applySettingsPatch(twoProfiles, { deleteProfile: { id: 'zz' } })).toThrow('unknown profile')
+    const deleted = applySettingsPatch(twoProfiles, { deleteProfile: { id: 'a' } })
+    expect(deleted.profiles).toEqual([{ id: 'b', name: 'Gateway B', model: 'model-b' }])
+    expect(deleted.activeProfileId).toBe('b')
+    const deletedIdle = applySettingsPatch(twoProfiles, { deleteProfile: { id: 'b' } })
+    expect(deletedIdle.activeProfileId).toBe('a')
+  })
+
+  it('replaces the profile list wholesale, healing the active id and dropping bad entries', () => {
+    const replaced = applySettingsPatch(twoProfiles, {
+      profiles: [{ id: 'x', name: 'X', model: 'mx' }, 'junk', { id: 'y', name: ' ', model: 'my' }],
+    })
+    expect(replaced.profiles).toEqual([{ id: 'x', name: 'X', model: 'mx' }])
+    expect(replaced.activeProfileId).toBe('x')
+    expect(() => applySettingsPatch(twoProfiles, { profiles: [] })).toThrow('at least one')
+    expect(() => applySettingsPatch(twoProfiles, { profiles: 'nope' })).toThrow('array')
+    expect(() => applySettingsPatch(twoProfiles, {
+      profiles: [{ id: 'p', name: 'P', model: 'm' }, { id: 'p', name: 'P2', model: 'm2' }],
+    })).toThrow('unique')
   })
 })
 
@@ -139,10 +220,52 @@ describe('parseSettingsFile', () => {
     expect(parseSettingsFile('{oops', baseConfig)).toEqual(baseSettings)
   })
 
-  it('overlays a valid persisted file', () => {
+  it('overlays a valid persisted file onto the default profile', () => {
     const raw = JSON.stringify({ model: 'qwen3.8-flash-next', reasoningEffort: 'off', temperature: 0.7 })
     expect(parseSettingsFile(raw, baseConfig))
-      .toEqual({ ...baseSettings, model: 'qwen3.8-flash-next', reasoningEffort: 'off', temperature: 0.7 })
+      .toEqual({
+        ...baseSettings,
+        reasoningEffort: 'off',
+        temperature: 0.7,
+        profiles: [{ id: 'default', name: 'Default', model: 'qwen3.8-flash-next' }],
+      })
+  })
+
+  it('names a migrated legacy profile after its gateway host', () => {
+    const parsed = parseSettingsFile(JSON.stringify({
+      model: 'm2',
+      baseUrl: 'https://mllm.dreamingengineer.com/v1',
+      apiKey: 'k',
+    }), baseConfig)
+    expect(parsed.profiles).toEqual([{
+      id: 'default',
+      name: 'mllm.dreamingengineer.com',
+      model: 'm2',
+      baseUrl: 'https://mllm.dreamingengineer.com/v1',
+      apiKey: 'k',
+    }])
+    expect(parsed.activeProfileId).toBe('default')
+  })
+
+  it('round-trips a modern profiled file', () => {
+    const parsed = parseSettingsFile(JSON.stringify({
+      provider: 'deepseek-official',
+      profiles: [
+        { id: 'a', name: 'Gateway A', model: 'model-a', baseUrl: 'https://a.example/v1', apiKey: 'key-a' },
+        { id: 'b', name: 'Gateway B', model: 'model-b' },
+      ],
+      activeProfileId: 'b',
+      persona: 'custom persona',
+    }), baseConfig)
+    expect(parsed).toEqual({
+      ...baseSettings,
+      profiles: [
+        { id: 'a', name: 'Gateway A', model: 'model-a', baseUrl: 'https://a.example/v1', apiKey: 'key-a' },
+        { id: 'b', name: 'Gateway B', model: 'model-b' },
+      ],
+      activeProfileId: 'b',
+      persona: 'custom persona',
+    })
   })
 
   it('falls back when the file carries an unknown key', () => {
@@ -195,27 +318,28 @@ describe('applySettingsPatch — boundary corners', () => {
   it('accepts the exact persona and API-key caps and rejects one over', () => {
     expect(applySettingsPatch(baseSettings, { persona: 'p'.repeat(4000) }).persona).toBe('p'.repeat(4000))
     expect(() => applySettingsPatch(baseSettings, { persona: 'p'.repeat(4001) })).toThrow()
-    expect(applySettingsPatch(baseSettings, { apiKey: 'k'.repeat(500) }).apiKey).toBe('k'.repeat(500))
+    expect(applySettingsPatch(baseSettings, { apiKey: 'k'.repeat(500) }).profiles[0]?.apiKey).toBe('k'.repeat(500))
     expect(() => applySettingsPatch(baseSettings, { apiKey: 'k'.repeat(501) })).toThrow()
   })
 
   it('keeps internal spaces and case in route strings, trimming only the edges', () => {
-    expect(applySettingsPatch(baseSettings, { model: ' qwen 3.5 Flash ' }).model).toBe('qwen 3.5 Flash')
+    expect(applySettingsPatch(baseSettings, { model: ' qwen 3.5 Flash ' }).profiles[0]?.model).toBe('qwen 3.5 Flash')
   })
 })
 
 describe('applySettingsPatch — baseUrl corners', () => {
   it('accepts local hosts, uppercase schemes, and multi-trailing-slash trims', () => {
-    expect(applySettingsPatch(baseSettings, { baseUrl: 'http://localhost:11434' }).baseUrl).toBe('http://localhost:11434')
-    expect(applySettingsPatch(baseSettings, { baseUrl: 'HTTPS://GW.EXAMPLE/V1' }).baseUrl).toBe('HTTPS://GW.EXAMPLE/V1')
-    expect(applySettingsPatch(baseSettings, { baseUrl: 'https://gw.example/v1///' }).baseUrl).toBe('https://gw.example/v1')
+    expect(applySettingsPatch(baseSettings, { baseUrl: 'http://localhost:11434' }).profiles[0]?.baseUrl).toBe('http://localhost:11434')
+    expect(applySettingsPatch(baseSettings, { baseUrl: 'HTTPS://GW.EXAMPLE/V1' }).profiles[0]?.baseUrl).toBe('HTTPS://GW.EXAMPLE/V1')
+    expect(applySettingsPatch(baseSettings, { baseUrl: 'https://gw.example/v1///' }).profiles[0]?.baseUrl).toBe('https://gw.example/v1')
   })
 
   it('rejects bare schemes, embedded spaces, and empty-after-trim values that stay set', () => {
     expect(() => applySettingsPatch(baseSettings, { baseUrl: 'https://' })).toThrow('http(s) URL')
     expect(() => applySettingsPatch(baseSettings, { baseUrl: 'https://ex ample.com' })).toThrow('http(s) URL')
     // Whitespace-only clears the override rather than throwing.
-    expect(applySettingsPatch({ ...baseSettings, baseUrl: 'https://x' }, { baseUrl: '   ' }).baseUrl).toBeUndefined()
+    const withOverride: ChatSettings = { ...baseSettings, profiles: [{ id: 'default', name: 'Default', model: 'deepseek-chat', baseUrl: 'https://x' }] }
+    expect(applySettingsPatch(withOverride, { baseUrl: '   ' }).profiles[0]?.baseUrl).toBeUndefined()
   })
 })
 
