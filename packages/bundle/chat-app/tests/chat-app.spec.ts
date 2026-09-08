@@ -18,6 +18,7 @@ import {
   type Config,
 } from '../src/index.ts'
 import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
+import { interpretProbeOutcome, probeMessages } from '../src/capabilities.ts'
 
 function surfaceEvent(type: string, data: unknown): SessionEvent {
   return {
@@ -583,5 +584,37 @@ describe('parseSettingsFile — hostile profile files', () => {
       profiles: [{ id: 'a', name: ' A ', model: ' m ', baseUrl: '  ', apiKey: '  ' }],
     }), baseConfig)
     expect(parsed.profiles).toEqual([{ id: 'a', name: 'A', model: 'm' }])
+  })
+})
+
+describe('capability probe helpers', () => {
+  it('accepts on any 2xx and rejects only on content-type-worded client errors', () => {
+    expect(interpretProbeOutcome(200, '')).toBe('yes')
+    expect(interpretProbeOutcome(204, '')).toBe('yes')
+    expect(interpretProbeOutcome(400, 'image input is not supported')).toBe('no')
+    expect(interpretProbeOutcome(415, 'unsupported media type: video/mp4')).toBe('no')
+    expect(interpretProbeOutcome(422, 'multimodal input rejected')).toBe('no')
+    expect(interpretProbeOutcome(400, 'max_tokens must be positive')).toBe('unknown')
+  })
+
+  it('stays unknown for auth, rate limits, missing models, and server errors', () => {
+    for (const status of [401, 403, 404, 429, 500, 502]) {
+      expect(interpretProbeOutcome(status, 'anything')).toBe('unknown')
+    }
+  })
+
+  it('builds the minimal multimodal message with decodable fixtures', () => {
+    const image = probeMessages('image')[0]?.content as { type: string; image_url?: { url: string } }[]
+    expect(image[0]?.type).toBe('image_url')
+    expect(image[1]).toEqual({ type: 'text', text: 'hi' })
+    const png = Buffer.from(String(image[0]?.image_url?.url).split(',')[1] ?? '', 'base64')
+    expect(png.at(0)).toBe(0x89)
+    expect(png.subarray(1, 4).toString()).toBe('PNG')
+
+    const video = probeMessages('video')[0]?.content as { type: string; video_url?: { url: string } }[]
+    expect(video[0]?.type).toBe('video_url')
+    const mp4 = Buffer.from(String(video[0]?.video_url?.url).split(',')[1] ?? '', 'base64')
+    expect(mp4.subarray(4, 8).toString()).toBe('ftyp')
+    expect(mp4.byteLength).toBeGreaterThan(0)
   })
 })

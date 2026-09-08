@@ -28,6 +28,7 @@ import { dirname, extname, join, resolve, sep } from 'node:path'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { TinyMetasearchProvider } from '@deepseek-ai/dsh-web-search-tiny/src/provider.ts'
 import { ExtensionBridge } from '@deepseek-ai/dsh-web-search-chrome/src/bridge.ts'
+import { probeModelAbilities, type ModelAbilities } from './capabilities.ts'
 import { routeSearchTarget, toSources, UserChromeSearchProvider } from '@deepseek-ai/dsh-web-search-chrome/src/provider.ts'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
@@ -937,6 +938,9 @@ export function apply(ctx: Context, config: Config): void {
     webEngine: config.chromeWebEngine,
   })
   const extensionBridge = new ExtensionBridge()
+  // Probe answers per model id; abilities do not change within a run, so
+  // one probe per model is enough and the panel re-checks on demand.
+  const abilityCache = new Map<string, ModelAbilities>()
   type ChromeSearchOutcome = {
     engine: 'extension' | 'cdp'
     result: Awaited<ReturnType<UserChromeSearchProvider['search']>>
@@ -1406,6 +1410,30 @@ export function apply(ctx: Context, config: Config): void {
       const entry = handles.get(sessionId)
       if (entry !== undefined) entry.handle.agent.cancel({ kind: 'user' })
       sendJson(res, 200, { stopped: entry !== undefined })
+      return
+    }
+
+    // Model input-modalities: the endpoint's /models list says nothing about
+    // them, so the answer comes from probing the model itself with a minimal
+    // image and video part. Cached per model id for the process's life.
+    if (req.method === 'POST' && parts.length === 1 && parts[0] === 'capabilities') {
+      const body = await readJsonBody(req)
+      const active = activeProfile(settings)
+      const model = typeof body.model === 'string' && body.model.trim() !== '' ? body.model.trim() : active.model
+      const cached = abilityCache.get(model)
+      if (cached !== undefined) {
+        sendJson(res, 200, cached)
+        return
+      }
+      const base = (active.baseUrl ?? process.env.DEEPSEEK_BASE_URL ?? PUBLIC_BASE_URL).replace(/\/+$/, '')
+      const outcome = await probeModelAbilities({
+        base,
+        apiKey: process.env.DEEPSEEK_API_KEY ?? '',
+        model,
+        timeoutMs: 15_000,
+      })
+      abilityCache.set(model, outcome)
+      sendJson(res, 200, outcome)
       return
     }
 
