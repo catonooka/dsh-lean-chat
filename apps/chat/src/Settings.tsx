@@ -2,12 +2,14 @@
 
 import { useEffect, useState, type JSX } from 'react'
 import {
+  checkModelAbilities,
   fetchChromeStatus,
   fetchModels,
   testChromeSearch,
   updateConfig,
   type AppConfig,
   type ChromeStatus,
+  type ModelAbilities,
   type ProfileInfo,
   type SettingsPatch,
 } from './api.ts'
@@ -77,6 +79,8 @@ export function SettingsPanel({ config, theme, onTheme, onApplied, onSaved, onCl
     config.searchTool === 'user-chrome' ? 'user-chrome' : 'tiny-metasearch')
   const [models, setModels] = useState<string[]>([])
   const [loadingModels, setLoadingModels] = useState(false)
+  const [abilities, setAbilities] = useState<ModelAbilities | undefined>(undefined)
+  const [checkingAbilities, setCheckingAbilities] = useState(false)
   const [saving, setSaving] = useState(false)
   const [chromeStatus, setChromeStatus] = useState<ChromeStatus | undefined>(undefined)
   const [chromeTesting, setChromeTesting] = useState(false)
@@ -131,6 +135,17 @@ export function SettingsPanel({ config, theme, onTheme, onApplied, onSaved, onCl
       setError(err instanceof Error ? err.message : String(err))
     } finally {
       setLoadingModels(false)
+    }
+  }
+
+  const runAbilityCheck = async (): Promise<void> => {
+    setCheckingAbilities(true)
+    try {
+      setAbilities(await checkModelAbilities(model))
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setCheckingAbilities(false)
     }
   }
 
@@ -302,7 +317,18 @@ export function SettingsPanel({ config, theme, onTheme, onApplied, onSaved, onCl
             >
               {loadingModels ? '…' : 'Load list'}
             </button>
+            <button
+              type="button"
+              className="models-load"
+              disabled={checkingAbilities}
+              onClick={() => { void runAbilityCheck() }}
+            >
+              {checkingAbilities ? '…' : 'Check abilities'}
+            </button>
           </div>
+          {abilities !== undefined
+            ? <span className="settings-hint model-abilities">{abilitiesLine(abilities)}</span>
+            : undefined}
           {models.length > 0
             ? (
               <select
@@ -513,6 +539,19 @@ export function SettingsPanel({ config, theme, onTheme, onApplied, onSaved, onCl
       </div>
     </div>
   )
+}
+
+/** One verdict cell: ✓ accepted, ✗ rejected, ? the probe could not tell. */
+function verdictMark(verdict: 'yes' | 'no' | 'unknown'): string {
+  return verdict === 'yes' ? '✓' : verdict === 'no' ? '✗' : '?'
+}
+
+/** The abilities line shown under the model row. */
+function abilitiesLine(abilities: ModelAbilities): string {
+  return `${abilities.model}: image ${verdictMark(abilities.image)} · video ${verdictMark(abilities.video)}`
+    + (abilities.image === 'unknown' && abilities.video === 'unknown'
+      ? ' — the endpoint would not answer a probe'
+      : '')
 }
 
 /** Map a config effort to the segmented control's always-selected state. */

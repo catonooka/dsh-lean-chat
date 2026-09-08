@@ -116,6 +116,22 @@ export function fetchModels(): Promise<string[]> {
   return fetchJson<{ models: string[] }>('/api/models').then(body => body.models)
 }
 
+/** Input modalities of one model, as probed server-side. */
+export interface ModelAbilities {
+  model: string
+  image: 'yes' | 'no' | 'unknown'
+  video: 'yes' | 'no' | 'unknown'
+}
+
+/** Probe whether a model accepts image and video input parts. */
+export function checkModelAbilities(model?: string): Promise<ModelAbilities> {
+  return fetchJson<ModelAbilities>('/api/capabilities', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(model === undefined ? {} : { model }),
+  })
+}
+
 export interface ProviderInfo {
   id: string
   name: string
