@@ -134,6 +134,11 @@ export function contentHasImage(content: readonly ContentBlock[]): boolean {
  * @param content - typed model content blocks.
  * @returns whether any nested block is a file.
  */
+export function contentHasVideo(content: readonly ContentBlock[]): boolean {
+  return content.some(block => block.type === 'video'
+    || (block.type === 'tool-result' && contentHasVideo(block.content)))
+}
+
 export function contentHasFile(content: readonly ContentBlock[]): boolean {
   return content.some(block => block.type === 'file'
     || (block.type === 'tool-result' && contentHasFile(block.content)))
