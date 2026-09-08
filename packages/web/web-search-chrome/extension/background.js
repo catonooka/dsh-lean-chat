@@ -151,7 +151,15 @@ function decodeEntities(text) {
 }
 
 function textify(fragment) {
-  return decodeEntities(fragment.replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]*>/g, ' ')).replace(/\s+/g, ' ')
+  // Drop a tag the window cut in half, blank script/style bodies, turn block
+  // boundaries into spaces, and remove the rest without wedging words apart.
+  return decodeEntities(
+    fragment
+      .replace(/<[^>]*$/, '')
+      .replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, ' ')
+      .replace(/<\/(?:a|h[1-6]|li|p|div|td|tr)\b[^>]*>|<br\b[^>]*>/gi, ' ')
+      .replace(/<[^>]*>/g, ''),
+  ).replace(/\s+/g, ' ')
 }
 
 async function xSearch(query, maxResults) {
