@@ -32,6 +32,15 @@ export interface SearchHit {
   updatedAt: number
 }
 
+/** One saved provider profile as the server serves it (never its key). */
+export interface ProfileInfo {
+  id: string
+  name: string
+  model: string
+  baseUrl?: string
+  apiKeySet?: boolean
+}
+
 export interface AppConfig {
   provider: string
   model: string
@@ -41,6 +50,8 @@ export interface AppConfig {
   baseUrl?: string
   apiKeySet?: boolean
   searchTool?: string
+  activeProfileId?: string
+  profiles?: ProfileInfo[]
 }
 
 /** One partial settings update; `null` clears an optional field. */
@@ -53,6 +64,11 @@ export interface SettingsPatch {
   baseUrl?: string | null
   apiKey?: string
   searchTool?: string
+  /** Make this profile active; its fields become the flat projection. */
+  switchProfile?: string
+  renameProfile?: { id: string; name: string }
+  newProfile?: { name?: string }
+  deleteProfile?: { id: string }
 }
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {

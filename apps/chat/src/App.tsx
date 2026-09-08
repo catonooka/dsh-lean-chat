@@ -590,6 +590,7 @@ export default function App(): JSX.Element {
             config={config}
             theme={theme}
             onTheme={setTheme}
+            onApplied={setConfig}
             onSaved={(next) => {
               setConfig(next)
               setSettingsOpen(false)

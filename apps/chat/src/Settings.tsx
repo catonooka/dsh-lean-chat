@@ -4,12 +4,11 @@ import { useEffect, useState, type JSX } from 'react'
 import {
   fetchChromeStatus,
   fetchModels,
-  fetchProviders,
   testChromeSearch,
   updateConfig,
   type AppConfig,
   type ChromeStatus,
-  type ProviderInfo,
+  type ProfileInfo,
   type SettingsPatch,
 } from './api.ts'
 
@@ -56,12 +55,18 @@ interface SettingsProps {
   config: AppConfig
   theme: Theme
   onTheme: (theme: Theme) => void
+  /** A server-applied update that keeps the panel open (profile operations). */
+  onApplied: (config: AppConfig) => void
+  /** The Save button's update, which also closes the panel. */
   onSaved: (config: AppConfig) => void
   onClose: () => void
 }
 
-export function SettingsPanel({ config, theme, onTheme, onSaved, onClose }: SettingsProps): JSX.Element {
-  const [provider, setProvider] = useState(config.provider)
+export function SettingsPanel({ config, theme, onTheme, onApplied, onSaved, onClose }: SettingsProps): JSX.Element {
+  const [profiles, setProfiles] = useState<ProfileInfo[]>(config.profiles ?? [])
+  const [activeId, setActiveId] = useState(config.activeProfileId ?? config.profiles?.[0]?.id ?? '')
+  const [renaming, setRenaming] = useState(false)
+  const [nameDraft, setNameDraft] = useState('')
   const [model, setModel] = useState(config.model)
   const [effort, setEffort] = useState<'off' | 'low' | 'high' | 'max'>(effortOf(config.reasoningEffort))
   const [temperature, setTemperature] = useState<number | undefined>(config.temperature)
@@ -72,17 +77,25 @@ export function SettingsPanel({ config, theme, onTheme, onSaved, onClose }: Sett
     config.searchTool === 'user-chrome' ? 'user-chrome' : 'tiny-metasearch')
   const [models, setModels] = useState<string[]>([])
   const [loadingModels, setLoadingModels] = useState(false)
-  const [providers, setProviders] = useState<ProviderInfo[]>([])
   const [saving, setSaving] = useState(false)
   const [chromeStatus, setChromeStatus] = useState<ChromeStatus | undefined>(undefined)
   const [chromeTesting, setChromeTesting] = useState(false)
   const [chromeTest, setChromeTest] = useState<string | undefined>(undefined)
   const [showChromeHelp, setShowChromeHelp] = useState(false)
-
-  useEffect(() => {
-    fetchProviders().then(setProviders).catch(() => { /* the row falls back to raw text */ })
-  }, [])
   const [error, setError] = useState<string | undefined>(undefined)
+
+  /** Adopt a server response: refresh the profile list and re-seed the rows
+   * from the profile that is now active, keeping the panel open. */
+  const adopt = (next: AppConfig): void => {
+    onApplied(next)
+    setProfiles(next.profiles ?? [])
+    const active = next.profiles?.find(profile => profile.id === next.activeProfileId) ?? next.profiles?.[0]
+    setActiveId(next.activeProfileId ?? active?.id ?? '')
+    setModel(active?.model ?? next.model)
+    setBaseUrl(active?.baseUrl ?? next.baseUrl ?? '')
+    setApiKey('')
+    setModels([])
+  }
 
   // The connection row lives only while "Your Chrome" is selected, and its
   // state is the server's view (the extension's heartbeat), so it polls.
@@ -121,6 +134,36 @@ export function SettingsPanel({ config, theme, onTheme, onSaved, onClose }: Sett
     }
   }
 
+  /** Switching is local until Save: the rows re-seed from the target profile. */
+  const selectProfile = (id: string): void => {
+    if (id === activeId) return
+    setActiveId(id)
+    const target = profiles.find(profile => profile.id === id)
+    setModel(target?.model ?? model)
+    setBaseUrl(target?.baseUrl ?? '')
+    setApiKey('')
+    setModels([])
+    setRenaming(false)
+  }
+
+  const runProfileOp = async (patch: SettingsPatch): Promise<void> => {
+    setSaving(true)
+    try {
+      adopt(await updateConfig(patch))
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const commitRename = async (): Promise<void> => {
+    const name = nameDraft.trim()
+    if (name === '') return
+    setRenaming(false)
+    await runProfileOp({ renameProfile: { id: activeId, name } })
+  }
+
   const runChromeTest = async (): Promise<void> => {
     setChromeTesting(true)
     setChromeTest(undefined)
@@ -140,7 +183,8 @@ export function SettingsPanel({ config, theme, onTheme, onSaved, onClose }: Sett
   const save = async (): Promise<void> => {
     setSaving(true)
     try {
-      const patch: SettingsPatch = { provider, model, reasoningEffort: effort, persona, searchTool }
+      const patch: SettingsPatch = { model, reasoningEffort: effort, persona, searchTool }
+      if (activeId !== (config.activeProfileId ?? config.profiles?.[0]?.id)) patch.switchProfile = activeId
       if (temperature === undefined) patch.temperature = null
       else patch.temperature = temperature
       const trimmedBase = baseUrl.trim()
@@ -173,34 +217,73 @@ export function SettingsPanel({ config, theme, onTheme, onSaved, onClose }: Sett
           </button>
         </div>
 
-        <label className="settings-row">
-          <span className="settings-label">Provider</span>
-          {providers.length > 0
+        <div className="settings-row">
+          <span className="settings-label">Profile</span>
+          {renaming
             ? (
-              <select
-                aria-label="Provider"
-                value={providers.some(candidate => candidate.id === provider) ? provider : ''}
-                onChange={(event) => {
-                  if (event.target.value !== '') setProvider(event.target.value)
-                }}
-              >
-                {!providers.some(candidate => candidate.id === provider) ? <option value="">{provider}</option> : undefined}
-                {providers.map(candidate => (
-                  <option key={candidate.id} value={candidate.id}>
-                    {candidate.name === candidate.id ? candidate.id : `${candidate.name} (${candidate.id})`}
-                  </option>
-                ))}
-              </select>
+              <div className="model-row">
+                <input
+                  type="text"
+                  value={nameDraft}
+                  spellCheck={false}
+                  autoFocus
+                  aria-label="Profile name"
+                  onChange={(event) => { setNameDraft(event.target.value) }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') void commitRename()
+                    if (event.key === 'Escape') setRenaming(false)
+                  }}
+                />
+                <button type="button" className="models-load" disabled={saving} onClick={() => { void commitRename() }}>
+                  Save name
+                </button>
+                <button type="button" className="models-load" onClick={() => { setRenaming(false) }}>
+                  Cancel
+                </button>
+              </div>
             )
             : (
-              <input
-                type="text"
-                value={provider}
-                spellCheck={false}
-                onChange={(event) => { setProvider(event.target.value) }}
-              />
+              <div className="model-row">
+                <select
+                  aria-label="Provider profile"
+                  value={activeId}
+                  onChange={(event) => { selectProfile(event.target.value) }}
+                >
+                  {profiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
+                </select>
+                <button
+                  type="button"
+                  className="models-load"
+                  onClick={() => {
+                    setNameDraft(profiles.find(profile => profile.id === activeId)?.name ?? '')
+                    setRenaming(true)
+                  }}
+                >
+                  Rename
+                </button>
+                <button
+                  type="button"
+                  className="models-load"
+                  disabled={saving}
+                  onClick={() => { void runProfileOp({ newProfile: {} }) }}
+                >
+                  New
+                </button>
+                <button
+                  type="button"
+                  className="models-load"
+                  disabled={saving || profiles.length <= 1}
+                  onClick={() => { void runProfileOp({ deleteProfile: { id: activeId } }) }}
+                >
+                  Delete
+                </button>
+              </div>
             )}
-        </label>
+          <span className="settings-hint">
+            Each profile keeps its own endpoint, key, and model; the rows below edit the selected one. Every
+            {' '}profile runs on the same OpenAI-compatible adapter.
+          </span>
+        </div>
 
         <label className="settings-row">
           <span className="settings-label">Model</span>
