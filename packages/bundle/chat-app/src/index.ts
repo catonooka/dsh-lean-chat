@@ -544,16 +544,23 @@ export function apply(ctx: Context, config: Config): void {
   })
 
   // The persona is the whole system prompt, and the settings panel owns it:
-  // one dynamic section evaluated per request keeps panel edits live. The
-  // conversation model must also know what day it is, or it bakes its stale
-  // training-cutoff year into time-relative tool calls ("giá vàng hôm nay
-  // 2025") — one dynamic line right after the persona is the leanest honest
-  // fix: ~10 tokens.
+  // one dynamic section evaluated per request keeps panel edits live. Two
+  // app-owned lines follow it. The reply-language anchor exists because
+  // Chinese-base models occasionally drift on Sino-Vietnamese input
+  // ("mâu thuẫn" → a Chinese 矛盾 essay); pinning the reply to the user's
+  // last message costs ~10 tokens and survives persona edits. The current
+  // date stops the model baking its stale training-cutoff year into
+  // time-relative tool calls ("giá vàng hôm nay 2025").
   ctx.inject(['systemPrompt'], (promptCtx) => {
     promptCtx.systemPrompt.section({
       name: 'app:persona',
       order: promptCtx.systemPrompt.getSectionOrder('DEPLOYMENT_PERSONA_PREFIX'),
       text: () => settings.persona,
+    })
+    promptCtx.systemPrompt.section({
+      name: 'app:reply-language',
+      order: promptCtx.systemPrompt.getSectionOrder('DEPLOYMENT_PERSONA_SUFFIX'),
+      text: 'Always reply in the language of the user\'s most recent message.',
     })
     promptCtx.systemPrompt.section({
       name: 'app:current-date',

@@ -22,9 +22,13 @@ context**.
   to switch to DeepSeek's native server-side search instead (needs
   `DEEPSEEK_API_KEY`).
 - **Tiny initial context.** The system prompt is one persona line
-  (`DSH_CHAT_PERSONA`, default `You are a helpful assistant.`) and the only
-  tool schema is the single-param `web_search`. No harness identity, runtime
-  context, workspace, or skill sections are mounted at all.
+  (`DSH_CHAT_PERSONA`, default `You are a helpful assistant.`) plus two
+  app-owned lines — a reply-language anchor ("reply in the language of the
+  user's most recent message", which stops Chinese-base models drifting to
+  Chinese on Sino-Vietnamese input) and the current date (which stops stale
+  years in time-relative searches). The only tool schema is the single-param
+  `web_search`. No harness identity, runtime context, workspace, or skill
+  sections are mounted at all.
 - **A clean, minimal UI** (`apps/chat`): sidebar with the conversation list,
   a centered 720px thread with streaming, markdown, and expandable
   search-result chips, and a composer with Enter-to-send and a stop button.
