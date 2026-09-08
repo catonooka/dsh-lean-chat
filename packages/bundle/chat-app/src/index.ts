@@ -31,8 +31,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { createUserMessage, ReasoningEffortId, type ContentBlock } from '@deepseek-ai/dsh-llm'
 import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
+import { SessionQueryError, SessionSearchCursor, type SessionSearchHit, type SessionSearchPage } from '@deepseek-ai/dsh-session-query'
 import type { AgentHandle } from '@deepseek-ai/dsh-agent'
-import type {} from '@deepseek-ai/dsh-session-query'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 
 /** Stable Cordis plugin name. */
@@ -189,6 +189,59 @@ async function persistSettings(path: string, settings: ChatSettings): Promise<vo
   await writeFile(path, `${JSON.stringify(settingsJson(settings), null, 2)}\n`, 'utf8')
 }
 
+/** One page of the sidebar list plus the full filtered count. */
+export interface SessionPage<T> {
+  page: readonly T[]
+  total: number
+}
+
+/**
+ * Select one sidebar-list page from records that are already in
+ * deterministic newest-first order. `limit` defaults to 20 (clamped 1–100)
+ * and `offset` to 0 (floored), so malformed query strings fall back to the
+ * first page instead of failing the request.
+ * @param records - newest-first session records.
+ * @param limitRaw - the raw `limit` query value.
+ * @param offsetRaw - the raw `offset` query value.
+ * @returns the page slice and the total record count.
+ */
+export function paginateSessions<T>(
+  records: readonly T[],
+  limitRaw: string | null,
+  offsetRaw: string | null,
+): SessionPage<T> {
+  const parsedLimit = Number.parseInt(limitRaw ?? '', 10)
+  const parsedOffset = Number.parseInt(offsetRaw ?? '', 10)
+  const limit = Math.min(
+    Math.max(Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : DEFAULT_SESSION_PAGE, 1),
+    MAX_SESSION_PAGE,
+  )
+  const offset = Number.isFinite(parsedOffset) && parsedOffset > 0 ? parsedOffset : 0
+  return { page: records.slice(offset, offset + limit), total: records.length }
+}
+
+/**
+ * Normalize one sidebar search query: trimmed, non-empty, capped, NUL-free —
+ * mirroring the main surface's contract.
+ * @param query - the raw `q` value.
+ * @returns the normalized query; throws on any invalid input.
+ */
+export function normalizeSearchQuery(query: string): string {
+  const normalized = query.trim()
+  if (normalized.length === 0) throw new Error('search query must not be empty')
+  if (normalized.length > MAX_SEARCH_QUERY_CHARS) {
+    throw new Error(`search query must contain at most ${String(MAX_SEARCH_QUERY_CHARS)} characters`)
+  }
+  if (normalized.includes('\0')) throw new Error('search query must not contain NUL')
+  return normalized
+}
+
+/** Clip one snippet to the code-point budget with an ellipsis. */
+function truncateSnippet(text: string): string {
+  const points = Array.from(text)
+  return points.length <= SNIPPET_MAX_CODE_POINTS ? text : `${points.slice(0, SNIPPET_MAX_CODE_POINTS).join('')}…`
+}
+
 /** The agent-creation options derived from settings. */
 interface ConversationOptions {
   provider: string
@@ -209,6 +262,21 @@ const MAX_BODY_BYTES = 1_000_000
 
 /** Largest single source list retained in a projected history item. */
 const MAX_TOOL_SOURCES = 8
+
+/** Default sidebar-list page size. */
+const DEFAULT_SESSION_PAGE = 20
+
+/** Largest accepted sidebar-list page. */
+const MAX_SESSION_PAGE = 100
+
+/** Search page size, mirroring the main surface's cap. */
+const SEARCH_PAGE_LIMIT = 20
+
+/** Longest accepted search query. */
+const MAX_SEARCH_QUERY_CHARS = 500
+
+/** Longest snippet served per search hit, in code points. */
+const SNIPPET_MAX_CODE_POINTS = 240
 
 const HTML_MIME = 'text/html; charset=utf-8'
 
@@ -439,6 +507,22 @@ export function apply(ctx: Context, config: Config): void {
     if (open.size === 0) streams.delete(sessionId)
   }
 
+  /** Fold title snapshots for the given records into id → title info. */
+  async function titleMapOf(
+    records: readonly { header: { id: SessionId } }[],
+  ): Promise<Map<string, { text: string; updatedAt: number } | undefined>> {
+    const titles = await ctx.sessionQuery.readTitleSnapshots(records.map(record => record.header.id))
+    const titleOf = new Map<string, { text: string; updatedAt: number } | undefined>()
+    for (const entry of titles) {
+      if (entry.status !== 'fulfilled') continue
+      const snapshot = entry.value.title
+      titleOf.set(String(entry.sessionId), snapshot === undefined
+        ? undefined
+        : { text: snapshot.title, updatedAt: snapshot.updatedAt })
+    }
+    return titleOf
+  }
+
   /** Resolve one agent by session id, creating (or resuming) it on demand. */
   async function getOrCreateAgent(sessionId: string): Promise<AgentHandle> {
     const options: ConversationOptions = {
@@ -626,19 +710,18 @@ export function apply(ctx: Context, config: Config): void {
     }
 
     if (req.method === 'GET' && parts.length === 1 && parts[0] === 'sessions') {
-      const records = await ctx.sessionQuery.listSessions()
-      const roots = records.filter(record => record.header.origin !== 'subagent')
-      const titles = await ctx.sessionQuery.readTitleSnapshots(roots.map(record => record.header.id))
-      const titleOf = new Map<string, { text: string; updatedAt: number } | undefined>()
-      for (const entry of titles) {
-        if (entry.status !== 'fulfilled') continue
-        const snapshot = entry.value.title
-        titleOf.set(String(entry.sessionId), snapshot === undefined
-          ? undefined
-          : { text: snapshot.title, updatedAt: snapshot.updatedAt })
-      }
+      // The corpus lists newest-first deterministically; pagination is a
+      // slice, and titles are read for the page only.
+      const records = (await ctx.sessionQuery.listSessions())
+        .filter(record => record.header.origin !== 'subagent')
+      const { page, total } = paginateSessions(
+        records,
+        url.searchParams.get('limit'),
+        url.searchParams.get('offset'),
+      )
+      const titleOf = await titleMapOf(page)
       sendJson(res, 200, {
-        sessions: roots.map((record) => {
+        sessions: page.map((record) => {
           const id = String(record.header.id)
           const title = titleOf.get(id)
           return {
@@ -649,6 +732,54 @@ export function apply(ctx: Context, config: Config): void {
             live: record.live,
           }
         }),
+        total,
+      })
+      return
+    }
+
+    // Full-text search over message content: FTS pages by opaque cursor and
+    // hits render as title + snippet rows. A stale cursor (rebuilt index)
+    // restarts from the first page once.
+    if (req.method === 'GET' && parts.length === 2 && parts[0] === 'sessions' && parts[1] === 'search') {
+      const query = normalizeSearchQuery(url.searchParams.get('q') ?? '')
+      const cursorRaw = url.searchParams.get('cursor')
+      const cursor = cursorRaw === null || cursorRaw === '' ? undefined : SessionSearchCursor(cursorRaw)
+      const requestPage = (pageCursor: SessionSearchCursor | undefined) =>
+        ctx.sessionQuery.searchSessions({
+          query,
+          eventFilters: [
+            { kind: 'type', values: ['user/message', 'assistant/message'] },
+            { kind: 'surface', values: ['current'] },
+          ],
+          limit: SEARCH_PAGE_LIMIT,
+          ...pageCursor !== undefined ? { cursor: pageCursor } : {},
+        })
+      let page: SessionSearchPage<SessionSearchHit>
+      try {
+        page = await requestPage(cursor)
+      } catch (error: unknown) {
+        if (cursor !== undefined
+          && error instanceof SessionQueryError
+          && error.code === 'SESSION_QUERY_STALE_CURSOR') {
+          page = await requestPage(undefined)
+        } else {
+          throw error
+        }
+      }
+      const hits = page.items.filter(hit => hit.header.origin !== 'subagent')
+      const titleOf = await titleMapOf(hits)
+      sendJson(res, 200, {
+        hits: hits.map((hit) => {
+          const id = String(hit.header.id)
+          const title = titleOf.get(id)
+          return {
+            id,
+            title: title?.text ?? 'New chat',
+            snippet: truncateSnippet(hit.bestMatch.snippet),
+            updatedAt: title?.updatedAt ?? hit.header.createdAt,
+          }
+        }),
+        ...page.nextCursor !== undefined ? { nextCursor: String(page.nextCursor) } : {},
       })
       return
     }

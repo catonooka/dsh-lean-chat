@@ -25,6 +25,13 @@ export interface SessionSummary {
   live: boolean
 }
 
+export interface SearchHit {
+  id: string
+  title: string
+  snippet: string
+  updatedAt: number
+}
+
 export interface AppConfig {
   provider: string
   model: string
@@ -57,8 +64,21 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   return await response.json() as T
 }
 
-export function listSessions(): Promise<SessionSummary[]> {
-  return fetchJson<{ sessions: SessionSummary[] }>('/api/sessions').then(body => body.sessions)
+/** Sidebar list page size; load-more requests the next offset. */
+export const SESSION_PAGE_SIZE = 20
+
+export function listSessions(params: { limit?: number; offset?: number } = {}): Promise<{ sessions: SessionSummary[]; total: number }> {
+  const search = new URLSearchParams()
+  if (params.limit !== undefined) search.set('limit', String(params.limit))
+  if (params.offset !== undefined) search.set('offset', String(params.offset))
+  const suffix = search.size > 0 ? `?${search.toString()}` : ''
+  return fetchJson<{ sessions: SessionSummary[]; total: number }>(`/api/sessions${suffix}`)
+}
+
+export function searchSessions(query: string, cursor?: string): Promise<{ hits: SearchHit[]; nextCursor?: string }> {
+  const search = new URLSearchParams({ q: query })
+  if (cursor !== undefined) search.set('cursor', cursor)
+  return fetchJson<{ hits: SearchHit[]; nextCursor?: string }>(`/api/sessions/search?${search.toString()}`)
 }
 
 export function fetchMessages(sessionId: string): Promise<ChatItem[]> {

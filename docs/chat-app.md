@@ -29,9 +29,13 @@ context**.
   years in time-relative searches). The only tool schema is the single-param
   `web_search`. No harness identity, runtime context, workspace, or skill
   sections are mounted at all.
-- **A clean, minimal UI** (`apps/chat`): sidebar with the conversation list,
-  a centered 720px thread with streaming, markdown, and expandable
-  search-result chips, and a composer with Enter-to-send and a stop button.
+- **A clean, minimal UI** (`apps/chat`): a collapsible sidebar (ChatGPT-style,
+  toggle in the top bar, state persisted) with New chat, a full-text **search
+  chats** box (FTS over message content, snippet rows, cursor-paginated), and
+  a conversation list that lazy-loads 20 chats per page on scroll; a centered
+  720px thread with streaming, markdown, and expandable search-result chips;
+  and a composer with Enter-to-send and a stop button. No visible scrollbars
+  anywhere — every region still scrolls.
 - **A settings panel** on the sidebar's user row (bottom-left): model,
   thinking level, temperature, system prompt, and theme — editable at
   runtime, no restart needed.

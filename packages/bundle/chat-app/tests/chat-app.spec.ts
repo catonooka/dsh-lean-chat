@@ -5,6 +5,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   applySettingsPatch,
+  normalizeSearchQuery,
+  paginateSessions,
   parseSettingsFile,
   projectSurfaceEvent,
   type ChatSettings,
@@ -123,5 +125,36 @@ describe('parseSettingsFile', () => {
 
   it('falls back when the file carries an unknown key', () => {
     expect(parseSettingsFile(JSON.stringify({ nope: true }), baseConfig)).toEqual(baseSettings)
+  })
+})
+
+describe('paginateSessions', () => {
+  const records = Array.from({ length: 25 }, (_, index) => index)
+
+  it('defaults to the first 20-item page with the full total', () => {
+    expect(paginateSessions(records, null, null)).toEqual({ page: records.slice(0, 20), total: 25 })
+  })
+
+  it('slices by limit and offset', () => {
+    expect(paginateSessions(records, '5', '20')).toEqual({ page: records.slice(20, 25), total: 25 })
+    expect(paginateSessions(records, '10', '0')).toEqual({ page: records.slice(0, 10), total: 25 })
+  })
+
+  it('clamps malformed, zero, and oversized limits and offsets', () => {
+    expect(paginateSessions(records, 'nope', '-3')).toEqual({ page: records.slice(0, 20), total: 25 })
+    expect(paginateSessions(records, '0', '0').page).toHaveLength(20)
+    expect(paginateSessions(records, '500', '0').page).toHaveLength(25)
+  })
+})
+
+describe('normalizeSearchQuery', () => {
+  it('trims surrounding whitespace', () => {
+    expect(normalizeSearchQuery('  giá vàng  ')).toBe('giá vàng')
+  })
+
+  it('rejects empty, NUL-bearing, and oversized queries', () => {
+    expect(() => normalizeSearchQuery('   ')).toThrow('not be empty')
+    expect(() => normalizeSearchQuery('a\0b')).toThrow('NUL')
+    expect(() => normalizeSearchQuery('x'.repeat(501))).toThrow('at most 500')
   })
 })

@@ -50,6 +50,10 @@
 
 * { box-sizing: border-box; }
 
+/* Every scrollable region keeps scrolling but shows no scrollbar. */
+* { scrollbar-width: none; }
+*::-webkit-scrollbar { width: 0; height: 0; display: none; }
+
 html, body, #root { height: 100%; }
 
 body {
@@ -65,6 +69,10 @@ body {
 button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
 
 .app { display: flex; height: 100%; }
+
+/* ChatGPT-style collapse: the sidebar hides completely; the top bar keeps
+   the toggle and a compact new-chat action. */
+.app.collapsed .sidebar { display: none; }
 
 /* ── sidebar ──────────────────────────────────────────────────────────────── */
 
@@ -95,6 +103,42 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .new-chat:hover { background: var(--hover); }
 .new-chat svg { width: 14px; height: 14px; }
 
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 14px;
+  color: var(--fg-muted);
+  transition: border-color 120ms ease;
+}
+.search-box:focus-within { border-color: var(--fg-muted); }
+.search-box svg { width: 14px; height: 14px; flex: none; }
+.search-box input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font: inherit;
+  color: var(--fg);
+}
+.search-box input::placeholder { color: var(--fg-muted); }
+.search-clear {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  color: var(--fg-muted);
+}
+.search-clear:hover { background: var(--hover); color: var(--fg); }
+.search-clear svg { width: 11px; height: 11px; }
+
 .session-list {
   flex: 1;
   overflow-y: auto;
@@ -106,7 +150,7 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 
 .session-item {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 8px;
   padding: 8px 10px;
@@ -125,6 +169,21 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   font-size: 14px;
 }
 .session-date { flex: none; font-size: 11.5px; color: var(--fg-muted); }
+
+.session-hit { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.session-hit .session-title { flex: none; }
+.session-snippet {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--fg-muted);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.list-empty { padding: 14px 10px; font-size: 13px; color: var(--fg-muted); }
+.list-status { padding: 8px 10px; font-size: 12px; color: var(--fg-muted); text-align: center; }
 
 /* ── sidebar footer / user row ────────────────────────────────────────────── */
 
@@ -332,10 +391,25 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   flex: none;
   display: flex;
   align-items: center;
-  padding: 0 20px;
+  gap: 6px;
+  padding: 0 14px;
   border-bottom: 1px solid var(--border);
 }
-.model-label { font-size: 14px; font-weight: 550; }
+.model-label { font-size: 14px; font-weight: 550; margin-left: 6px; }
+
+.icon-btn {
+  width: 32px;
+  height: 32px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  color: var(--fg-muted);
+  transition: background 120ms ease, color 120ms ease;
+}
+.icon-btn:hover { background: var(--hover); color: var(--fg); }
+.icon-btn svg { width: 16px; height: 16px; }
 
 .thread { flex: 1; overflow-y: auto; scroll-behavior: smooth; }
 
@@ -556,4 +630,6 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 
 @media (max-width: 720px) {
   .sidebar { display: none; }
+  /* The sidebar is force-hidden here; the toggle would be a dead button. */
+  .topbar-toggle { display: none; }
 }

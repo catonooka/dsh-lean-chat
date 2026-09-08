@@ -6,16 +6,26 @@ import {
   fetchConfig,
   fetchMessages,
   listSessions,
+  searchSessions,
   sendMessage,
   stopSession,
+  SESSION_PAGE_SIZE,
   type AppConfig,
   type ChatItem,
+  type SearchHit,
   type SessionSummary,
 } from './api.ts'
 import { renderMarkdown } from './markdown.ts'
 import { SettingsPanel, applyTheme, readStoredTheme, storeTheme, type Theme } from './Settings.tsx'
 
 const ACTIVE_KEY = 'dsh-chat-active'
+const COLLAPSED_KEY = 'dsh-chat-collapsed'
+
+/** Debounce for the sidebar search box. */
+const SEARCH_DEBOUNCE_MS = 300
+
+/** Scroll proximity that triggers loading the next list page. */
+const LOAD_MORE_TRIGGER_PX = 60
 
 function newSessionId(): string {
   return randomUUID()
@@ -81,6 +91,13 @@ function ToolChip({ item }: { item: ChatItem }): JSX.Element {
 
 export default function App(): JSX.Element {
   const [sessions, setSessions] = useState<SessionSummary[]>([])
+  const [total, setTotal] = useState(0)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [query, setQuery] = useState('')
+  const [debouncedQuery, setDebouncedQuery] = useState('')
+  const [hits, setHits] = useState<SearchHit[]>([])
+  const [searchCursor, setSearchCursor] = useState<string | undefined>(undefined)
+  const [searching, setSearching] = useState(false)
   const [activeId, setActiveId] = useState<string>(() => {
     const stored = typeof localStorage !== 'undefined' ? localStorage.getItem(ACTIVE_KEY) : null
     return stored ?? newSessionId()
@@ -91,35 +108,129 @@ export default function App(): JSX.Element {
   const [config, setConfig] = useState<AppConfig | undefined>(undefined)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [theme, setTheme] = useState<Theme>(readStoredTheme)
+  const [collapsed, setCollapsed] = useState<boolean>(() =>
+    typeof localStorage !== 'undefined' && localStorage.getItem(COLLAPSED_KEY) === '1')
   const [error, setError] = useState<string | undefined>(undefined)
   const threadRef = useRef<HTMLDivElement>(null)
+  const listRef = useRef<HTMLElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
-  const refreshSessions = useCallback(() => {
-    listSessions()
-      .then(setSessions)
+  const searchActive = debouncedQuery !== ''
+
+  // The first page fills the sidebar; older pages arrive on scroll.
+  useEffect(() => {
+    listSessions({ limit: SESSION_PAGE_SIZE })
+      .then((body) => {
+        setSessions(body.sessions)
+        setTotal(body.total)
+      })
       .catch((err: unknown) => { setError(err instanceof Error ? err.message : String(err)) })
+    fetchConfig().then(setConfig).catch(() => { /* the header simply stays generic */ })
   }, [])
 
+  // After a turn, reload from the top without shrinking the loaded pages.
+  const refreshSessions = useCallback(() => {
+    const limit = Math.max(SESSION_PAGE_SIZE, sessions.length)
+    listSessions({ limit })
+      .then((body) => {
+        setSessions(body.sessions)
+        setTotal(body.total)
+      })
+      .catch((err: unknown) => { setError(err instanceof Error ? err.message : String(err)) })
+  }, [sessions.length])
+
+  const loadMoreSessions = useCallback(async (): Promise<void> => {
+    if (loadingMore || sessions.length >= total) return
+    setLoadingMore(true)
+    try {
+      const body = await listSessions({ limit: SESSION_PAGE_SIZE, offset: sessions.length })
+      setSessions((previous) => {
+        const known = new Set(previous.map(session => session.id))
+        return [...previous, ...body.sessions.filter(session => !known.has(session.id))]
+      })
+      setTotal(body.total)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLoadingMore(false)
+    }
+  }, [loadingMore, sessions.length, total])
+
+  // Debounce the search box, then swap the list for full-text hits.
   useEffect(() => {
-    refreshSessions()
-    fetchConfig().then(setConfig).catch(() => { /* the header simply stays generic */ })
-  }, [refreshSessions])
+    const timer = setTimeout(() => { setDebouncedQuery(query.trim()) }, SEARCH_DEBOUNCE_MS)
+    return () => { clearTimeout(timer) }
+  }, [query])
+
+  useEffect(() => {
+    if (debouncedQuery === '') {
+      setHits([])
+      setSearchCursor(undefined)
+      setSearching(false)
+      return undefined
+    }
+    const controller = new AbortController()
+    setSearching(true)
+    searchSessions(debouncedQuery)
+      .then((body) => {
+        if (controller.signal.aborted) return
+        setHits(body.hits)
+        setSearchCursor(body.nextCursor)
+      })
+      .catch((err: unknown) => {
+        if (controller.signal.aborted) return
+        setError(err instanceof Error ? err.message : String(err))
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setSearching(false)
+      })
+    return () => { controller.abort() }
+  }, [debouncedQuery])
+
+  const loadMoreHits = useCallback(async (): Promise<void> => {
+    if (searching || searchCursor === undefined || debouncedQuery === '') return
+    setSearching(true)
+    try {
+      const body = await searchSessions(debouncedQuery, searchCursor)
+      setHits((previous) => {
+        const known = new Set(previous.map(hit => hit.id))
+        return [...previous, ...body.hits.filter(hit => !known.has(hit.id))]
+      })
+      setSearchCursor(body.nextCursor)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSearching(false)
+    }
+  }, [debouncedQuery, searchCursor, searching])
+
+  const handleListScroll = useCallback((): void => {
+    const node = listRef.current
+    if (node === null) return
+    if (node.scrollTop + node.clientHeight < node.scrollHeight - LOAD_MORE_TRIGGER_PX) return
+    if (searchActive) void loadMoreHits()
+    else void loadMoreSessions()
+  }, [loadMoreHits, loadMoreSessions, searchActive])
 
   useEffect(() => {
     localStorage.setItem(ACTIVE_KEY, activeId)
   }, [activeId])
 
   useEffect(() => {
+    localStorage.setItem(COLLAPSED_KEY, collapsed ? '1' : '0')
+  }, [collapsed])
+
+  useEffect(() => {
     applyTheme(theme)
     storeTheme(theme)
   }, [theme])
 
-  // A persisted session's history loads once the session list confirms the
-  // id; a draft (never-sent) session shows an empty thread until its first
-  // message makes it known. The cancelled flag keeps rapid switches from
-  // racing an older fetch over a newer one.
+  // A persisted session's history loads once the session list (or a search
+  // hit) confirms the id; a draft (never-sent) session shows an empty thread
+  // until its first message makes it known. The cancelled flag keeps rapid
+  // switches from racing an older fetch over a newer one.
   const knownSession = sessions.some(session => session.id === activeId)
+    || hits.some(hit => hit.id === activeId)
   useEffect(() => {
     if (knownSession) {
       let cancelled = false
@@ -233,7 +344,7 @@ export default function App(): JSX.Element {
       + (config.temperature !== undefined ? ` · temp ${String(config.temperature)}` : '')
 
   return (
-    <div className="app">
+    <div className={collapsed ? 'app collapsed' : 'app'}>
       <aside className="sidebar">
         <div className="sidebar-header">
           <span className="brand">dsh chat</span>
@@ -245,20 +356,73 @@ export default function App(): JSX.Element {
           </svg>
           New chat
         </button>
-        <nav className="session-list" aria-label="Conversations">
-          {sessions.map(session => (
-            <button
-              key={session.id}
-              type="button"
-              className={session.id === activeId ? 'session-item active' : 'session-item'}
-              onClick={() => { if (!streaming) setActiveId(session.id) }}
-              title={session.title}
-              data-id={session.id}
-            >
-              <span className="session-title">{session.title}</span>
-              <span className="session-date">{relativeDate(session.updatedAt)}</span>
-            </button>
-          ))}
+        <div className="search-box">
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <circle cx="6.5" cy="6.5" r="5" fill="none" stroke="currentColor" strokeWidth="1.5" />
+            <line x1="10.5" y1="10.5" x2="14" y2="14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+          </svg>
+          <input
+            type="text"
+            value={query}
+            placeholder="Search chats"
+            aria-label="Search chats"
+            spellCheck={false}
+            onChange={(event) => { setQuery(event.target.value) }}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') setQuery('')
+            }}
+          />
+          {query !== ''
+            ? (
+              <button type="button" className="search-clear" aria-label="Clear search" onClick={() => { setQuery('') }}>
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <line x1="4" y1="4" x2="12" y2="12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                  <line x1="12" y1="4" x2="4" y2="12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                </svg>
+              </button>
+            )
+            : undefined}
+        </div>
+        <nav className="session-list" aria-label="Conversations" ref={listRef} onScroll={handleListScroll}>
+          {searchActive
+            ? (
+              hits.length === 0 && !searching
+                ? <div className="list-empty">No chats found</div>
+                : hits.map(hit => (
+                  <button
+                    key={hit.id}
+                    type="button"
+                    className={hit.id === activeId ? 'session-item active' : 'session-item'}
+                    onClick={() => { if (!streaming) setActiveId(hit.id) }}
+                    title={hit.title}
+                    data-id={hit.id}
+                  >
+                    <span className="session-hit">
+                      <span className="session-title">{hit.title}</span>
+                      <span className="session-snippet">{hit.snippet}</span>
+                    </span>
+                    <span className="session-date">{relativeDate(hit.updatedAt)}</span>
+                  </button>
+                ))
+            )
+            : (
+              sessions.length === 0
+                ? <div className="list-empty">No conversations yet</div>
+                : sessions.map(session => (
+                  <button
+                    key={session.id}
+                    type="button"
+                    className={session.id === activeId ? 'session-item active' : 'session-item'}
+                    onClick={() => { if (!streaming) setActiveId(session.id) }}
+                    title={session.title}
+                    data-id={session.id}
+                  >
+                    <span className="session-title">{session.title}</span>
+                    <span className="session-date">{relativeDate(session.updatedAt)}</span>
+                  </button>
+                ))
+            )}
+          {loadingMore || (searchActive && searching) ? <div className="list-status">Loading…</div> : undefined}
         </nav>
         <div className="sidebar-footer">
           <button type="button" className="user-row" onClick={() => { setSettingsOpen(true) }}>
@@ -280,6 +444,26 @@ export default function App(): JSX.Element {
       </aside>
       <main className="main">
         <header className="topbar">
+          <button
+            type="button"
+            className="icon-btn topbar-toggle"
+            aria-label={collapsed ? 'Open sidebar' : 'Close sidebar'}
+            onClick={() => { setCollapsed(value => !value) }}
+          >
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <rect x="1.5" y="2.5" width="13" height="11" rx="2" fill="none" stroke="currentColor" strokeWidth="1.5" />
+              <line x1="5.5" y1="2.5" x2="5.5" y2="13.5" stroke="currentColor" strokeWidth="1.5" />
+            </svg>
+          </button>
+          {collapsed
+            ? (
+              <button type="button" className="icon-btn" aria-label="New chat" onClick={startNewChat}>
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <path d="M3 13l1-3.5L10.5 3a1.6 1.6 0 0 1 2.3 2.3L6.3 12 3 13z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+                </svg>
+              </button>
+            )
+            : undefined}
           <span className="model-label">{modelLabel}</span>
         </header>
         <div className="thread" ref={threadRef}>

@@ -103,12 +103,14 @@
         compression: none
 
     # Live-preferred listing, cold history reads, and folded titles. The FTS
-    # index stays closed (openAt: never) — this surface has no history search.
+    # index backs the sidebar's full-text chat search and opens lazily on the
+    # first search (in-memory: rebuilt from the JSONL corpus, cheap at this
+    # scale).
     - id: session-query
       name: '@deepseek-ai/dsh-session-query-sqlite'
       config:
         path: ':memory:'
-        openAt: never
+        openAt: first-search
 
     # The web seam plus the search engines. The tiny keyless metasearch
     # (DuckDuckGo HTML + Wikipedia) is the default provider — no API key, no
