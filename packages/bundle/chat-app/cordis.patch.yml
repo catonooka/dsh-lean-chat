@@ -161,3 +161,7 @@
         reasoningEffort: !!js (process.env.DSH_CHAT_REASONING || undefined)
         temperature: !!js "process.env.DSH_CHAT_TEMPERATURE ? Number(process.env.DSH_CHAT_TEMPERATURE) : undefined"
         persona: !!js process.env.DSH_CHAT_PERSONA ?? 'You are a helpful assistant.'
+        # Which general engine the user-chrome searches run against; Google's
+        # personalization is the point in a real logged-in profile, but any
+        # OpenAI-gateway style swap (bing, duckduckgo) is one env away.
+        chromeWebEngine: !!js process.env.DSH_CHAT_WEB_ENGINE ?? 'google'
