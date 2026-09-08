@@ -82,12 +82,11 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   display: flex;
   flex-direction: column;
   background: var(--bg-sidebar);
-  border-right: 1px solid var(--border);
   padding: 10px;
   gap: 10px;
 }
 
-.sidebar-header { padding: 6px 8px 0; }
+.sidebar-header { padding: 6px 6px 0 8px; display: flex; align-items: center; justify-content: space-between; }
 .brand { font-weight: 600; letter-spacing: 0.01em; }
 
 .new-chat {
@@ -440,16 +439,15 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 
 .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 
-.topbar {
-  height: 48px;
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 14px;
-  border-bottom: 1px solid var(--border);
+.main { position: relative; }
+
+.open-sidebar-fab {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 5;
+  background: var(--bg);
 }
-.model-label { font-size: 14px; font-weight: 550; margin-left: 6px; }
 
 .icon-btn {
   width: 32px;
@@ -685,7 +683,7 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 @media (max-width: 720px) {
   .sidebar { display: none; }
   /* The sidebar is force-hidden here; the toggle would be a dead button. */
-  .topbar-toggle { display: none; }
+  .open-sidebar-fab { display: none; }
 }
 
 .avatar-grid {

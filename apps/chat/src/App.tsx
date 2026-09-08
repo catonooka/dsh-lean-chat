@@ -353,17 +353,22 @@ export default function App(): JSX.Element {
     stopSession(activeId).catch(() => { /* the stream ends on its own */ })
   }, [activeId])
 
-  const modelLabel = config === undefined
-    ? 'dsh chat'
-    : config.model
-      + (config.reasoningEffort !== undefined ? ` · thinking ${config.reasoningEffort}` : '')
-      + (config.temperature !== undefined ? ` · temp ${String(config.temperature)}` : '')
-
   return (
     <div className={collapsed ? 'app collapsed' : 'app'}>
       <aside className="sidebar">
         <div className="sidebar-header">
           <span className="brand">dsh chat</span>
+          <button
+            type="button"
+            className="icon-btn sidebar-toggle"
+            aria-label="Hide sidebar"
+            onClick={() => { setCollapsed(true) }}
+          >
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <rect x="1.5" y="2.5" width="13" height="11" rx="2" fill="none" stroke="currentColor" strokeWidth="1.5" />
+              <line x1="5.5" y1="2.5" x2="5.5" y2="13.5" stroke="currentColor" strokeWidth="1.5" />
+            </svg>
+          </button>
         </div>
         <button type="button" className="new-chat" onClick={startNewChat}>
           <svg viewBox="0 0 16 16" aria-hidden="true">
@@ -463,29 +468,21 @@ export default function App(): JSX.Element {
         </div>
       </aside>
       <main className="main">
-        <header className="topbar">
-          <button
-            type="button"
-            className="icon-btn topbar-toggle"
-            aria-label={collapsed ? 'Open sidebar' : 'Close sidebar'}
-            onClick={() => { setCollapsed(value => !value) }}
-          >
-            <svg viewBox="0 0 16 16" aria-hidden="true">
-              <rect x="1.5" y="2.5" width="13" height="11" rx="2" fill="none" stroke="currentColor" strokeWidth="1.5" />
-              <line x1="5.5" y1="2.5" x2="5.5" y2="13.5" stroke="currentColor" strokeWidth="1.5" />
-            </svg>
-          </button>
-          {collapsed
-            ? (
-              <button type="button" className="icon-btn" aria-label="New chat" onClick={startNewChat}>
-                <svg viewBox="0 0 16 16" aria-hidden="true">
-                  <path d="M3 13l1-3.5L10.5 3a1.6 1.6 0 0 1 2.3 2.3L6.3 12 3 13z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
-                </svg>
-              </button>
-            )
-            : undefined}
-          <span className="model-label">{modelLabel}</span>
-        </header>
+        {collapsed
+          ? (
+            <button
+              type="button"
+              className="icon-btn open-sidebar-fab"
+              aria-label="Open sidebar"
+              onClick={() => { setCollapsed(false) }}
+            >
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <rect x="1.5" y="2.5" width="13" height="11" rx="2" fill="none" stroke="currentColor" strokeWidth="1.5" />
+                <line x1="5.5" y1="2.5" x2="5.5" y2="13.5" stroke="currentColor" strokeWidth="1.5" />
+              </svg>
+            </button>
+          )
+          : undefined}
         <div className="thread" ref={threadRef}>
           {items.length === 0 && streamText === ''
             ? (
