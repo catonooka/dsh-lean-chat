@@ -42,10 +42,14 @@ context**.
   owner-only under the dsh home), and a model picker that loads the
   endpoint's `/models` list. All live, no restart needed.
 - **A selectable search tool**: the built-in keyless metasearch, or **your
-  own Chrome** — start Chrome with `--remote-debugging-port=9222` and pick
-  "Your Chrome" in settings; searches then run in your logged-in browser
-  (personalized Google, and X through your account when the query is
-  prefixed `x:` or uses `site:x.com`).
+  own Chrome** — searches then run in your logged-in browser (personalized
+  Google, and X through your account when the query is prefixed `x:` or uses
+  `site:x.com`). Two engines sit behind the one setting: the **companion
+  extension** (invisible, no debug port — see below) and the **CDP engine**
+  (Chrome started with `--remote-debugging-port=9222`) as a fallback when the
+  extension is not connected. While "Your Chrome" is selected, the settings
+  panel shows a live connection row with a one-click **Test search** and the
+  exact install steps.
 
 ## Run
 
@@ -69,6 +73,28 @@ Environment:
 | `DSH_CHAT_REASONING` | model default | Thinking level: `off`, `low`, `high`, or `max` |
 | `DSH_CHAT_TEMPERATURE` | model default | Sampling temperature (0–2), applied to every conversation request |
 | `DSH_CHAT_PERSONA` | `You are a helpful assistant.` | The whole system prompt |
+| `DSH_CHAT_WEB_ENGINE` | `google` | General engine the user-chrome searches use: `google`, `bing`, or `duckduckgo` |
+
+### The companion extension
+
+`packages/web/web-search-chrome/extension/` is a load-unpacked MV3 extension
+whose service worker long-polls the app on loopback (`/api/chrome/next`) and
+runs each search **in your browser's cookies** — no tab opens, no debug port,
+no relaunch. General queries fetch the engine's results page with your
+session; `x:` queries call X's internal search API riding your signed-in
+`auth_token`/`ct0` cookies, so `from:me` and other operators search your own
+account.
+
+Install once: `chrome://extensions` → Developer mode → Load unpacked → the
+`extension/` folder (the settings panel's *How to connect* prints the exact
+path while the app runs). A different app port goes in the extension's
+options page. Details and privacy notes: `extension/README.md`.
+
+The bridge is four local-only routes — `GET /api/chrome/next` (the
+long-poll/heartbeat), `POST /api/chrome/result`, `GET /api/chrome/status`,
+and `POST /api/chrome/test` — served by the app and consumed by the
+extension. Without the extension, "Your Chrome" falls back to the CDP engine
+(`--remote-debugging-port=9222`).
 
 ### Settings panel
 
