@@ -367,7 +367,9 @@ export default function App(): JSX.Element {
     if (file === undefined) return
     const isImage = file.type.startsWith('image/')
     const cap = isImage ? 8 * 1024 * 1024 : 25 * 1024 * 1024
-    if (!(isImage ? acceptsImages : acceptsVideos)) {
+    // Refuse only a definitive no: while the probe is still in flight the
+    // file flows, and the server's own awaited probe delivers the verdict.
+    if ((isImage ? abilities?.image : abilities?.video) === 'no') {
       setError(`this model does not accept ${isImage ? 'images' : 'videos'}`)
       return
     }
