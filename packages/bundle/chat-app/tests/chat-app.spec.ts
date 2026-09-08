@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 import {
   activeProfile,
   applySettingsPatch,
+  RateLimiter,
   hasSessionCookie,
   isLocalOrBridgeRequest,
   isLocalRequest,
@@ -661,5 +662,29 @@ describe('capability probe helpers', () => {
     const mp4 = Buffer.from(String(video[0]?.video_url?.url).split(',')[1] ?? '', 'base64')
     expect(mp4.subarray(4, 8).toString()).toBe('ftyp')
     expect(mp4.byteLength).toBeGreaterThan(0)
+  })
+})
+
+describe('RateLimiter', () => {
+  it('spends the window budget then refuses, resetting on the next window', () => {
+    let now = 1_000
+    const limiter = new RateLimiter(3, 1_000, () => now)
+    expect(limiter.allow()).toBe(true)
+    expect(limiter.allow()).toBe(true)
+    expect(limiter.allow()).toBe(true)
+    expect(limiter.allow()).toBe(false)
+    expect(limiter.allow()).toBe(false)
+    now += 1_000
+    expect(limiter.allow()).toBe(true)
+  })
+
+  it('counts within the window, not from construction', () => {
+    let now = 0
+    const limiter = new RateLimiter(1, 10_000, () => now)
+    expect(limiter.allow()).toBe(true)
+    now += 9_999
+    expect(limiter.allow()).toBe(false)
+    now += 1
+    expect(limiter.allow()).toBe(true)
   })
 })

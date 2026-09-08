@@ -725,6 +725,35 @@ export function isLocalOrBridgeRequest(
     && isExtensionBridgePath(req.method ?? '', parts)
 }
 
+/** A fixed-window counter for abuse-prone local endpoints. */
+export class RateLimiter {
+  private windowStart = 0
+  private count = 0
+
+  /**
+   * @param limit - calls allowed per window.
+   * @param windowMs - window length in milliseconds.
+   * @param now - clock, injectable for deterministic tests.
+   */
+  constructor(
+    private readonly limit: number,
+    private readonly windowMs: number,
+    private readonly now: () => number = () => Date.now(),
+  ) {}
+
+  /** Spend one call; false once the window's budget is exhausted. */
+  allow(): boolean {
+    const current = this.now()
+    if (current - this.windowStart >= this.windowMs) {
+      this.windowStart = current
+      this.count = 0
+    }
+    if (this.count >= this.limit) return false
+    this.count += 1
+    return true
+  }
+}
+
 /** The cookie name carrying the boot-minted session token. */
 export const SESSION_COOKIE = 'dsh-chat-session'
 
@@ -1008,6 +1037,7 @@ export function apply(ctx: Context, config: Config): void {
   // Probe answers per model id; abilities do not change within a run, so
   // one probe per model is enough and the panel re-checks on demand.
   const abilityCache = new Map<string, ModelAbilities>()
+  const probeLimiter = new RateLimiter(20, 5 * 60_000)
   type ChromeSearchOutcome = {
     engine: 'extension' | 'cdp'
     result: Awaited<ReturnType<UserChromeSearchProvider['search']>>
@@ -1554,6 +1584,12 @@ export function apply(ctx: Context, config: Config): void {
     }
 
     if (req.method === 'POST' && parts.length === 2 && parts[0] === 'chrome' && parts[1] === 'test') {
+      // A quota-burn vector no real path uses: model searches ride the
+      // selector, never this endpoint.
+      if (!probeLimiter.allow()) {
+        sendJson(res, 429, { error: 'too many test searches — wait a few minutes' }, chromeCors(req))
+        return
+      }
       const body = await readJsonBody(req)
       const query = typeof body.query === 'string' && body.query.trim() !== '' ? body.query.trim() : 'hello world'
       const startedAt = Date.now()
