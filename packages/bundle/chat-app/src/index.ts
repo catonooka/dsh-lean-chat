@@ -171,6 +171,29 @@ export function resolveProviderFallback(
 }
 
 /**
+ * Pick the agent handles safe to evict: idle past the budget and with no
+ * open stream. Eviction is transparent — the durable history lets the next
+ * message resume the conversation.
+ * @param handles - session id → handle bookkeeping with a `lastUsed` stamp.
+ * @param busy - session ids with an open SSE stream (turn possibly running).
+ * @param now - the sweep's clock.
+ * @param idleMs - how long unused handles survive.
+ * @returns the session ids whose handles may be disposed.
+ */
+export function evictableSessionIds(
+  handles: ReadonlyMap<string, { lastUsed: number }>,
+  busy: ReadonlySet<string>,
+  now: number,
+  idleMs: number,
+): string[] {
+  const ids: string[] = []
+  for (const [id, entry] of handles) {
+    if (!busy.has(id) && now - entry.lastUsed > idleMs) ids.push(id)
+  }
+  return ids
+}
+
+/**
  * Order sidebar sessions by last activity — the title snapshot's refresh
  * time, falling back to creation — newest first, so continuing an old
  * conversation bumps it to the top the way a chat surface expects. Ties
@@ -1019,7 +1042,7 @@ export function apply(ctx: Context, config: Config): void {
       })
     }
   }
-  const handles = new Map<string, { handle: AgentHandle; options: ConversationOptions }>()
+  const handles = new Map<string, { handle: AgentHandle; options: ConversationOptions; lastUsed: number }>()
   const streams = new Map<string, Set<ServerResponse>>()
 
   // The web seam pins one provider id at boot, so the pinned id is a
@@ -1033,6 +1056,18 @@ export function apply(ctx: Context, config: Config): void {
     timeoutMs: 12_000,
     webEngine: config.chromeWebEngine,
   })
+  // Idle agents accumulate for the process's life otherwise; a slow sweep
+  // retires quiet ones (never one with an open stream) and conversations
+  // resume transparently on demand.
+  const evictTimer = setInterval(() => {
+    const busy = new Set(streams.keys())
+    for (const id of evictableSessionIds(handles, busy, Date.now(), 10 * 60_000)) {
+      const entry = handles.get(id)
+      handles.delete(id)
+      if (entry !== undefined) void entry.handle.dispose()
+    }
+  }, 60_000)
+  ctx.effect(() => () => { clearInterval(evictTimer) }, 'chat-app.evict-sweep')
   const extensionBridge = new ExtensionBridge()
   // Probe answers per model id; abilities do not change within a run, so
   // one probe per model is enough and the panel re-checks on demand.
@@ -1136,6 +1171,7 @@ export function apply(ctx: Context, config: Config): void {
     }
     const existing = handles.get(sessionId)
     if (existing !== undefined && ctx.agents.get(existing.handle.agent.id) === existing.handle.agent) {
+      existing.lastUsed = Date.now()
       if (sameConversationOptions(existing.options, options)) return existing.handle
       // The model route changed in settings: retire the stale agent. Session
       // history is durable, so the replacement resumes this conversation on
@@ -1144,7 +1180,7 @@ export function apply(ctx: Context, config: Config): void {
       await existing.handle.dispose()
     }
     const handle = await createOrResumeAgent(sessionId, options)
-    handles.set(sessionId, { handle, options })
+    handles.set(sessionId, { handle, options, lastUsed: Date.now() })
     ctx.effect(() => () => {
       // A settings swap may have disposed this handle already; only the
       // map's current entry owns cleanup.
@@ -1169,11 +1205,14 @@ export function apply(ctx: Context, config: Config): void {
   ctx.on('session/event', (session, event) => {
     const sessionId = String(session.id)
     switch (event.type) {
-      case 'user/message':
+      case 'user/message': {
         activity.set(sessionId, Date.now())
         activityDirty = true
+        const used = handles.get(sessionId)
+        if (used !== undefined) used.lastUsed = Date.now()
         broadcast(sessionId, { t: 'user', text: textOf(event.data.content) })
         break
+      }
       case 'assistant/message':
         broadcast(sessionId, { t: 'assistant', text: textOf(event.data.message.content) })
         break

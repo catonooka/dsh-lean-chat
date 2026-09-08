@@ -7,6 +7,7 @@ import {
   activeProfile,
   applySettingsPatch,
   RateLimiter,
+  evictableSessionIds,
   hasSessionCookie,
   isLocalOrBridgeRequest,
   isLocalRequest,
@@ -686,5 +687,21 @@ describe('RateLimiter', () => {
     expect(limiter.allow()).toBe(false)
     now += 1
     expect(limiter.allow()).toBe(true)
+  })
+})
+
+describe('evictableSessionIds', () => {
+  const handles = new Map<string, { lastUsed: number }>([
+    ['idle', { lastUsed: 0 }],
+    ['fresh', { lastUsed: 9_500 }],
+    ['streaming', { lastUsed: 0 }],
+    ['boundary', { lastUsed: 9_000 }],
+  ])
+
+  it('retires only the idle-and-quiet ones, strictly past the budget', () => {
+    expect(evictableSessionIds(handles, new Set(['streaming']), 19_000, 10_000))
+      .toEqual(['idle'])
+    expect(evictableSessionIds(handles, new Set(), 5_000, 10_000)).toEqual([])
+    expect(evictableSessionIds(new Map(), new Set(), 99_999, 10_000)).toEqual([])
   })
 })
