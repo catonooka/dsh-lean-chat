@@ -1596,6 +1596,12 @@ importers:
       '@deepseek-ai/dsh-agent-loop':
         specifier: workspace:^
         version: link:../../core/agent-loop
+      '@deepseek-ai/dsh-attachment':
+        specifier: workspace:^
+        version: link:../../attachment/attachment
+      '@deepseek-ai/dsh-attachment-local':
+        specifier: workspace:^
+        version: link:../../attachment/attachment-local
       '@deepseek-ai/dsh-chat-frontend':
         specifier: workspace:^
         version: link:../../../apps/chat
