@@ -725,6 +725,28 @@ export function isLocalOrBridgeRequest(
     && isExtensionBridgePath(req.method ?? '', parts)
 }
 
+/** The cookie name carrying the boot-minted session token. */
+export const SESSION_COOKIE = 'dsh-chat-session'
+
+/**
+ * Whether a request carries this boot's session cookie. The token ships with
+ * index.html as an HttpOnly Strict cookie, so the served page authenticates
+ * every call while other pages, other origins, and casual no-Origin local
+ * callers do not have it.
+ * @param cookieHeader - the raw `cookie` header, when present.
+ * @param token - this boot's minted token.
+ * @returns whether the request is the app's own page.
+ */
+export function hasSessionCookie(cookieHeader: string | undefined, token: string): boolean {
+  if (typeof cookieHeader !== 'string') return false
+  for (const part of cookieHeader.split(';')) {
+    const separator = part.indexOf('=')
+    if (separator === -1) continue
+    if (part.slice(0, separator).trim() === SESSION_COOKIE && part.slice(separator + 1).trim() === token) return true
+  }
+  return false
+}
+
 /** Extract the joined text of one message's content blocks. */
 function textOf(content: readonly ContentBlock[] | undefined): string {
   if (content === undefined) return ''
@@ -825,7 +847,12 @@ function resolveExtensionPath(): string | undefined {
 }
 
 /** Serve the built dist over the fallback seat: assets by MIME, `/` as index. */
-async function serveStatic(req: IncomingMessage, res: ServerResponse, distRoot: string): Promise<void> {
+async function serveStatic(
+  req: IncomingMessage,
+  res: ServerResponse,
+  distRoot: string,
+  sessionToken: string,
+): Promise<void> {
   if (req.method !== 'GET' && req.method !== 'HEAD') {
     res.writeHead(405, { allow: 'GET, HEAD' })
     res.end()
@@ -857,6 +884,9 @@ async function serveStatic(req: IncomingMessage, res: ServerResponse, distRoot: 
     res.writeHead(200, {
       'content-type': MIME[extname(target)] ?? 'application/octet-stream',
       'content-length': String(info.size),
+      ...pathname === '/index.html'
+        ? { 'set-cookie': `${SESSION_COOKIE}=${sessionToken}; HttpOnly; SameSite=Strict; Path=/` }
+        : {},
     })
     res.end(body)
   } catch {
@@ -874,6 +904,9 @@ async function serveStatic(req: IncomingMessage, res: ServerResponse, distRoot: 
 export function apply(ctx: Context, config: Config): void {
   const distRoot = resolveDistRoot()
   const extensionPath = resolveExtensionPath()
+  // One token per server start; index.html hands it to the page as an
+  // HttpOnly cookie and every non-bridge API call must carry it.
+  const sessionToken = randomUUID()
   // Runtime settings: boot-time config (which folds the env seeds) overlaid
   // with the persisted panel edits, mutable through PUT /api/config.
   const settingsPath = dshHomePath('chat-settings.json')
@@ -1232,6 +1265,10 @@ export function apply(ctx: Context, config: Config): void {
       sendJson(res, 403, { error: 'local requests only' })
       return
     }
+    if (!isExtensionBridgePath(req.method ?? '', parts) && !hasSessionCookie(req.headers.cookie, sessionToken)) {
+      sendJson(res, 403, { error: 'session cookie required' })
+      return
+    }
 
     if (parts.length === 1 && parts[0] === 'config') {
       if (req.method === 'GET') {
@@ -1549,7 +1586,7 @@ export function apply(ctx: Context, config: Config): void {
       res.end()
       return
     }
-    void serveStatic(req, res, distRoot).catch(() => {
+    void serveStatic(req, res, distRoot, sessionToken).catch(() => {
       if (!res.headersSent) {
         res.writeHead(500)
         res.end()

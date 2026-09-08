@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 import {
   activeProfile,
   applySettingsPatch,
+  hasSessionCookie,
   isLocalOrBridgeRequest,
   isLocalRequest,
   sortSessionsByActivity,
@@ -540,6 +541,18 @@ describe('isLocalOrBridgeRequest', () => {
   it('still passes every loopback request regardless of path', () => {
     expect(isLocalOrBridgeRequest(request({ host: '127.0.0.1' }), ['sessions'])).toBe(true)
     expect(isLocalOrBridgeRequest(request({ host: 'example.com', ...extension }), ['chrome', 'next'])).toBe(false)
+  })
+})
+
+describe('hasSessionCookie', () => {
+  it('matches this boot token among other cookies and trims sloppiness', () => {
+    expect(hasSessionCookie('dsh-chat-session=abc', 'abc')).toBe(true)
+    expect(hasSessionCookie('theme=dark; dsh-chat-session=abc ; lang=en', 'abc')).toBe(true)
+    expect(hasSessionCookie('dsh-chat-session=abc', 'other')).toBe(false)
+    expect(hasSessionCookie('dsh-chat-session=', 'abc')).toBe(false)
+    expect(hasSessionCookie('other=abc', 'abc')).toBe(false)
+    expect(hasSessionCookie(undefined, 'abc')).toBe(false)
+    expect(hasSessionCookie('dsh-chat-sessionx=abc', 'abc')).toBe(false)
   })
 })
 
