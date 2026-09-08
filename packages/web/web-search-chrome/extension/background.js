@@ -191,7 +191,12 @@ async function xSearch(query, maxResults) {
 function parseAdaptive(body, limit) {
   const tweets = (body && body.globalObjects && body.globalObjects.tweets) || {}
   const users = (body && body.globalObjects && body.globalObjects.users) || {}
-  const ordered = Object.values(tweets).sort((a, b) => Date.parse(b.created_at || '') - Date.parse(a.created_at || ''))
+  // An unparsable date sorts as the oldest instead of poisoning the comparator with NaN.
+  const stamp = tweet => {
+    const parsed = Date.parse(tweet.created_at || '')
+    return Number.isFinite(parsed) ? parsed : 0
+  }
+  const ordered = Object.values(tweets).sort((a, b) => stamp(b) - stamp(a))
   const hits = []
   for (const tweet of ordered) {
     if (hits.length >= limit) break
@@ -200,12 +205,12 @@ function parseAdaptive(body, limit) {
     const screenName = user && user.screen_name !== undefined ? user.screen_name : 'i'
     const text = String(tweet.full_text).replace(/\s+/g, ' ').trim()
     if (text === '') continue
-    const stamp = Date.parse(tweet.created_at || '')
+    const parsed = stamp(tweet)
     hits.push({
       title: text.slice(0, 80),
       url: `https://x.com/${screenName}/status/${String(tweet.id_str)}`,
       snippet: text.slice(0, 280),
-      ...(Number.isFinite(stamp) ? { publishedAt: new Date(stamp).toISOString().slice(0, 10) } : {}),
+      ...(parsed > 0 ? { publishedAt: new Date(parsed).toISOString().slice(0, 10) } : {}),
     })
   }
   return hits
