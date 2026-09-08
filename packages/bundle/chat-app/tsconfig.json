@@ -22,6 +22,12 @@
       "path": "../../core/agent"
     },
     {
+      "path": "../../settings/settings"
+    },
+    {
+      "path": "../../settings/settings-file"
+    },
+    {
       "path": "../../core/session"
     },
     {

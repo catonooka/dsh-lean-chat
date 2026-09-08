@@ -1,7 +1,7 @@
 /** The settings panel: every runtime-configurable option of the chat surface. */
 
 import { useEffect, useState, type JSX } from 'react'
-import { updateConfig, type AppConfig, type SettingsPatch } from './api.ts'
+import { fetchModels, updateConfig, type AppConfig, type SettingsPatch } from './api.ts'
 
 export type Theme = 'system' | 'light' | 'dark'
 
@@ -51,6 +51,10 @@ export function SettingsPanel({ config, theme, onTheme, onSaved, onClose }: Sett
   const [effort, setEffort] = useState<'off' | 'low' | 'high' | 'max'>(effortOf(config.reasoningEffort))
   const [temperature, setTemperature] = useState<number | undefined>(config.temperature)
   const [persona, setPersona] = useState(config.persona)
+  const [baseUrl, setBaseUrl] = useState(config.baseUrl ?? '')
+  const [apiKey, setApiKey] = useState('')
+  const [models, setModels] = useState<string[]>([])
+  const [loadingModels, setLoadingModels] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | undefined>(undefined)
 
@@ -62,12 +66,26 @@ export function SettingsPanel({ config, theme, onTheme, onSaved, onClose }: Sett
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
+  const loadModels = async (): Promise<void> => {
+    setLoadingModels(true)
+    try {
+      setModels(await fetchModels())
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLoadingModels(false)
+    }
+  }
+
   const save = async (): Promise<void> => {
     setSaving(true)
     try {
       const patch: SettingsPatch = { provider, model, reasoningEffort: effort, persona }
       if (temperature === undefined) patch.temperature = null
       else patch.temperature = temperature
+      const trimmedBase = baseUrl.trim()
+      patch.baseUrl = trimmedBase === '' ? null : trimmedBase
+      if (apiKey.trim() !== '') patch.apiKey = apiKey.trim()
       onSaved(await updateConfig(patch))
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err))
@@ -107,12 +125,62 @@ export function SettingsPanel({ config, theme, onTheme, onSaved, onClose }: Sett
 
         <label className="settings-row">
           <span className="settings-label">Model</span>
+          <div className="model-row">
+            <input
+              type="text"
+              value={model}
+              spellCheck={false}
+              onChange={(event) => { setModel(event.target.value) }}
+            />
+            <button
+              type="button"
+              className="models-load"
+              disabled={loadingModels}
+              onClick={() => { void loadModels() }}
+            >
+              {loadingModels ? '…' : 'Load list'}
+            </button>
+          </div>
+          {models.length > 0
+            ? (
+              <select
+                aria-label="Pick a model"
+                value={models.includes(model) ? model : ''}
+                onChange={(event) => {
+                  if (event.target.value !== '') setModel(event.target.value)
+                }}
+              >
+                {!models.includes(model) ? <option value="">{model}</option> : undefined}
+                {models.map(id => <option key={id} value={id}>{id}</option>)}
+              </select>
+            )
+            : undefined}
+          <span className="settings-hint">Free text, or load the endpoint's model list and pick one.</span>
+        </label>
+
+        <label className="settings-row">
+          <span className="settings-label">Base URL</span>
           <input
             type="text"
-            value={model}
+            value={baseUrl}
             spellCheck={false}
-            onChange={(event) => { setModel(event.target.value) }}
+            placeholder="default endpoint"
+            onChange={(event) => { setBaseUrl(event.target.value) }}
           />
+          <span className="settings-hint">Any OpenAI-compatible gateway; empty means the launch default.</span>
+        </label>
+
+        <label className="settings-row">
+          <span className="settings-label">API key</span>
+          <input
+            type="password"
+            value={apiKey}
+            spellCheck={false}
+            autoComplete="off"
+            placeholder={config.apiKeySet === true ? 'unchanged (a key is set)' : 'not set — launch environment'}
+            onChange={(event) => { setApiKey(event.target.value) }}
+          />
+          <span className="settings-hint">Stored owner-only under the dsh home; left blank to keep the current key.</span>
         </label>
 
         <div className="settings-row">

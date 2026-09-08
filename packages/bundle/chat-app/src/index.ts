@@ -23,7 +23,7 @@
 import { randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { readFileSync } from 'node:fs'
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname, extname, join, resolve, sep } from 'node:path'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -43,6 +43,12 @@ export const inject = ['webServer', 'agents', 'sessionQuery']
 
 /** Persona used when no explicit one is set; empty panel input means this too. */
 export const DEFAULT_PERSONA = 'You are a helpful assistant.'
+
+/** Longest accepted API key; endpoints never need more. */
+const MAX_API_KEY_LENGTH = 500
+
+/** Public DeepSeek API, mirroring llm-deepseek's fallback when nothing overrides it. */
+const PUBLIC_BASE_URL = 'https://api.deepseek.com'
 
 /** Plugin config: browser handoff, URL line, and the conversation model route. */
 export interface Config {
@@ -79,6 +85,10 @@ export interface ChatSettings {
   reasoningEffort?: 'off' | 'low' | 'high' | 'max'
   temperature?: number
   persona: string
+  /** OpenAI-compatible endpoint base overriding `$DEEPSEEK_BASE_URL`. */
+  baseUrl?: string
+  /** API key overriding `$DEEPSEEK_API_KEY`; persisted owner-only, never served. */
+  apiKey?: string
 }
 
 /** Longest accepted persona text; the persona is the whole system prompt. */
@@ -134,6 +144,38 @@ export function applySettingsPatch(current: ChatSettings, patch: Record<string, 
         next.persona = trimmed === '' ? DEFAULT_PERSONA : trimmed
         break
       }
+      case 'baseUrl': {
+        if (value === null) {
+          delete next.baseUrl
+          break
+        }
+        if (typeof value !== 'string') throw new Error('baseUrl must be a string')
+        const trimmed = value.trim().replace(/\/+$/, '')
+        if (trimmed === '') {
+          delete next.baseUrl
+          break
+        }
+        try {
+          const parsed = new URL(trimmed)
+          if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('bad protocol')
+        } catch {
+          throw new Error('baseUrl must be a valid http(s) URL')
+        }
+        next.baseUrl = trimmed
+        break
+      }
+      case 'apiKey': {
+        if (value === null) {
+          delete next.apiKey
+          break
+        }
+        if (typeof value !== 'string' || value.trim() === '') throw new Error('apiKey must be a non-empty string')
+        if (value.length > MAX_API_KEY_LENGTH) {
+          throw new Error(`apiKey must be at most ${String(MAX_API_KEY_LENGTH)} characters`)
+        }
+        next.apiKey = value.trim()
+        break
+      }
       default:
         throw new Error(`unknown setting "${key}"`)
     }
@@ -172,7 +214,8 @@ export function parseSettingsFile(raw: string | undefined, defaults: Config): Ch
   }
 }
 
-/** Project settings into the JSON body served by `GET /api/config`. */
+/** Project settings into the JSON body served by `GET /api/config`. The API
+ * key itself never crosses to the browser; only its presence does. */
 function settingsJson(settings: ChatSettings): Record<string, unknown> {
   return {
     provider: settings.provider,
@@ -180,13 +223,27 @@ function settingsJson(settings: ChatSettings): Record<string, unknown> {
     ...settings.reasoningEffort !== undefined ? { reasoningEffort: settings.reasoningEffort } : {},
     ...settings.temperature !== undefined ? { temperature: settings.temperature } : {},
     persona: settings.persona,
+    ...settings.baseUrl !== undefined ? { baseUrl: settings.baseUrl } : {},
+    apiKeySet: settings.apiKey !== undefined,
   }
 }
 
-/** Persist settings to disk; failures log but never break the request. */
+/** Persist settings to disk; failures log but never break the request. The
+ * file can hold an API key, so it is owner-only. */
 async function persistSettings(path: string, settings: ChatSettings): Promise<void> {
-  await mkdir(dirname(path), { recursive: true })
-  await writeFile(path, `${JSON.stringify(settingsJson(settings), null, 2)}\n`, 'utf8')
+  const body = `${JSON.stringify({
+    provider: settings.provider,
+    model: settings.model,
+    ...settings.reasoningEffort !== undefined ? { reasoningEffort: settings.reasoningEffort } : {},
+    ...settings.temperature !== undefined ? { temperature: settings.temperature } : {},
+    persona: settings.persona,
+    ...settings.baseUrl !== undefined ? { baseUrl: settings.baseUrl } : {},
+    ...settings.apiKey !== undefined ? { apiKey: settings.apiKey } : {},
+  }, null, 2)}\n`
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 })
+  await writeFile(path, body, { mode: 0o600, flag: 'w' })
+  // `mode` only applies at creation; re-assert it for pre-existing files.
+  await chmod(path, 0o600)
 }
 
 /** One page of the sidebar list plus the full filtered count. */
@@ -489,6 +546,33 @@ export function apply(ctx: Context, config: Config): void {
     // First run: no file yet, the config defaults stand.
   }
   const settings = parseSettingsFile(settingsRaw, config)
+  // The launching environment is the fallback the panel edits override.
+  const bootApiKeyEnv = process.env.DEEPSEEK_API_KEY
+  const bootBaseUrlEnv = process.env.DEEPSEEK_BASE_URL
+
+  /**
+   * Push the key and endpoint into the live adapter seams. The key re-enters
+   * `process.env`, which llm-deepseek re-reads on every request; the endpoint
+   * goes through the settings service's `llm-deepseek` section, which the
+   * adapter re-resolves live (and `$DSH_HOME/settings.yaml` persists).
+   */
+  async function applyLiveModelSettings(): Promise<void> {
+    const apiKey = settings.apiKey ?? bootApiKeyEnv
+    if (apiKey === undefined) delete process.env.DEEPSEEK_API_KEY
+    else process.env.DEEPSEEK_API_KEY = apiKey
+    const baseURL = settings.baseUrl ?? bootBaseUrlEnv
+    if (baseURL === undefined) return
+    const settingsService = ctx.get('settings')
+    if (settingsService === undefined) return
+    try {
+      await settingsService.update('llm-deepseek', { baseURL })
+    } catch (error: unknown) {
+      const reason = error instanceof Error ? error.message : String(error)
+      console.error(`chat-app: could not apply the base URL live because ${reason}; it still applies on restart`)
+    }
+  }
+
+  void applyLiveModelSettings()
   const handles = new Map<string, { handle: AgentHandle; options: ConversationOptions }>()
   const streams = new Map<string, Set<ServerResponse>>()
 
@@ -711,11 +795,14 @@ export function apply(ctx: Context, config: Config): void {
       if (req.method === 'GET') {
         sendJson(res, 200, settingsJson(settings))
         return
-      }
-      if (req.method === 'PUT') {
+      }      if (req.method === 'PUT') {
         const body = await readJsonBody(req)
         const next = applySettingsPatch(settings, body)
         Object.assign(settings, next)
+        await applyLiveModelSettings().catch((error: unknown) => {
+          const reason = error instanceof Error ? error.message : String(error)
+          console.error(`chat-app: could not apply settings live because ${reason}`)
+        })
         void persistSettings(settingsPath, settings).catch((error: unknown) => {
           const reason = error instanceof Error ? error.message : String(error)
           console.error(`chat-app: could not persist chat settings because ${reason}`)
@@ -724,6 +811,31 @@ export function apply(ctx: Context, config: Config): void {
         return
       }
       sendJson(res, 405, { allow: 'GET, PUT' })
+      return
+    }
+
+    // Model picker data: proxy the OpenAI-compatible /models list from the
+    // currently configured endpoint, server-side, so the key never reaches
+    // the browser and CORS never applies.
+    if (req.method === 'GET' && parts.length === 1 && parts[0] === 'models') {
+      const base = (settings.baseUrl ?? process.env.DEEPSEEK_BASE_URL ?? PUBLIC_BASE_URL).replace(/\/+$/, '')
+      const apiKey = process.env.DEEPSEEK_API_KEY ?? ''
+      const response = await fetch(`${base}/models`, {
+        ...apiKey !== '' ? { headers: { authorization: `Bearer ${apiKey}` } } : {},
+        signal: AbortSignal.timeout(8000),
+      })
+      if (!response.ok) {
+        throw new Error(`model list request failed: ${String(response.status)} ${response.statusText}`)
+      }
+      const body = await response.json() as { data?: unknown }
+      const models = Array.isArray(body.data)
+        ? body.data
+          .map((entry): unknown => (typeof entry === 'object' && entry !== null
+            ? (entry as Record<string, unknown>).id
+            : undefined))
+          .filter((id): id is string => typeof id === 'string')
+        : []
+      sendJson(res, 200, { models: [...new Set(models)].sort() })
       return
     }
 

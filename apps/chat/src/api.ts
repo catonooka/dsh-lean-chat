@@ -38,6 +38,8 @@ export interface AppConfig {
   reasoningEffort?: string
   temperature?: number
   persona: string
+  baseUrl?: string
+  apiKeySet?: boolean
 }
 
 /** One partial settings update; `null` clears an optional field. */
@@ -47,6 +49,8 @@ export interface SettingsPatch {
   reasoningEffort?: string | null
   temperature?: number | null
   persona?: string
+  baseUrl?: string | null
+  apiKey?: string
 }
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -87,6 +91,11 @@ export function fetchMessages(sessionId: string): Promise<ChatItem[]> {
 
 export function fetchConfig(): Promise<AppConfig> {
   return fetchJson<AppConfig>('/api/config')
+}
+
+/** Model ids advertised by the currently configured endpoint. */
+export function fetchModels(): Promise<string[]> {
+  return fetchJson<{ models: string[] }>('/api/models').then(body => body.models)
 }
 
 export function updateConfig(patch: SettingsPatch): Promise<AppConfig> {

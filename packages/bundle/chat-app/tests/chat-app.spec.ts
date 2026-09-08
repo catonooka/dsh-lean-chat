@@ -106,6 +106,16 @@ describe('applySettingsPatch', () => {
     expect(() => applySettingsPatch(baseSettings, { temperature: 3 })).toThrow()
     expect(() => applySettingsPatch(baseSettings, { persona: 7 })).toThrow()
   })
+
+  it('trims and validates baseUrl and apiKey, clearing with null', () => {
+    expect(applySettingsPatch(baseSettings, { baseUrl: ' https://gw.example/v1/ ' }).baseUrl).toBe('https://gw.example/v1')
+    expect(() => applySettingsPatch(baseSettings, { baseUrl: 'ftp://gw.example' })).toThrow('http(s) URL')
+    expect(() => applySettingsPatch(baseSettings, { baseUrl: 'not a url' })).toThrow('http(s) URL')
+    const withKey = applySettingsPatch(baseSettings, { apiKey: ' sk-abc ' })
+    expect(withKey.apiKey).toBe('sk-abc')
+    expect(() => applySettingsPatch(baseSettings, { apiKey: '   ' })).toThrow('non-empty')
+    expect(applySettingsPatch(withKey, { apiKey: null }).apiKey).toBeUndefined()
+  })
 })
 
 describe('parseSettingsFile', () => {
