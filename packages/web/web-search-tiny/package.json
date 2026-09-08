@@ -1,6 +1,6 @@
 {
-  "name": "@deepseek-ai/dsh-tool-web-search-tiny",
-  "description": "Tiny single-query model-facing web_search tool over the web seam, with an internal search-question generator and timestamped sources",
+  "name": "@deepseek-ai/dsh-web-search-tiny",
+  "description": "Keyless tiny metasearch provider for the web seam: DuckDuckGo HTML results merged with Wikipedia search, no API key and no per-search model call",
   "version": "0.1.3-alpha.2",
   "publishConfig": {
     "access": "public"
@@ -8,7 +8,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/deepseek-ai/deepseek-harness.git",
-    "directory": "packages/web/tool-web-search-tiny"
+    "directory": "packages/web/web-search-tiny"
   },
   "type": "module",
   "main": "lib/index.js",
@@ -28,18 +28,13 @@
   "license": "MIT",
   "peerDependencies": {
     "@deepseek-ai/cordis": "workspace:^",
-    "@deepseek-ai/dsh-llm": "workspace:^",
-    "@deepseek-ai/dsh-tools": "workspace:^",
     "@deepseek-ai/dsh-web": "workspace:^"
   },
   "dependencies": {
-    "@deepseek-ai/dsh-util-values": "workspace:^",
     "@deepseek-ai/schemastery": "workspace:^"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "workspace:^",
-    "@deepseek-ai/dsh-llm": "workspace:^",
-    "@deepseek-ai/dsh-tools": "workspace:^",
     "@deepseek-ai/dsh-web": "workspace:^"
   }
 }

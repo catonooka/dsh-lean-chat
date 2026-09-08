@@ -16,15 +16,6 @@
       "path": "../../../vendor/schemastery"
     },
     {
-      "path": "../../llm/llm"
-    },
-    {
-      "path": "../../core/tools"
-    },
-    {
-      "path": "../../util/values"
-    },
-    {
       "path": "../web"
     }
   ]

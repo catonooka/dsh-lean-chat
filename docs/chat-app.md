@@ -9,11 +9,18 @@ context**.
 
 - **Chat only.** No shell, filesystem tools, skills, subagents, plans, or
   approvals — just a conversation with one DeepSeek model.
-- **One internal tool.** `web_search` (from `dsh-tool-web-search-tiny`) with a
-  single `query` parameter. Before searching, an internal search-question
-  generator rewrites the query into a standalone search question (one cheap
-  `deepseek-chat` call, 64-token cap, 8-second budget, raw-query fallback).
-  Results carry `publishedAt` timestamps per source and a `searchedAt` time.
+- **One internal tool with a built-in keyless search engine.** `web_search`
+  (from `dsh-tool-web-search-tiny`) with a single `query` parameter. Before
+  searching, an internal search-question generator rewrites the query into a
+  standalone search question (one cheap model call, 64-token cap, 8-second
+  budget, raw-query fallback). Results come from the **tiny metasearch**
+  (`dsh-web-search-tiny`): a SearXNG-style aggregator that queries
+  DuckDuckGo's HTML endpoint and Wikipedia's API concurrently, merges,
+  deduplicates, and caps — **no API key and no per-search model call**.
+  Wikipedia sources carry their last-revision `publishedAt`, every search
+  records a `searchedAt` time. Set `DSH_WEB_SEARCH_PROVIDER=deepseek-official`
+  to switch to DeepSeek's native server-side search instead (needs
+  `DEEPSEEK_API_KEY`).
 - **Tiny initial context.** The system prompt is one persona line
   (`DSH_CHAT_PERSONA`, default `You are a helpful assistant.`) and the only
   tool schema is the single-param `web_search`. No harness identity, runtime
@@ -36,7 +43,8 @@ Environment:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `DEEPSEEK_API_KEY` | — | API key for the model, search, and generator |
+| `DEEPSEEK_API_KEY` | — | API key for the model and question generator |
+| `DSH_WEB_SEARCH_PROVIDER` | `tiny-metasearch` | Search engine: keyless tiny metasearch, or `deepseek-official` |
 | `DEEPSEEK_BASE_URL` | DeepSeek official | OpenAI-compatible base URL for the conversation adapter (any gateway works) |
 | `DSH_CHAT_MODEL` | `deepseek-chat` | Conversation model |
 | `DSH_CHAT_PROVIDER` | `deepseek-official` | Conversation provider route |

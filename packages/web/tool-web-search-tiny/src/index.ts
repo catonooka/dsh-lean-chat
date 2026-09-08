@@ -18,6 +18,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { WebSearchSource } from '@deepseek-ai/dsh-web'
+import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'tool-web-search-tiny'
@@ -257,6 +258,11 @@ export function apply(ctx: Context, config: Config): void {
       render: (_args: WebSearchTinyArgs, value: WebSearchTinyValue): ContentBlock[] => [
         { type: 'text', text: formatSearchOutput(value) },
       ],
+      // The canonical value is already plain JSON: persist it as the result
+      // meta so chat UIs render the search chip (query, search question,
+      // timestamped sources) from structured data instead of the lossy text.
+      presentationMeta: (_args: WebSearchTinyArgs, value: WebSearchTinyValue): JsonValue =>
+        value as unknown as JsonValue,
     },
     timeoutMs: resolved.timeoutMs,
     // Provider reads do not mutate parent-agent state.
