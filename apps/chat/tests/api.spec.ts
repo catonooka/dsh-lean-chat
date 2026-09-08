@@ -195,3 +195,17 @@ describe('isCleartextEndpoint', () => {
     expect(isCleartextEndpoint('http:// ')).toBe(false)
   })
 })
+
+describe('classifyPastedFile', () => {
+  it('routes media by mime and text shapes by extension', async () => {
+    const { classifyPastedFile } = await import('../src/App.tsx')
+    expect(classifyPastedFile({ type: 'image/png', name: 'shot.png' })).toBe('image')
+    expect(classifyPastedFile({ type: 'video/mp4', name: 'clip.mp4' })).toBe('video')
+    expect(classifyPastedFile({ type: 'text/plain', name: 'notes.txt' })).toBe('text')
+    expect(classifyPastedFile({ type: '', name: 'script.ts' })).toBe('text')
+    expect(classifyPastedFile({ type: '', name: 'notes.markdown' })).toBe('text')
+    expect(classifyPastedFile({ type: 'application/pdf', name: 'report.pdf' })).toBe('file')
+    expect(classifyPastedFile({ type: '', name: 'archive' })).toBe('file')
+    expect(classifyPastedFile({ type: '', name: 'archive.ZIP' })).toBe('file')
+  })
+})

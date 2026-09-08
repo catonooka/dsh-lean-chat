@@ -791,3 +791,23 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   border-radius: 10px;
   margin-bottom: 6px;
 }
+
+.attachment-chip .attachment-doc { width: 44px; height: 44px; color: var(--fg-muted); }
+
+.bubble-attachment.file {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  margin: 0 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: inherit;
+  text-decoration: none;
+  font-size: 13px;
+  max-width: 280px;
+}
+
+.bubble-attachment.file svg { width: 18px; height: 18px; flex: none; color: var(--fg-muted); }
+.bubble-attachment.file span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bubble-attachment.file.pending { opacity: 0.6; pointer-events: none; }

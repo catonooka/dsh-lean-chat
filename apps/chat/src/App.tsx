@@ -1,6 +1,6 @@
 /** The chat surface: sidebar of conversations, streamed thread, composer. */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent as ReactDragEvent, type JSX } from 'react'
 import { randomUUID } from '@deepseek-ai/dsh-util-crypto'
 import {
   checkModelAbilities,
@@ -50,6 +50,33 @@ function relativeDate(createdAt: number): string {
 
 /** One attachment inside a user bubble: local preview while live, fetched
  * bytes for history. */
+/** What the composer does with one picked, pasted, or dropped file. */
+export type PastedKind = 'image' | 'video' | 'text' | 'file'
+
+/** Extensions whose contents ride the message as text (models read them). */
+const TEXT_FILE_EXTENSIONS: ReadonlySet<string> = new Set([
+  'txt', 'md', 'markdown', 'csv', 'json', 'log', 'yml', 'yaml', 'toml', 'ini',
+  'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'py', 'rb', 'go', 'rs', 'java',
+  'kt', 'c', 'h', 'cpp', 'hpp', 'cs', 'php', 'sh', 'bash', 'zsh', 'sql', 'html', 'css',
+])
+
+/**
+ * Route one file by what it is: images and videos attach for multimodal
+ * models, text-shaped files inline their contents into the message, and
+ * anything else attaches as a durable file the model references by name.
+ * @param file - the picked/pasted/dropped file (name and type only).
+ * @returns how the composer handles it.
+ */
+export function classifyPastedFile(file: { type: string; name: string }): PastedKind {
+  if (file.type.startsWith('image/')) return 'image'
+  if (file.type.startsWith('video/')) return 'video'
+  if (file.type.startsWith('text/') || file.type === 'application/json') return 'text'
+  const dot = file.name.lastIndexOf('.')
+  const extension = dot === -1 ? '' : file.name.slice(dot + 1).toLowerCase()
+  if (TEXT_FILE_EXTENSIONS.has(extension)) return 'text'
+  return 'file'
+}
+
 function BubbleAttachment({ attachment }: { attachment: ChatAttachment }): JSX.Element {
   const [url, setUrl] = useState<string | undefined>(attachment.localUrl)
   useEffect(() => {
@@ -69,6 +96,21 @@ function BubbleAttachment({ attachment }: { attachment: ChatAttachment }): JSX.E
   }, [attachment, url])
   if (attachment.kind === 'image') {
     return <img className="bubble-attachment" src={url} alt={attachment.mediaType} />
+  }
+  if (attachment.kind === 'file') {
+    return (
+      <a
+        className={url === undefined ? 'bubble-attachment file pending' : 'bubble-attachment file'}
+        href={url}
+        download={attachment.name ?? 'attachment'}
+      >
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M4 1.5h5L12.5 5v9.5a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-12a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+          <path d="M9 1.5V5h3.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+        </svg>
+        <span>{attachment.name ?? 'file'}</span>
+      </a>
+    )
   }
   return <video className="bubble-attachment" src={url} muted controls playsInline />
 }
@@ -347,6 +389,72 @@ export default function App(): JSX.Element {
     reader.readAsDataURL(file)
   }
 
+  /** Take one picked, pasted, or dropped file into the composer. */
+  const ingestFile = (file: File): void => {
+    const kind = classifyPastedFile(file)
+    if (kind === 'image' || kind === 'video') {
+      if (!(kind === 'image' ? acceptsImages : acceptsVideos)) {
+        setError(`this model does not accept ${kind}s`)
+        return
+      }
+      pickAttachment(file)
+      return
+    }
+    if (kind === 'text') {
+      if (file.size > 100 * 1024) {
+        setError('text files paste up to 100KB')
+        return
+      }
+      const reader = new FileReader()
+      reader.onerror = () => { setError('could not read that file') }
+      reader.onload = () => {
+        const text = typeof reader.result === 'string' ? reader.result : ''
+        if (text === '') {
+          setError('could not read that file')
+          return
+        }
+        const dot = file.name.lastIndexOf('.')
+        const extension = dot === -1 ? '' : file.name.slice(dot + 1)
+        setDraft(previous => `${previous}${previous === '' ? '' : '\n\n'}`
+          + `\`\`\`${extension}\n# ${file.name}\n${text}\n\`\`\`\n`)
+      }
+      reader.readAsText(file)
+      return
+    }
+    if (file.size > 25 * 1024 * 1024) {
+      setError('files paste up to 25MB')
+      return
+    }
+    const reader = new FileReader()
+    reader.onerror = () => { setError('could not read that file') }
+    reader.onload = () => {
+      const dataUrl = typeof reader.result === 'string' ? reader.result : ''
+      if (dataUrl === '') {
+        setError('could not read that file')
+        return
+      }
+      setError(undefined)
+      setAttachment({ kind: 'file', name: file.name, dataUrl })
+    }
+    reader.readAsDataURL(file)
+  }
+
+  /** Paste and drop share one ingestion path. */
+  const handleComposerPaste = (event: ReactClipboardEvent<HTMLTextAreaElement>): void => {
+    const files = [...event.clipboardData.files]
+    if (files.length === 0) return
+    event.preventDefault()
+    ingestFile(files[0] as File)
+    if (files.length > 1) setError('one file at a time — the rest were ignored')
+  }
+
+  const handleComposerDrop = (event: ReactDragEvent<HTMLTextAreaElement>): void => {
+    const files = [...event.dataTransfer.files]
+    if (files.length === 0) return
+    event.preventDefault()
+    ingestFile(files[0] as File)
+  }
+
   const startNewChat = useCallback(() => {
     if (streaming) return
     setActiveId(newSessionId())
@@ -367,7 +475,14 @@ export default function App(): JSX.Element {
       role: 'user' as const,
       ...text !== '' ? { text } : {},
       ...outgoing !== undefined
-        ? { attachments: [{ kind: outgoing.kind, mediaType: outgoing.dataUrl.slice(5, outgoing.dataUrl.indexOf(';')), localUrl: outgoing.dataUrl }] }
+        ? {
+          attachments: [{
+            kind: outgoing.kind,
+            name: outgoing.name,
+            mediaType: outgoing.dataUrl.slice(5, outgoing.dataUrl.indexOf(';')),
+            localUrl: outgoing.kind === 'file' ? undefined : outgoing.dataUrl,
+          }],
+        }
         : {},
     }])
     let sawAssistant = false
@@ -643,7 +758,14 @@ export default function App(): JSX.Element {
               <div className="attachment-chip">
                 {attachment.kind === 'image'
                   ? <img src={attachment.dataUrl} alt="" />
-                  : <video src={attachment.dataUrl} muted playsInline />}
+                  : attachment.kind === 'video'
+                    ? <video src={attachment.dataUrl} muted playsInline />
+                    : (
+                      <svg className="attachment-doc" viewBox="0 0 16 16" aria-hidden="true">
+                        <path d="M4 1.5h5L12.5 5v9.5a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-12a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+                        <path d="M9 1.5V5h3.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+                      </svg>
+                    )}
                 <span className="attachment-name">{attachment.name}</span>
                 <button type="button" aria-label="Remove attachment" onClick={() => { setAttachment(undefined) }}>
                   <svg viewBox="0 0 16 16" aria-hidden="true">
@@ -692,6 +814,8 @@ export default function App(): JSX.Element {
               value={draft}
               placeholder="Message dsh chat…"
               rows={1}
+              onPaste={handleComposerPaste}
+              onDrop={handleComposerDrop}
               onChange={(event) => {
                 setDraft(event.target.value)
                 const node = event.target

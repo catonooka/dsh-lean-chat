@@ -744,7 +744,7 @@ describe('parseAttachment', () => {
 
   it('rejects malformed payloads with pointed errors', () => {
     expect(() => parseAttachment('nope')).toThrow('must be an object')
-    expect(() => parseAttachment({ kind: 'audio', dataUrl: 'data:audio/mp3;base64,AAAA' })).toThrow('image or video')
+    expect(() => parseAttachment({ kind: 'audio', dataUrl: 'data:audio/mp3;base64,AAAA' })).toThrow('image, video, or file')
     expect(() => parseAttachment({ kind: 'image' })).toThrow('dataUrl')
     expect(() => parseAttachment({ kind: 'image', dataUrl: 'https://x/y.png' })).toThrow('base64 data URL')
     expect(() => parseAttachment({ kind: 'image', dataUrl: 'data:image/bmp;base64,AAAA' })).toThrow('png, jpeg, webp')
@@ -802,5 +802,28 @@ describe('modalityClaim', () => {
     expect(modalityClaim({ model: 'm', image: 'no', video: 'no' })).toBe(false)
     expect(modalityClaim({ model: 'm', image: 'unknown', video: 'unknown' })).toBe(false)
     expect(modalityClaim({ model: 'm', image: 'no', video: 'unknown' })).toBe(false)
+  })
+})
+
+describe('parseAttachment — file kind', () => {
+  it('accepts any media type for files and keeps the declared name', () => {
+    const parsed = parseAttachment({ kind: 'file', name: 'report.pdf', dataUrl: 'data:application/pdf;base64,JVBERiA=' })
+    expect(parsed).toEqual({ kind: 'file', name: 'report.pdf', mediaType: 'application/pdf', data: expect.any(Uint8Array) })
+    expect(() => parseAttachment({ kind: 'file', name: 'x.zip', dataUrl: 'data:application/zip;base64,AAAA' })).not.toThrow()
+  })
+
+  it('still rejects other kinds with mismatched media types', () => {
+    expect(() => parseAttachment({ kind: 'file', dataUrl: 'data:application/pdf;base64,' })).toThrow('not valid base64')
+  })
+})
+
+describe('attachmentDescriptors — file blocks', () => {
+  it('describes files with their durable names', () => {
+    const fileBlock = { type: 'file', attachment: { attachmentId: 'f-1', name: 'notes.md', bytes: 12 } }
+    expect(attachmentDescriptors([fileBlock] as unknown as ContentBlock[])).toEqual([
+      { kind: 'file', attachmentId: 'f-1', mediaType: 'application/octet-stream', ref: fileBlock.attachment, name: 'notes.md' },
+    ])
+    const projected = projectSurfaceEvent(surfaceEvent('user/message', { content: [fileBlock, { type: 'text', text: 'see attached' }] }))
+    expect(projected?.attachments?.[0]).toMatchObject({ kind: 'file', name: 'notes.md' })
   })
 })

@@ -615,17 +615,17 @@ const IMAGE_MEDIA_TYPES: ReadonlySet<string> = new Set(['image/png', 'image/jpeg
 
 /** One validated upload, ready for the attachment store. */
 export interface ParsedAttachment {
-  kind: 'image' | 'video'
+  kind: 'image' | 'video' | 'file'
   name: string
   mediaType: string
   data: Uint8Array
 }
 
 /** Pull the declared kind out of an attachment payload, unvalidated. */
-function attachmentKind(body: unknown): 'image' | 'video' | undefined {
+function attachmentKind(body: unknown): 'image' | 'video' | 'file' | undefined {
   if (typeof body !== 'object' || body === null || Array.isArray(body)) return undefined
   const kind = (body as { kind?: unknown }).kind
-  return kind === 'image' || kind === 'video' ? kind : undefined
+  return kind === 'image' || kind === 'video' || kind === 'file' ? kind : undefined
 }
 
 /**
@@ -637,7 +637,9 @@ function attachmentKind(body: unknown): 'image' | 'video' | undefined {
 export function parseAttachment(body: unknown): ParsedAttachment {
   if (typeof body !== 'object' || body === null || Array.isArray(body)) throw new Error('attachment must be an object')
   const record = body as { kind?: unknown; name?: unknown; dataUrl?: unknown }
-  if (record.kind !== 'image' && record.kind !== 'video') throw new Error('attachment kind must be image or video')
+  if (record.kind !== 'image' && record.kind !== 'video' && record.kind !== 'file') {
+    throw new Error('attachment kind must be image, video, or file')
+  }
   if (typeof record.dataUrl !== 'string') throw new Error('attachment dataUrl must be a string')
   const url = record.dataUrl
   const semicolon = url.indexOf(';')
@@ -654,6 +656,7 @@ export function parseAttachment(body: unknown): ParsedAttachment {
   if (record.kind === 'video' && !mediaType.startsWith('video/')) {
     throw new Error('video attachments must carry a video/* media type')
   }
+  // Files carry any media type; pasted unknowns fall back to octet-stream.
   const data = Uint8Array.from(Buffer.from(payload, 'base64'))
   const cap = record.kind === 'image' ? MAX_IMAGE_BYTES : MAX_VIDEO_BYTES
   if (data.byteLength === 0) throw new Error('attachment is empty')
@@ -666,9 +669,11 @@ export function parseAttachment(body: unknown): ParsedAttachment {
 
 /** One attachment as the browser renders it: what it is and how to fetch it. */
 export interface ChatAttachment {
-  kind: 'image' | 'video'
+  kind: 'image' | 'video' | 'file'
   attachmentId: string
   mediaType: string
+  /** Display name for file attachments. */
+  name?: string
   /** The durable reference, echoed back to fetch the bytes. */
   ref: unknown
 }
@@ -688,6 +693,14 @@ export function attachmentDescriptors(content: readonly ContentBlock[] | undefin
       out.push({ kind: 'image', attachmentId: String(ref.attachmentId), mediaType: ref.mediaType, ref })
     } else if (block.type === 'video') {
       out.push({ kind: 'video', attachmentId: String(block.attachment.attachmentId), mediaType: block.mediaType, ref: block.attachment })
+    } else if (block.type === 'file') {
+      out.push({
+        kind: 'file',
+        attachmentId: String(block.attachment.attachmentId),
+        mediaType: 'application/octet-stream',
+        ref: block.attachment,
+        name: block.attachment.name,
+      })
     }
   }
   return out
@@ -757,7 +770,7 @@ const MIME: Record<string, string> = {
 export interface ChatItem {
   role: 'user' | 'assistant' | 'tool'
   text?: string
-  attachments?: { kind: 'image' | 'video'; attachmentId: string; mediaType: string; ref?: unknown }[]
+  attachments?: { kind: 'image' | 'video' | 'file'; attachmentId: string; mediaType: string; name?: string; ref?: unknown }[]
   name?: string
   query?: string
   searchQuestion?: string
@@ -1681,7 +1694,7 @@ export function apply(ctx: Context, config: Config): void {
             return
           }
           const abilities = await ensureModelAbilities(activeProfile(settings).model)
-          if (abilities[kind] !== 'yes') {
+          if (kind !== 'file' && abilities[kind] !== 'yes') {
             sendJson(res, 400, { error: `this model does not accept ${kind} input (probe says ${abilities[kind]})` })
             return
           }
@@ -1694,12 +1707,18 @@ export function apply(ctx: Context, config: Config): void {
             }])
             if (ref === undefined) throw new Error('the image was not stored')
             content.push({ type: 'image', attachment: ref })
-          } else {
+          } else if (parsed.kind === 'video') {
             const ref = await store.saveFile({
               data: parsed.data,
               ...parsed.name !== '' ? { name: parsed.name } : {},
             })
             content.push({ type: 'video', attachment: ref, mediaType: parsed.mediaType })
+          } else {
+            const ref = await store.saveFile({
+              data: parsed.data,
+              ...parsed.name !== '' ? { name: parsed.name } : {},
+            })
+            content.push({ type: 'file', attachment: ref })
           }
         }
         const trimmed = text.trim()
@@ -1756,7 +1775,7 @@ export function apply(ctx: Context, config: Config): void {
         sendJson(res, 400, { error: 'attachment request must carry kind, mediaType, and ref' })
         return
       }
-      if (body.kind === 'image') {
+      if (body.kind === 'image' && body.ref !== null && typeof body.ref === 'object') {
         const stored = await store.readImage(body.ref as unknown as ImageAttachmentRef)
         res.writeHead(200, {
           'content-type': stored.ref.mediaType,

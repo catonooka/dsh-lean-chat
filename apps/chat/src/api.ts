@@ -8,7 +8,8 @@ export interface ChatSource {
 
 /** One attachment as history serves it, or as the composer holds it locally. */
 export interface ChatAttachment {
-  kind: 'image' | 'video'
+  kind: 'image' | 'video' | 'file'
+  name?: string
   attachmentId?: string
   mediaType: string
   /** History entries carry the durable reference to fetch bytes with. */
@@ -221,7 +222,7 @@ export type StreamEvent =
 
 /** One upload ready to ride a message. */
 export interface OutgoingAttachment {
-  kind: 'image' | 'video'
+  kind: 'image' | 'video' | 'file'
   name: string
   dataUrl: string
 }
