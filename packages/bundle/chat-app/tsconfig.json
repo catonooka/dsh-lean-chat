@@ -43,6 +43,9 @@
       "path": "../../web/web-search-chrome"
     },
     {
+      "path": "../../web/tool-browser-chrome"
+    },
+    {
       "path": "../../session-query/session-query"
     },
     {

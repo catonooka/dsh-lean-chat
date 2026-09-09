@@ -28,6 +28,7 @@ import { dirname, extname, join, resolve, sep } from 'node:path'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { TinyMetasearchProvider } from '@deepseek-ai/dsh-web-search-tiny/src/provider.ts'
 import { DEFAULT_BRIDGE_CLIENT, ExtensionBridge } from '@deepseek-ai/dsh-web-search-chrome/src/bridge.ts'
+import { defineBrowserTool } from '@deepseek-ai/dsh-tool-browser-chrome/src/index.ts'
 import { probeModelAbilities, type ModelAbilities } from './capabilities.ts'
 import { routeSearchTarget, toSources, UserChromeSearchProvider } from '@deepseek-ai/dsh-web-search-chrome/src/provider.ts'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -1633,6 +1634,12 @@ export function apply(ctx: Context, config: Config): void {
           ? userChromeSearch(request, signal).then(outcome => outcome.result)
           : tinyEngine.search(request, signal),
     })
+  })
+
+  // The browser tool rides the same bridge as Chrome search: the model drives
+  // a real tab in the user's own browser, step by step, with their logins.
+  ctx.inject(['tools'], (toolsCtx) => {
+    toolsCtx.tools.register(defineBrowserTool({ bridge: extensionBridge }))
   })
 
   /** Send one SSE payload to every open stream of one session. */
