@@ -923,9 +923,12 @@ const MAX_SEARCH_QUERY_CHARS = 500
 /** Longest snippet served per search hit, in code points. */
 const SNIPPET_MAX_CODE_POINTS = 240
 
-/** Heartbeat window for calling the extension connected; its long-poll cycle
- * stays well under this, and a running search marks seen on its result post. */
-const EXTENSION_TTL_MS = 15_000
+/** Heartbeat window for calling the extension connected. The idle gap
+ * between long-polls is one full poll wait (25s) plus turnaround, so the
+ * window must exceed it or a healthy parked extension flaps to the CDP
+ * fallback every cycle; 35s covers a missed re-poll too. A running search
+ * marks seen on its result post. */
+const EXTENSION_TTL_MS = 35_000
 
 /** How long a bridged search may wait for the extension before failing. */
 const EXTENSION_JOB_TIMEOUT_MS = 9_000
@@ -1737,6 +1740,8 @@ export function apply(ctx: Context, config: Config): void {
       void entry.handle.dispose()
     }
   }, 'chat-app.agents')
+  // Plugin teardown also releases every parked long-poll and pending search.
+  ctx.effect(() => () => { extensionBridge.dispose() }, 'chat-app.extension-bridge')
 
   // Sampling is request-level, not agent identity: patch the frozen call
   // config on its way out so every conversation request carries the
@@ -2459,7 +2464,12 @@ export function apply(ctx: Context, config: Config): void {
       extensionBridge.markSeen()
       const waitRaw = Number.parseInt(url.searchParams.get('wait') ?? '', 10)
       const waitSeconds = Math.min(Math.max(Number.isFinite(waitRaw) ? waitRaw : 25, 1), 55)
-      const job = await extensionBridge.nextJob(waitSeconds * 1000)
+      // A poller that dies mid-park (sleeping machine, reloaded extension)
+      // releases its waiter at once instead of holding one a fresh job would
+      // be handed to and lost.
+      const pollAbort = new AbortController()
+      req.once('close', () => { pollAbort.abort() })
+      const job = await extensionBridge.nextJob(waitSeconds * 1000, pollAbort.signal)
       sendJson(res, 200, { job }, chromeCors(req))
       return
     }

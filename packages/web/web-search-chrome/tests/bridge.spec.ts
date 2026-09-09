@@ -212,3 +212,54 @@ describe('bridge — long-poll and settlement corners', () => {
     expect(created.seenWithin(15_000, 1_000)).toBe(true)
   })
 })
+
+describe('stale queue hygiene', () => {
+  it('drops an unanswered job from the queue at its timeout', async () => {
+    const created = bridge()
+    // No waiter is parked, so the job sits in the queue; its caller times
+    // out without the extension ever connecting.
+    const settlement = created.enqueue(webJob, 10)
+    await expect(settlement).resolves.toEqual({ ok: false, error: 'the extension did not answer within 10ms' })
+    // The dead job must not be handed to the next long-poll after a
+    // reconnect: the extension would run a full search nobody awaits.
+    await expect(created.nextJob(10)).resolves.toBeNull()
+  })
+
+  it('keeps a job queued that a waiter already took (delivery in flight)', async () => {
+    const created = bridge()
+    const parked = created.nextJob(10_000)
+    const settlement = created.enqueue(webJob, 10)
+    const job = await parked
+    expect(job).toMatchObject({ query: 'dsh chat' })
+    // Timed out after delivery: nothing queued to drop, settle still refuses.
+    await expect(settlement).resolves.toMatchObject({ ok: false })
+    expect(created.settle({ id: '1', ok: true, sources: [] })).toBe(false)
+  })
+
+  it('releases a parked waiter as soon as its poll client aborts', async () => {
+    const created = bridge()
+    const abort = new AbortController()
+    const parked = created.nextJob(10_000, abort.signal)
+    abort.abort()
+    await expect(parked).resolves.toBeNull()
+    // The aborted waiter is gone: the next enqueue parks a fresh one only
+    // for a live poll, and a later poll still gets the job.
+    const settlement = created.enqueue(webJob, 10_000)
+    const job = await created.nextJob(10)
+    expect(job).toMatchObject({ query: 'dsh chat' })
+    expect(created.settle({ id: job?.id ?? '', ok: true, sources: [] })).toBe(true)
+    await expect(settlement).resolves.toEqual({ ok: true, sources: [] })
+  })
+
+  it('an abort after delivery changes nothing', async () => {
+    const created = bridge()
+    const abort = new AbortController()
+    const parked = created.nextJob(10_000, abort.signal)
+    const settlement = created.enqueue(webJob, 10_000)
+    const job = await parked
+    abort.abort()
+    expect(job).toMatchObject({ query: 'dsh chat' })
+    expect(created.settle({ id: job?.id ?? '', ok: true, sources: [] })).toBe(true)
+    await expect(settlement).resolves.toEqual({ ok: true, sources: [] })
+  })
+})

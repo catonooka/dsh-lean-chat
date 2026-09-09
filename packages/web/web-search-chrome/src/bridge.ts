@@ -59,10 +59,13 @@ export class ExtensionBridge {
 
   /**
    * Long-poll the next job: resolves immediately when one is queued, else
-   * `null` once `waitMs` passes. The extension re-polls right away either
-   * way, so the request stream doubles as its heartbeat.
+   * `null` once `waitMs` passes — or as soon as `signal` aborts, so a poller
+   * that died mid-park (sleeping machine, reloaded extension) stops holding
+   * a waiter that a fresh job would be handed to and lost. The extension
+   * re-polls right away either way, so the request stream doubles as its
+   * heartbeat.
    */
-  nextJob(waitMs: number): Promise<ExtensionJob | null> {
+  nextJob(waitMs: number, signal?: AbortSignal): Promise<ExtensionJob | null> {
     const head = this.queue.shift()
     if (head !== undefined) return Promise.resolve(head)
     return new Promise((resolve) => {
@@ -75,6 +78,16 @@ export class ExtensionBridge {
         }, waitMs),
       }
       this.waiters.push(waiter)
+      signal?.addEventListener('abort', () => {
+        const index = this.waiters.indexOf(waiter)
+        if (index !== -1) {
+          this.waiters.splice(index, 1)
+          clearTimeout(waiter.timer)
+          resolve(null)
+        }
+        // A waiter already resolved with a job is out of our hands; its
+        // settle will report the dead socket and the job timer fails it.
+      }, { once: true })
     })
   }
 
@@ -92,6 +105,11 @@ export class ExtensionBridge {
         resolve,
         timer: setTimeout(() => {
           this.pending.delete(full.id)
+          // A job the extension never took must leave the queue too — after
+          // a reconnect it would otherwise be executed serially for a
+          // caller that already gave up on it.
+          const queuedAt = this.queue.indexOf(full)
+          if (queuedAt !== -1) this.queue.splice(queuedAt, 1)
           resolve({ ok: false, error: `the extension did not answer within ${String(timeoutMs)}ms` })
         }, timeoutMs),
       }
