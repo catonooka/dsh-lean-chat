@@ -2,6 +2,7 @@
  * Unit coverage for the chat glue's pure history projection and settings.
  */
 
+import type { IncomingMessage } from 'node:http'
 import { describe, expect, it } from 'vitest'
 import {
   activeProfile,
@@ -26,6 +27,7 @@ import {
   parseSessionToken,
   parseSettingsFile,
   projectSurfaceEvent,
+  requestChunks,
   resolveProviderFallback,
   TitleSnapshotCache,
   truncateSnippet,
@@ -1151,5 +1153,49 @@ describe('InFlightDedup', () => {
     await expect(dedup.run('x', start)).rejects.toThrow('probe down')
     await expect(dedup.run('x', start)).rejects.toThrow('probe down')
     expect(starts).toBe(2)
+  })
+})
+
+describe('requestChunks', () => {
+  /** An async iterable standing in for a request body. */
+  async function* bodyOf(chunks: Buffer[]): AsyncGenerator<Buffer> {
+    for (const chunk of chunks) yield chunk
+  }
+
+  it('yields the body in order while the total stays under the cap', async () => {
+    const chunks: Uint8Array[] = []
+    for await (const chunk of requestChunks(bodyOf([Buffer.from('ab'), Buffer.from('cd')]) as unknown as IncomingMessage, 4)) {
+      chunks.push(chunk)
+    }
+    expect(chunks.map(chunk => Buffer.from(chunk).toString('utf8'))).toEqual(['ab', 'cd'])
+  })
+
+  it('refuses past the cap mid-stream, before the tail is read', async () => {
+    const mb = 1024 * 1024
+    const collected: number[] = []
+    await expect(async () => {
+      for await (const chunk of requestChunks(
+        bodyOf([Buffer.alloc(3 * mb), Buffer.alloc(3 * mb)]) as unknown as IncomingMessage,
+        5 * mb,
+      )) {
+        collected.push(chunk.byteLength)
+      }
+    }).rejects.toThrow('upload exceeds the 5MB cap')
+    // The over-cap chunk never reaches the store.
+    expect(collected).toEqual([3 * mb])
+  })
+})
+
+describe('parseAttachment — charset scan threshold', () => {
+  it('validates charset under 16MB of base64 but trusts the store above it', () => {
+    // Under the threshold the full-string scan runs and rejects garbage.
+    expect(() => parseAttachment({ kind: 'file', dataUrl: 'data:application/octet-stream;base64,§§§§' }))
+      .toThrow('not valid base64')
+    // Above it (a video-sized payload) the linear scan is deliberately
+    // skipped: the store's own sniffing and digest verification are the
+    // semantic checks, and the multi-megabyte regex is not worth its cost.
+    const huge = `§${'A'.repeat(16 * 1024 * 1024)}`
+    const parsed = parseAttachment({ kind: 'video', dataUrl: `data:video/mp4;base64,${huge}` })
+    expect(parsed.kind).toBe('video')
   })
 })

@@ -769,7 +769,6 @@ export function parseAttachment(body: unknown): ParsedAttachment {
   }
   const mediaType = url.slice(5, semicolon).toLowerCase()
   const payload = url.slice(comma + 1)
-  if (payload === '' || !/^[A-Za-z0-9+/]+={0,2}$/.test(payload)) throw new Error('attachment dataUrl is not valid base64')
   if (record.kind === 'image' && !IMAGE_MEDIA_TYPES.has(mediaType)) {
     throw new Error(`image attachments must be png, jpeg, webp, or gif (got ${mediaType})`)
   }
@@ -1021,8 +1020,11 @@ function sendJson(res: ServerResponse, status: number, value: unknown, headers: 
  * Stream one raw request body as bounded chunks, refusing past the cap so an
  * oversized upload aborts before its tail is read — the body never
  * accumulates whole for the streamed save path.
+ * @param req - the request whose body streams.
+ * @param capBytes - the per-kind upload cap.
+ * @yields the body's chunks in order, up to the cap.
  */
-async function* requestChunks(req: IncomingMessage, capBytes: number): AsyncGenerator<Uint8Array> {
+export async function* requestChunks(req: IncomingMessage, capBytes: number): AsyncGenerator<Uint8Array> {
   let seen = 0
   for await (const chunk of req) {
     const bytes = chunk as Buffer
