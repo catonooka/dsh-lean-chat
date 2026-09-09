@@ -1,7 +1,7 @@
 /** Unit coverage for the reply snippet helpers: folding, clamping, labels. */
 
 import { describe, expect, it } from 'vitest'
-import { REPLY_SNIPPET_MAX, clampReplyText, replyLabel } from '../src/reply.ts'
+import { REPLY_SNIPPET_MAX, clampReplyText, replyLabel, replyTargetFor } from '../src/reply.ts'
 
 describe('clampReplyText', () => {
   it('keeps short text as-is', () => {
@@ -37,5 +37,26 @@ describe('replyLabel', () => {
   it('names the two roles', () => {
     expect(replyLabel('user')).toBe('You')
     expect(replyLabel('assistant')).toBe('dsh chat')
+  })
+})
+
+describe('replyTargetFor', () => {
+  it('yields a clamped target for text-bearing user and assistant rows', () => {
+    expect(replyTargetFor({ role: 'user', text: '  hello \n world  ' }))
+      .toEqual({ role: 'user', text: 'hello world' })
+    expect(replyTargetFor({ role: 'assistant', text: 'answer' }))
+      .toEqual({ role: 'assistant', text: 'answer' })
+  })
+
+  it('clamps long answers to the snippet cap', () => {
+    expect(replyTargetFor({ role: 'assistant', text: 'x'.repeat(400) }))
+      .toEqual({ role: 'assistant', text: clampReplyText('x'.repeat(400)) })
+  })
+
+  it('refuses tool rows and rows without text', () => {
+    expect(replyTargetFor({ role: 'tool', text: 'searched' })).toBeUndefined()
+    expect(replyTargetFor({ role: 'user', text: '' })).toBeUndefined()
+    expect(replyTargetFor({ role: 'assistant', text: '   \n ' })).toBeUndefined()
+    expect(replyTargetFor({ role: 'user' })).toBeUndefined()
   })
 })

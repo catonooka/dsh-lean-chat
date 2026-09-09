@@ -27,7 +27,7 @@ import { AvatarModal } from './AvatarModal.tsx'
 import { BOT_AVATAR_SRC, avatarSrc, readStoredAvatar, storeAvatar } from './avatar.ts'
 import { DeltaBatcher } from './delta.ts'
 import { copyToClipboard } from './clipboard.ts'
-import { clampReplyText, replyLabel, type ReplyContext } from './reply.ts'
+import { replyLabel, replyTargetFor, type ReplyContext } from './reply.ts'
 
 const ACTIVE_KEY = 'dsh-chat-active'
 const COLLAPSED_KEY = 'dsh-chat-collapsed'
@@ -648,10 +648,9 @@ export default function App(): JSX.Element {
   /** Make one message the reply target: the composer answers it with a
    * context chip, instead of pasting its text into the draft. */
   const beginReply = useCallback((item: ChatItem): void => {
-    if (item.role === 'tool') return
-    const snippet = clampReplyText(item.text ?? '')
-    if (snippet === '') return
-    setReplyTarget({ role: item.role, text: snippet })
+    const target = replyTargetFor(item)
+    if (target === undefined) return
+    setReplyTarget(target)
     textareaRef.current?.focus()
   }, [])
 

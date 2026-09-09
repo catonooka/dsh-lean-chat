@@ -23,3 +23,14 @@ export function clampReplyText(text: string, max: number = REPLY_SNIPPET_MAX): s
 export function replyLabel(role: 'user' | 'assistant'): string {
   return role === 'user' ? 'You' : 'dsh chat'
 }
+
+/**
+ * The reply target one chat row yields, if any: user and assistant messages
+ * with text can be answered; tool rows and empty texts cannot.
+ */
+export function replyTargetFor(item: { role: 'user' | 'assistant' | 'tool'; text?: string }): ReplyContext | undefined {
+  if (item.role === 'tool') return undefined
+  const text = clampReplyText(item.text ?? '')
+  if (text === '') return undefined
+  return { role: item.role, text }
+}

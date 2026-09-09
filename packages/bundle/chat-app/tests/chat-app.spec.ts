@@ -29,8 +29,8 @@ import {
   type ChatSettings,
   type Config,
 } from '../src/index.ts'
-import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
-import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+import { snapshotSessionEvent, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
+import { createUserMessage, type ContentBlock, type UserMessage } from '@deepseek-ai/dsh-llm'
 import { interpretProbeOutcome, probeMessages } from '../src/capabilities.ts'
 
 function surfaceEvent(type: string, data: unknown): SessionEvent {
@@ -121,6 +121,39 @@ describe('parseReplyTo', () => {
       .toEqual({ ok: true, replyTo: { role: 'user', text: 'first line second' } })
     expect(parseReplyTo({ role: 'assistant', text: 'x'.repeat(500) }))
       .toEqual({ ok: true, replyTo: { role: 'assistant', text: 'x'.repeat(300) } })
+  })
+})
+
+/** The reply feature rides an extra field on user messages through the
+ * message pipeline and the session ledger. These tests pin the two
+ * load-bearing assumptions: construction keeps sibling fields, and the
+ * ledger read-back snapshot copies them verbatim. */
+describe('replyTo persistence assumptions', () => {
+  const replyTo = { role: 'assistant' as const, text: 'hello' }
+
+  it('createUserMessage carries a sibling replyTo field verbatim', () => {
+    const message = createUserMessage({
+      content: [{ type: 'text', text: 'same to you' }],
+      source: { kind: 'user' },
+      replyTo,
+    })
+    expect(message.role).toBe('user')
+    expect((message as UserMessage & { replyTo?: typeof replyTo }).replyTo).toEqual(replyTo)
+  })
+
+  it('snapshotSessionEvent keeps replyTo when the ledger is read back', () => {
+    const event = surfaceEvent('user/message', {
+      id: 'm1',
+      role: 'user',
+      source: { kind: 'user' },
+      content: [{ type: 'text', text: 'same to you' }],
+      replyTo,
+    })
+    const snapshot = snapshotSessionEvent(event)
+    const data = snapshot.data as UserMessage & { replyTo?: typeof replyTo }
+    expect(data.replyTo).toEqual(replyTo)
+    // The snapshot is a detached copy: mutating the source cannot leak in.
+    expect((event.data as { replyTo?: typeof replyTo }).replyTo).toEqual(replyTo)
   })
 })
 
