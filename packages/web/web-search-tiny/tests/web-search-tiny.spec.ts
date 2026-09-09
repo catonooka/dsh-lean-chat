@@ -5,6 +5,7 @@
 
 import { describe, expect, it } from 'vitest'
 import {
+  TinyMetasearchProvider,
   decodeEntities,
   htmlToText,
   mergeResults,
@@ -210,5 +211,59 @@ describe('mergeResults — corners', () => {
     expect(mergeResults([{ url: 'https://a' }, { url: 'https://b' }], [], 2).truncated).toBe(false)
     expect(mergeResults([{ url: 'https://a' }, { url: 'https://b' }], [], 1).truncated).toBe(true)
     expect(mergeResults([{ url: 'https://a' }], [], 0).sources).toEqual([])
+  })
+})
+
+describe('TinyMetasearchProvider result cache', () => {
+  const serp = (marker: string): string => `
+<div class="result results_links results_links_deep web-result">
+  <h2 class="result__title"><a class="result__a" href="https://example.com/${marker}">${marker}</a></h2>
+  <a class="result__snippet" href="https://example.com/${marker}">snippet ${marker}</a>
+</div>
+`
+
+  it('serves a repeat query from cache without refetching the engines', async () => {
+    const fetched: string[] = []
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input)
+      fetched.push(url)
+      if (url.includes('duckduckgo')) {
+        return new Response(serp('cached-page'), { status: 200 })
+      }
+      return new Response(JSON.stringify({ query: { search: [] } }), { status: 200 })
+    }) as typeof fetch
+    try {
+      const provider = new TinyMetasearchProvider({ timeoutMs: 1000, wikipedia: false })
+      const first = await provider.search({ query: 'cache me', maxResults: 5 })
+      const second = await provider.search({ query: 'cache me', maxResults: 5 })
+      expect(first.sources.map(source => source.title)).toEqual(['cached-page'])
+      expect(second).toBe(first)
+      expect(fetched.filter(url => url.includes('duckduckgo'))).toHaveLength(1)
+      // A different query is a different cache entry.
+      await provider.search({ query: 'different', maxResults: 5 })
+      expect(fetched.filter(url => url.includes('duckduckgo'))).toHaveLength(2)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('keys the cache on the result budget too', async () => {
+    const fetched: string[] = []
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input)
+      fetched.push(url)
+      if (url.includes('duckduckgo')) return new Response(serp('budget-page'), { status: 200 })
+      return new Response(JSON.stringify({ query: { search: [] } }), { status: 200 })
+    }) as typeof fetch
+    try {
+      const provider = new TinyMetasearchProvider({ timeoutMs: 1000, wikipedia: false })
+      await provider.search({ query: 'same words', maxResults: 5 })
+      await provider.search({ query: 'same words', maxResults: 8 })
+      expect(fetched.filter(url => url.includes('duckduckgo'))).toHaveLength(2)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
   })
 })

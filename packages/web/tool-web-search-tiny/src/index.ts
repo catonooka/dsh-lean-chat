@@ -88,8 +88,8 @@ const LATEST_KEYWORDS: readonly string[] = [
  */
 export function resolveStaleYear(question: string, rawQuery: string, now: Date = new Date()): string {
   const haystack = rawQuery.toLowerCase()
-  const nowClass = NOW_KEYWORDS.some(keyword => matchesKeyword(haystack, keyword.toLowerCase()))
-  const latestClass = !nowClass && LATEST_KEYWORDS.some(keyword => matchesKeyword(haystack, keyword.toLowerCase()))
+  const nowClass = matchesAnyKeyword(haystack, NOW_KEYWORD_MATCHERS)
+  const latestClass = !nowClass && matchesAnyKeyword(haystack, LATEST_KEYWORD_MATCHERS)
   if (!nowClass && !latestClass) return question
   const currentYear = now.getUTCFullYear()
   const years = (question.match(/\b(?:19|20)\d{2}\b/gu) ?? []).map(Number)
@@ -119,12 +119,23 @@ function escapeRegExp(text: string): string {
  * keywords must match as whole words — the French "hier" must not fire inside
  * "hierarchy", nor Spanish "hoy" inside "ahoy" — while CJK and diacritic
  * keywords have no word boundaries to lean on, so substring matching stands.
+ * The matchers are compiled once at module load; the lists are static and
+ * per-call compilation cost ~160 RegExp constructions per search.
  */
-function matchesKeyword(haystack: string, keyword: string): boolean {
+type KeywordMatcher = string | RegExp
+
+function keywordMatcher(keyword: string): KeywordMatcher {
   if (/^[a-z0-9' -]+$/u.test(keyword)) {
-    return new RegExp(`(?:^|[^\\p{L}\\p{N}])${escapeRegExp(keyword)}(?:[^\\p{L}\\p{N}]|$)`, 'u').test(haystack)
+    return new RegExp(`(?:^|[^\\p{L}\\p{N}])${escapeRegExp(keyword)}(?:[^\\p{L}\\p{N}]|$)`, 'u')
   }
-  return haystack.includes(keyword)
+  return keyword
+}
+
+const NOW_KEYWORD_MATCHERS: readonly KeywordMatcher[] = NOW_KEYWORDS.map(keyword => keywordMatcher(keyword.toLowerCase()))
+const LATEST_KEYWORD_MATCHERS: readonly KeywordMatcher[] = LATEST_KEYWORDS.map(keyword => keywordMatcher(keyword.toLowerCase()))
+
+function matchesAnyKeyword(haystack: string, matchers: readonly KeywordMatcher[]): boolean {
+  return matchers.some(matcher => (typeof matcher === 'string' ? haystack.includes(matcher) : matcher.test(haystack)))
 }
 
 /**
@@ -139,11 +150,11 @@ function matchesKeyword(haystack: string, keyword: string): boolean {
 export function withCurrentDate(query: string, now: Date = new Date()): string {
   if (/\b(?:19|20)\d{2}\b/u.test(query)) return query
   const haystack = query.toLowerCase()
-  const hasNow = NOW_KEYWORDS.some(keyword => matchesKeyword(haystack, keyword.toLowerCase()))
+  const hasNow = matchesAnyKeyword(haystack, NOW_KEYWORD_MATCHERS)
   if (hasNow) {
     return `${query} ${String(now.getUTCFullYear())}-${pad2(now.getUTCMonth() + 1)}-${pad2(now.getUTCDate())}`
   }
-  const hasLatest = LATEST_KEYWORDS.some(keyword => matchesKeyword(haystack, keyword.toLowerCase()))
+  const hasLatest = matchesAnyKeyword(haystack, LATEST_KEYWORD_MATCHERS)
   if (hasLatest) {
     return `${query} ${String(now.getUTCFullYear())}`
   }
@@ -153,8 +164,51 @@ export function withCurrentDate(query: string, now: Date = new Date()): string {
 /** Output-token cap for the generator call. */
 export const GENERATOR_MAX_TOKENS = 64
 
-/** Wall-clock budget for the generator call before falling back to the raw query. */
-export const GENERATOR_TIMEOUT_MS = 8_000
+/**
+ * Wall-clock budget for the generator call before falling back to the raw
+ * query. The call gates every `web_search` — its latency lands in front of
+ * the actual search — so the budget stays tight: real generators answer a
+ * ≤200-char rewrite well inside it, and a slow endpoint fails fast to the
+ * raw query instead of doubling the search's time-to-first-result.
+ */
+export const GENERATOR_TIMEOUT_MS = 3_000
+
+/**
+ * A bounded insert-order map: re-inserting refreshes recency, and the cap
+ * retires the oldest entry. Insertion order tracks recency because a
+ * refresh deletes before it sets.
+ */
+export class LruCache<T> {
+  private readonly entries = new Map<string, T>()
+
+  constructor(private readonly maxEntries: number) {}
+
+  get(key: string): T | undefined {
+    const value = this.entries.get(key)
+    if (value !== undefined) {
+      this.entries.delete(key)
+      this.entries.set(key, value)
+    }
+    return value
+  }
+
+  set(key: string, value: T): void {
+    if (this.entries.size >= this.maxEntries && !this.entries.has(key)) {
+      const oldest = this.entries.keys().next().value
+      if (oldest !== undefined) this.entries.delete(oldest)
+    }
+    this.entries.delete(key)
+    this.entries.set(key, value)
+  }
+}
+
+/**
+ * Recently generated questions keyed by raw query. The generator runs at
+ * temperature 0, so repeats — model retries, common queries inside one
+ * conversation — reuse the previous rewrite instead of paying the extra
+ * LLM roundtrip in front of the search again.
+ */
+const generatedQuestions = new LruCache<string>(64)
 
 /** Hard length cap for generated questions, matching the instruction. */
 const MAX_QUESTION_CHARS = 200
@@ -383,9 +437,16 @@ export function apply(ctx: Context, config: Config): void {
     // Provider reads do not mutate parent-agent state.
     isConcurrencySafe: () => true,
     async execute(args: WebSearchTinyArgs, exec): Promise<WebSearchTinyValue> {
-      const generated = resolved.generateQuestion
-        ? await generateSearchQuestion(ctx, args.query, resolved.generatorProvider, resolved.generatorModel, exec.signal)
-        : args.query
+      let generated = args.query
+      if (resolved.generateQuestion) {
+        const cached = generatedQuestions.get(args.query)
+        if (cached !== undefined) {
+          generated = cached
+        } else {
+          generated = await generateSearchQuestion(ctx, args.query, resolved.generatorProvider, resolved.generatorModel, exec.signal)
+          generatedQuestions.set(args.query, generated)
+        }
+      }
       // A generator that invented a stale year for a time-relative query
       // loses it; the keyless stamp then applies the current date.
       const searchQuestion = withCurrentDate(resolveStaleYear(generated, args.query))

@@ -6,6 +6,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   Config,
+  GENERATOR_TIMEOUT_MS,
+  LruCache,
   EXTERNAL_WEB_CONTENT_NOTICE,
   formatSearchOutput,
   generatorSystem,
@@ -255,5 +257,35 @@ describe('formatSearchOutput — corners', () => {
     }))
     expect(text).toContain('- [A](https://a)')
     expect(text).not.toContain('published')
+  })
+})
+
+describe('LruCache', () => {
+  it('serves entries until the cap retires the least recently used', () => {
+    const cache = new LruCache<string>(3)
+    cache.set('a', '1')
+    cache.set('b', '2')
+    cache.set('c', '3')
+    expect(cache.get('a')).toBe('1') // refresh a past b
+    cache.set('d', '4') // b is now the oldest
+    expect(cache.get('b')).toBeUndefined()
+    expect(cache.get('a')).toBe('1')
+    expect(cache.get('d')).toBe('4')
+  })
+
+  it('re-setting an existing key refreshes it without retiring another', () => {
+    const cache = new LruCache<number>(2)
+    cache.set('x', 1)
+    cache.set('y', 2)
+    cache.set('x', 9)
+    cache.set('z', 3) // y is oldest, x was refreshed
+    expect(cache.get('y')).toBeUndefined()
+    expect(cache.get('x')).toBe(9)
+  })
+})
+
+describe('search latency budget', () => {
+  it('keeps the generator timeout tight: it gates every search', () => {
+    expect(GENERATOR_TIMEOUT_MS).toBeLessThan(5_000)
   })
 })

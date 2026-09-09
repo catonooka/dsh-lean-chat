@@ -115,9 +115,18 @@ export function mergeResults(
  * The keyless metasearch provider. `available()` is always true — the engines
  * need no configuration, and engine-level failures degrade into fewer results
  * (or one structured `WEB_PROVIDER_ERROR` when every engine failed).
+ *
+ * Identical queries within a short window reuse the previous results: the
+ * keyless DDG HTML endpoint is rate-limit prone, and model retries re-ask
+ * the same question within seconds. Failures are never cached.
  */
 export class TinyMetasearchProvider implements WebSearchProvider {
   readonly id = TINY_PROVIDER_ID
+
+  /** Result cache window and size. */
+  private static readonly CACHE_TTL_MS = 60_000
+  private static readonly CACHE_MAX = 32
+  private readonly cache = new Map<string, { at: number; value: WebSearchResult }>()
 
   constructor(private readonly options: TinyMetasearchOptions) {}
 
@@ -126,6 +135,12 @@ export class TinyMetasearchProvider implements WebSearchProvider {
   }
 
   async search(request: WebSearchRequest, signal?: AbortSignal): Promise<WebSearchResult> {
+    signal?.throwIfAborted()
+    const cacheKey = `${request.query}\u0000${String(request.maxResults ?? '')}`
+    const cached = this.cache.get(cacheKey)
+    if (cached !== undefined && Date.now() - cached.at < TinyMetasearchProvider.CACHE_TTL_MS) {
+      return cached.value
+    }
     const cancelled = signal ?? new AbortController().signal
     const engines: { name: string; run: () => Promise<WebSearchSource[]> }[] = [
       { name: 'duckduckgo', run: () => searchDuckDuckGo(request.query, cancelled, this.options.timeoutMs) },
@@ -152,6 +167,12 @@ export class TinyMetasearchProvider implements WebSearchProvider {
       )
     }
     const merged = mergeResults(primary, secondary, request.maxResults ?? PER_ENGINE_LIMIT)
-    return { sources: merged.sources, truncated: merged.truncated }
+    const value: WebSearchResult = { sources: merged.sources, truncated: merged.truncated }
+    if (this.cache.size >= TinyMetasearchProvider.CACHE_MAX && !this.cache.has(cacheKey)) {
+      const oldest = this.cache.keys().next().value
+      if (oldest !== undefined) this.cache.delete(oldest)
+    }
+    this.cache.set(cacheKey, { at: Date.now(), value })
+    return value
   }
 }
