@@ -25,6 +25,9 @@ const MAX_CONCURRENT_JOBS = 3
 const PAGE_LOAD_TIMEOUT_MS = 20000
 const SNAPSHOT_MAX_LINES = 400
 const SNAPSHOT_MAX_CHARS = 12000
+const EXTRACT_MAX_CHARS = 8000
+// A session tab nobody stepped on for this long gets closed and detached.
+const SESSION_IDLE_MS = 10 * 60 * 1000
 
 let origin = DEFAULT_ORIGIN
 let clientLabel = ''
@@ -47,9 +50,13 @@ chrome.storage.onChanged.addListener((changes, area) => {
 })
 
 // Chrome parks idle service workers; a 30-second alarm wakes this one so the
-// long-poll (and with it the app's "extension connected" heartbeat) resumes.
+// long-poll (and with it the app's "extension connected" heartbeat) resumes —
+// and so idle session tabs get reaped.
 chrome.alarms.create('dsh-bridge-poll', { periodInMinutes: 0.5 })
-chrome.alarms.onAlarm.addListener(() => { startPolling() })
+chrome.alarms.onAlarm.addListener(() => {
+  startPolling()
+  reapIdleSessions()
+})
 
 function startPolling() {
   if (polling) return
@@ -124,20 +131,28 @@ async function run(job) {
 
 // --- Browser steps: a real tab per named session, driven over CDP ----------
 
-// Session name -> the tab id currently holding it. The map is cached from
-// chrome.storage.session so an MV3 worker restart keeps its tabs.
+// Session name -> { tabId, at } with `at` the last step's timestamp. The map
+// is cached from chrome.storage.session so an MV3 worker restart keeps its
+// tabs (and the reaper still knows how old they are).
 const sessionTabs = new Map()
 
 async function loadSessionTabs() {
   if (sessionTabs.size > 0) return
   const stored = await chrome.storage.session.get({ browserSessions: {} })
-  for (const [name, tabId] of Object.entries(stored.browserSessions)) {
-    if (typeof tabId === 'number') sessionTabs.set(name, tabId)
+  for (const [name, entry] of Object.entries(stored.browserSessions)) {
+    if (typeof entry === 'object' && entry !== null && typeof entry.tabId === 'number') {
+      sessionTabs.set(name, { tabId: entry.tabId, at: typeof entry.at === 'number' ? entry.at : 0 })
+    }
   }
 }
 
 async function persistSessionTabs() {
   await chrome.storage.session.set({ browserSessions: Object.fromEntries(sessionTabs) })
+}
+
+function touchSession(name) {
+  const entry = sessionTabs.get(name)
+  if (entry !== undefined) entry.at = Date.now()
 }
 
 /** Browser steps on one session tab run one at a time, in arrival order. */
@@ -165,17 +180,35 @@ async function sessionTab(name) {
   const existing = sessionTabs.get(name)
   if (existing !== undefined) {
     try {
-      await chrome.tabs.get(existing)
-      return existing
+      await chrome.tabs.get(existing.tabId)
+      return existing.tabId
     } catch (error) {
       // The tab is gone (closed, crashed); fall through and mint a fresh one.
       sessionTabs.delete(name)
     }
   }
   const tab = await chrome.tabs.create({ url: 'about:blank', active: false })
-  sessionTabs.set(name, tab.id)
+  sessionTabs.set(name, { tabId: tab.id, at: Date.now() })
   await persistSessionTabs()
   return tab.id
+}
+
+async function closeSession(name) {
+  await loadSessionTabs()
+  const entry = sessionTabs.get(name)
+  if (entry === undefined) return
+  sessionTabs.delete(name)
+  await persistSessionTabs()
+  try { await chrome.debugger.detach({ tabId: entry.tabId }) } catch (error) { /* already detached */ }
+  try { await chrome.tabs.remove(entry.tabId) } catch (error) { /* already closed */ }
+}
+
+/** Close every session tab idle past the budget; runs on the wake alarm. */
+async function reapIdleSessions(now = Date.now()) {
+  await loadSessionTabs()
+  for (const [name, entry] of [...sessionTabs]) {
+    if (entry.at > 0 && now - entry.at > SESSION_IDLE_MS) await closeSession(name)
+  }
 }
 
 async function ensureAttached(tabId) {
@@ -223,22 +256,47 @@ async function observe(tabId) {
   return observed
 }
 
+async function extract(tabId) {
+  const expression = `(${String(extractText)})( ${String(EXTRACT_MAX_CHARS)} )`
+  const extracted = await evaluate(tabId, expression)
+  if (extracted === null || typeof extracted !== 'object') {
+    throw new Error('the page did not answer with an extraction')
+  }
+  return extracted
+}
+
+async function navigateTo(tabId, url) {
+  await ensureAttached(tabId)
+  await sendCommand(tabId, 'Page.enable', {})
+  await sendCommand(tabId, 'Page.navigate', { url })
+  await settleLoad(tabId)
+}
+
 async function browserStep(job) {
   const session = typeof job.session === 'string' && job.session !== '' ? job.session : 'main'
+  if (job.action === 'close') {
+    await withSessionLock(session, async () => { await closeSession(session) })
+    return { url: '', title: '', truncated: false }
+  }
   return await withSessionLock(session, async () => {
+    touchSession(session)
     if (job.action === 'open') {
       const url = parseWebUrl(job.url)
       const tabId = await sessionTab(session)
-      await ensureAttached(tabId)
-      await sendCommand(tabId, 'Page.enable', {})
-      await sendCommand(tabId, 'Page.navigate', { url })
-      await settleLoad(tabId)
+      await navigateTo(tabId, url)
       return await observe(tabId)
     }
     if (job.action === 'snapshot') {
       const tabId = await sessionTab(session)
       await ensureAttached(tabId)
       return await observe(tabId)
+    }
+    if (job.action === 'extract') {
+      const tabId = await sessionTab(session)
+      // A URL makes extract self-sufficient: navigate, wait for the render,
+      // then read — one round trip for the open-and-read case.
+      if (typeof job.url === 'string' && job.url !== '') await navigateTo(tabId, parseWebUrl(job.url))
+      return await extract(tabId)
     }
     throw new Error(`unsupported browser action: ${String(job.action)}`)
   })

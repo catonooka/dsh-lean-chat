@@ -17,14 +17,26 @@ interface SerializedPage {
   truncated: boolean
 }
 
-// The jsdom environment replaces the global URL, so the extension directory
-// resolves from the repo root the suite always runs from.
-function loadSerializer(): (maxLines?: number, maxChars?: number) => SerializedPage {
-  const source = readFileSync(join(process.cwd(), 'packages/web/web-search-chrome/extension/serializer.js'), 'utf8')
-  return new Function(`${source}\nreturn snapshotPage`)() as (maxLines?: number, maxChars?: number) => SerializedPage
+interface ExtractedPage {
+  url: string
+  title: string
+  text: string
+  truncated: boolean
 }
 
-const snapshotPage = loadSerializer()
+interface SerializerBundle {
+  snapshotPage: (maxLines?: number, maxChars?: number) => SerializedPage
+  extractText: (maxChars?: number) => ExtractedPage
+}
+
+// The jsdom environment replaces the global URL, so the extension directory
+// resolves from the repo root the suite always runs from.
+function loadSerializer(): SerializerBundle {
+  const source = readFileSync(join(process.cwd(), 'packages/web/web-search-chrome/extension/serializer.js'), 'utf8')
+  return new Function(`${source}\nreturn { snapshotPage, extractText }`)() as SerializerBundle
+}
+
+const { snapshotPage, extractText } = loadSerializer()
 
 beforeEach(() => {
   document.body.innerHTML = ''
@@ -138,5 +150,57 @@ describe('serializer snapshotPage', () => {
     const page = snapshotPage()
     expect(page.snapshot).toBe('- Jump target\n- just words')
     expect(page.snapshot.includes('@e')).toBe(false)
+  })
+})
+
+describe('serializer extractText', () => {
+  it('keeps the article content and drops the page chrome around it', () => {
+    document.title = 'A post'
+    document.body.innerHTML = [
+      '<nav>Home Search Menu</nav>',
+      '<article>',
+      '<h2>The finding</h2>',
+      '<p>Bracket outlines measured 51-79% cheaper in tokens.</p>',
+      '<ul><li>refs on interactive elements only</li><li>minimal attributes</li></ul>',
+      '<blockquote><p>Format choices matter.</p></blockquote>',
+      '</article>',
+      '<footer>© 2026 footer links</footer>',
+    ].join('')
+    const page = extractText()
+    expect(page.title).toBe('A post')
+    expect(page.truncated).toBe(false)
+    expect(page.text).toBe([
+      '## The finding',
+      'Bracket outlines measured 51-79% cheaper in tokens.',
+      '- refs on interactive elements only',
+      '- minimal attributes',
+      'Format choices matter.',
+    ].join('\n'))
+    expect(page.text.includes('Home Search Menu')).toBe(false)
+    expect(page.text.includes('footer')).toBe(false)
+  })
+
+  it('elides the middle and marks truncation past the cap', () => {
+    document.body.innerHTML = `<article>${Array.from({ length: 500 }, (_, index) => `<p>Sentence number ${String(index)} of the long article.</p>`).join('')}</article>`
+    const page = extractText(1000)
+    expect(page.truncated).toBe(true)
+    expect(page.text).toContain('[… content elided …]')
+    expect(page.text.length).toBeLessThanOrEqual(1000 + '\n\n[… content elided …]\n\n'.length)
+    expect(page.text.startsWith('Sentence number 0')).toBe(true)
+    expect(page.text.includes('Sentence number 499')).toBe(true)
+    expect(page.text.includes('Sentence number 250')).toBe(false)
+  })
+
+  it('fences pre blocks and clips them', () => {
+    document.body.innerHTML = '<article><p>Intro.</p><pre>const a = 1\nconst b = 2</pre></article>'
+    const page = extractText()
+    expect(page.text).toBe('Intro.\n`const a = 1 const b = 2`')
+  })
+
+  it('answers empty text for an empty page instead of failing', () => {
+    document.body.innerHTML = ''
+    const page = extractText()
+    expect(page.text).toBe('')
+    expect(page.truncated).toBe(false)
   })
 })

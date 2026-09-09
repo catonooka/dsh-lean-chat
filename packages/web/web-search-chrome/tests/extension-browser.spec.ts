@@ -21,6 +21,7 @@ interface SerializedPage {
 interface WorkerExports {
   run: (job: Record<string, unknown>) => Promise<void>
   parseWebUrl: (candidate: string) => string
+  reapIdleSessions: (now?: number) => Promise<void>
 }
 
 interface SentCommand {
@@ -35,17 +36,17 @@ function loadWorker(chromeStub: unknown): WorkerExports {
   const directory = join(process.cwd(), 'packages/web/web-search-chrome/extension')
   const serializerSource = readFileSync(join(directory, 'serializer.js'), 'utf8')
   const backgroundSource = readFileSync(join(directory, 'background.js'), 'utf8')
-  const snapshotPage = new Function(`${serializerSource}\nreturn snapshotPage`)() as unknown
-  const factory = new Function('chrome', 'snapshotPage', `${backgroundSource}\nreturn { run, parseWebUrl }`)
-  return factory(chromeStub, snapshotPage) as WorkerExports
+  const serializer = new Function(`${serializerSource}\nreturn { snapshotPage, extractText }`)() as Record<string, unknown>
+  const factory = new Function('chrome', 'snapshotPage', 'extractText', `${backgroundSource}\nreturn { run, parseWebUrl, reapIdleSessions }`)
+  return factory(chromeStub, serializer.snapshotPage, serializer.extractText) as WorkerExports
 }
 
 /** The chrome surface background.js touches, faked promise-style like MV3. */
-function fakeChrome() {
+function fakeChrome(initialSessions: Record<string, unknown> = {}) {
   const sent: SentCommand[] = []
   let nextTabId = 0
   const liveTabs = new Set<number>()
-  const sessionStore: { browserSessions?: Record<string, number> } = {}
+  const sessionStore: Record<string, unknown> = { browserSessions: initialSessions }
   const chromeStub = {
     storage: {
       // The boot callback is never invoked, so the poll loop never starts.
@@ -70,9 +71,11 @@ function fakeChrome() {
         if (!liveTabs.has(tabId)) throw new Error(`No tab with id: ${String(tabId)}`)
         return { id: tabId }
       },
+      remove: async (tabId: number) => { liveTabs.delete(tabId) },
     },
     debugger: {
       attach: async () => undefined,
+      detach: async () => undefined,
       sendCommand: async (target: { tabId: number }, method: string, params: Record<string, unknown>) => {
         sent.push({ tabId: target.tabId, method, params })
         if (method === 'Runtime.evaluate') {
@@ -80,8 +83,8 @@ function fakeChrome() {
           if (expression === 'document.readyState === "complete"') {
             return { result: { type: 'boolean', value: document.readyState === 'complete' } }
           }
-          // The serializer injection: run it against this jsdom document; a
-          // page script error reports back the way real CDP does.
+          // The serializer injections: run them against this jsdom document;
+          // a page script error reports back the way real CDP does.
           try {
             const value = eval(expression) as SerializedPage
             return { result: { type: 'object', value } }
@@ -94,7 +97,7 @@ function fakeChrome() {
       },
     },
   }
-  return { chromeStub, sent, createdTabs: () => nextTabId }
+  return { chromeStub, sent, createdTabs: () => nextTabId, liveTabs, sessionStore }
 }
 
 interface PostedResult {
@@ -178,6 +181,69 @@ describe('extension browser jobs', () => {
     await worker.run({ id: '2', type: 'browser', action: 'open', session: 'main', url: 'chrome://settings' })
     expect(posted[0]?.body).toEqual({ id: '1', ok: false, error: 'unsupported browser action: invent' })
     expect(posted[1]?.body).toEqual({ id: '2', ok: false, error: 'only http(s) pages can be opened' })
+  })
+
+  it('extracts readable text, navigating first when a URL rides the job', async () => {
+    document.title = 'me on X'
+    document.body.innerHTML = [
+      '<nav>Home Notifications</nav>',
+      '<article><h2>Post the first</h2><p>Shipped the browser tool.</p><p>Second post about profiles.</p></article>',
+    ].join('')
+    const { chromeStub, sent } = fakeChrome()
+    const worker = loadWorker(chromeStub)
+    await worker.run({ id: '9', type: 'browser', action: 'extract', session: 'main', url: 'https://x.com/me' })
+    const settlement = posted[0]?.body
+    expect(settlement?.ok).toBe(true)
+    const observation = settlement?.browser as { text: string; truncated: boolean; title: string }
+    expect(observation.title).toBe('me on X')
+    expect(observation.truncated).toBe(false)
+    expect(observation.text).toContain('## Post the first')
+    expect(observation.text).toContain('Shipped the browser tool.')
+    expect(observation.text).not.toContain('Notifications')
+    const methods = sent.map(command => command.method)
+    expect(methods).toContain('Page.navigate')
+    expect(methods[methods.length - 1]).toBe('Runtime.evaluate')
+  })
+
+  it('extracts the current page when no URL is given', async () => {
+    document.body.innerHTML = '<article><p>Already open content.</p></article>'
+    const { chromeStub, sent } = fakeChrome()
+    const worker = loadWorker(chromeStub)
+    await worker.run({ id: '3', type: 'browser', action: 'extract', session: 'main' })
+    const observation = posted[0]?.body.browser as { text: string }
+    expect(observation.text).toContain('Already open content.')
+    expect(sent.some(command => command.method === 'Page.navigate')).toBe(false)
+  })
+
+  it('closes the session tab and detaches; a later step mints a fresh one', async () => {
+    document.body.innerHTML = '<p>page</p>'
+    const { chromeStub, createdTabs, liveTabs, sessionStore } = fakeChrome()
+    const worker = loadWorker(chromeStub)
+    await worker.run({ id: '1', type: 'browser', action: 'open', session: 'main', url: 'https://a.example/' })
+    expect(createdTabs()).toBe(1)
+    await worker.run({ id: '2', type: 'browser', action: 'close', session: 'main' })
+    expect(liveTabs.size).toBe(0)
+    expect((sessionStore.browserSessions as Record<string, unknown>).main).toBeUndefined()
+    expect(posted[1]?.body).toEqual({ id: '2', ok: true, browser: { url: '', title: '', truncated: false } })
+    await worker.run({ id: '3', type: 'browser', action: 'snapshot', session: 'main' })
+    expect(createdTabs()).toBe(2)
+  })
+
+  it('reaps idle session tabs but keeps freshly used ones', async () => {
+    const now = Date.now()
+    const { chromeStub, liveTabs, sessionStore } = fakeChrome({
+      stale: { tabId: 41, at: now - 11 * 60 * 1000 },
+      fresh: { tabId: 42, at: now - 1000 },
+    })
+    liveTabs.add(41)
+    liveTabs.add(42)
+    const worker = loadWorker(chromeStub)
+    await worker.reapIdleSessions(now)
+    expect(liveTabs.has(41)).toBe(false)
+    expect(liveTabs.has(42)).toBe(true)
+    const remaining = sessionStore.browserSessions as Record<string, { tabId: number }>
+    expect(remaining.stale).toBeUndefined()
+    expect(remaining.fresh?.tabId).toBe(42)
   })
 })
 

@@ -181,3 +181,84 @@ function snapshotPage(maxLines, maxChars) {
     truncated: truncated,
   }
 }
+
+// Pull the page's main readable text. A readability-lite pass: pick the
+// content-bearing container, strip the chrome around it, and emit headings
+// and text blocks as plain lines. Oversize text keeps its head and tail with
+// the middle elided — the model needs the ends far more than the middle.
+function extractText(maxChars) {
+  maxChars = maxChars || 8000
+  var doc = document
+
+  function flat(text) {
+    return String(text).replace(/\s+/g, ' ').trim()
+  }
+
+  // The container with the most text wins; article/main-role roots get a
+  // head start so a nav-heavy shell doesn't beat the real content.
+  var best = null
+  var bestScore = 0
+  var roots = doc.querySelectorAll('article, main, [role="main"], [itemprop="articleBody"], body')
+  for (var r = 0; r < roots.length; r += 1) {
+    var root = roots[r]
+    var text = flat(root.textContent || '')
+    var score = text.length * (root.tagName.toLowerCase() === 'body' ? 1 : 3)
+    if (score > bestScore) {
+      bestScore = score
+      best = root
+    }
+  }
+  if (best === null) {
+    return { url: doc.location ? doc.location.href : '', title: flat(doc.title || '').slice(0, 120), text: '', truncated: false }
+  }
+
+  var clone = best.cloneNode(true)
+  var strip = clone.querySelectorAll('script, style, noscript, template, svg, iframe, canvas, nav, aside, footer, header, form, button')
+  for (var s = 0; s < strip.length; s += 1) strip[s].remove()
+
+  var lines = []
+  var blocks = clone.querySelectorAll('h1, h2, h3, h4, h5, h6, p, li, blockquote, pre, figcaption, td')
+  for (var b = 0; b < blocks.length; b += 1) {
+    var block = blocks[b]
+    var name = block.tagName.toLowerCase()
+    // A block that is its parent's whole content (li > p, blockquote > p)
+    // would repeat the parent's line; the parent already said it.
+    var parent = block.parentElement
+    var parentName = parent !== null ? parent.tagName.toLowerCase() : ''
+    if ((parentName === 'li' || parentName === 'blockquote' || parentName === 'td') && flat(parent.textContent || '') === flat(block.textContent || '')) continue
+    if (name === 'h1' || name === 'h2' || name === 'h3' || name === 'h4' || name === 'h5' || name === 'h6') {
+      var level = Number(name.slice(1, 2))
+      var line = new Array(level + 1).join('#') + ' ' + flat(block.textContent || '')
+      if (line.trim() !== '#') lines.push(line)
+    } else if (name === 'li') {
+      var item = flat(block.textContent || '')
+      if (item !== '') lines.push('- ' + item)
+    } else if (name === 'pre') {
+      var code = flat(block.textContent || '')
+      if (code !== '') lines.push('`' + code.slice(0, 400) + (code.length > 400 ? '…`' : '`'))
+    } else {
+      var plain = flat(block.textContent || '')
+      if (plain !== '') lines.push(plain)
+    }
+  }
+  // Nested blocks (a p inside a li, a heading inside a blockquote) repeat;
+  // collapse exact duplicates next to each other.
+  var deduped = []
+  for (var d = 0; d < lines.length; d += 1) {
+    if (deduped.length === 0 || deduped[deduped.length - 1] !== lines[d]) deduped.push(lines[d])
+  }
+  var text = deduped.join('\n')
+  var truncated = false
+  if (text.length > maxChars) {
+    truncated = true
+    var head = Math.floor(maxChars * 0.75)
+    var tail = Math.floor(maxChars * 0.2)
+    text = `${text.slice(0, head)}\n\n[… content elided …]\n\n${text.slice(text.length - tail)}`
+  }
+  return {
+    url: doc.location ? doc.location.href : '',
+    title: flat(doc.title || '').slice(0, 120),
+    text: text,
+    truncated: truncated,
+  }
+}
