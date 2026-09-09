@@ -101,13 +101,23 @@ renders attachments from digest-verified storage. The profile opts into
 `uncataloguedImageInput` on the adapter so custom-gateway models take
 attachments instead of placeholder text.
 
-Hovering a message shows per-row actions: **copy** (clipboard with a
-selection-based fallback), **reply** (quotes the text into the composer),
-and **try again** on the latest answer (or a Try-again chip when a turn
-ends without one). A retry re-sends the trailing user content — the ledger
-is append-only, so the durable log keeps every attempt while the history
-view folds retried exchanges to their latest answer
+Hovering a message shows its actions **under** the bubble: **copy**
+(clipboard with a selection-based fallback), **reply**, and **try again**
+on the trailing turn (or a Try-again chip when a turn ends without an
+answer). Reply works like mainstream chat apps: it pins the message as a
+reply target — a chip above the composer shows who and what (Esc or the
+chip's ✕ cancels), and the sent bubble renders a short quote of the
+answered message. The quote rides the user message as a `replyTo` sibling
+of its content blocks (`{ role, text }`, snippet-clamped to 300 chars):
+the append-only ledger stores it verbatim, the `/messages` projection
+serves it back, retries carry it through, and the model context built
+from `content` never sees it. A retry re-sends the trailing user content
+with the same `replyTo` — the durable log keeps every attempt while the
+history view folds retried exchanges to their latest answer
 (`collapseRetriedUserTurns`).
+
+The sidebar collapses to a small rail that keeps both *open sidebar* and
+*new chat* one click away.
 
 ### The companion extension
 

@@ -19,6 +19,7 @@ import {
   normalizeSearchQuery,
   paginateSessions,
   parseAttachment,
+  parseReplyTo,
   parseSessionToken,
   parseSettingsFile,
   projectSurfaceEvent,
@@ -88,6 +89,38 @@ describe('projectSurfaceEvent', () => {
   it('ignores non-surface events', () => {
     expect(projectSurfaceEvent(surfaceEvent('turn/end', { turn: 1, reason: { kind: 'completed' } })))
       .toBeUndefined()
+  })
+
+  it('projects the reply quote that rides a user message next to its content', () => {
+    expect(projectSurfaceEvent(surfaceEvent('user/message', {
+      content: [{ type: 'text', text: 'same to you' }],
+      replyTo: { role: 'assistant', text: 'hello' },
+    }))).toEqual({ role: 'user', text: 'same to you', replyTo: { role: 'assistant', text: 'hello' } })
+    expect(projectSurfaceEvent(surfaceEvent('user/message', { content: [{ type: 'text', text: 'plain' }] })))
+      .toEqual({ role: 'user', text: 'plain' })
+  })
+})
+
+describe('parseReplyTo', () => {
+  it('accepts a well-formed reply target', () => {
+    expect(parseReplyTo({ role: 'assistant', text: 'hello there' }))
+      .toEqual({ ok: true, replyTo: { role: 'assistant', text: 'hello there' } })
+  })
+
+  it('rejects non-objects, unknown roles, and empty text', () => {
+    expect(parseReplyTo('hello')).toEqual({ ok: false, error: 'replyTo must be an object with role and text' })
+    expect(parseReplyTo(null)).toEqual({ ok: false, error: 'replyTo must be an object with role and text' })
+    expect(parseReplyTo([{ role: 'user', text: 'x' }])).toEqual({ ok: false, error: 'replyTo must be an object with role and text' })
+    expect(parseReplyTo({ role: 'tool', text: 'x' })).toEqual({ ok: false, error: 'replyTo role must be user or assistant' })
+    expect(parseReplyTo({ role: 'user', text: '   ' })).toEqual({ ok: false, error: 'replyTo text must be a non-empty string' })
+    expect(parseReplyTo({ role: 'user', text: 7 })).toEqual({ ok: false, error: 'replyTo text must be a non-empty string' })
+  })
+
+  it('folds whitespace and clamps the stored quote', () => {
+    expect(parseReplyTo({ role: 'user', text: ' first \n line\t\tsecond ' }))
+      .toEqual({ ok: true, replyTo: { role: 'user', text: 'first line second' } })
+    expect(parseReplyTo({ role: 'assistant', text: 'x'.repeat(500) }))
+      .toEqual({ ok: true, replyTo: { role: 'assistant', text: 'x'.repeat(300) } })
   })
 })
 
@@ -899,5 +932,12 @@ describe('collapseRetriedUserTurns', () => {
     expect(collapseRetriedUserTurns(items)).toEqual(items)
     expect(collapseRetriedUserTurns([user('', a), user('', a)])).toEqual([user('', a)])
     expect(collapseRetriedUserTurns([])).toEqual([])
+  })
+
+  it('ignores the reply quote when identifying a retried question', () => {
+    const withQuote = (text: string): ChatItem =>
+      ({ role: 'user', text, replyTo: { role: 'assistant', text: 'earlier' } })
+    const items: ChatItem[] = [withQuote('hi'), withQuote('hi'), { role: 'assistant', text: 'hello' }]
+    expect(collapseRetriedUserTurns(items)).toEqual([withQuote('hi'), { role: 'assistant', text: 'hello' }])
   })
 })

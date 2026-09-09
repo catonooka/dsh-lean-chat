@@ -20,7 +20,9 @@ endpoint** — DeepSeek, an mLLM gateway, or a local Ollama/vLLM.
 - **Multimodal input** — the probe gates a clip button; attach images and
   videos (≤ 8MB / 64MB) that ride the message to the model and render in
   history.
-- **Clean UI** — collapsible sidebar, full-text chat search, lazy-loaded
+- **Clean UI** — collapsible sidebar (with a new-chat rail when collapsed),
+  chat-style replies that quote the answered message, per-message
+  copy/reply/try-again actions, full-text chat search, lazy-loaded
   history, streaming with batched rendering, avatars, light/dark theme.
 - **Hardened localhost surface** — loopback-only, boot-minted HttpOnly session
   cookie, extension trust scoped to exactly two bridge routes, rate-limited

@@ -27,6 +27,7 @@ import { AvatarModal } from './AvatarModal.tsx'
 import { BOT_AVATAR_SRC, avatarSrc, readStoredAvatar, storeAvatar } from './avatar.ts'
 import { DeltaBatcher } from './delta.ts'
 import { copyToClipboard } from './clipboard.ts'
+import { clampReplyText, replyLabel, type ReplyContext } from './reply.ts'
 
 const ACTIVE_KEY = 'dsh-chat-active'
 const COLLAPSED_KEY = 'dsh-chat-collapsed'
@@ -80,8 +81,8 @@ export function classifyPastedFile(file: { type: string; name: string }): Pasted
   return 'file'
 }
 
-/** Hover actions for one message: copy its text, quote it into the composer
- * as a reply, and on the latest assistant turn run the turn again. */
+/** Hover actions under one message: copy its text, make it the reply target,
+ * and on the trailing turn run the turn again. */
 function MessageActions({ text, onReply, onRetry }: { text: string; onReply: () => void; onRetry?: () => void }): JSX.Element {
   const [copied, setCopied] = useState(false)
   const copy = async (): Promise<void> => {
@@ -106,7 +107,7 @@ function MessageActions({ text, onReply, onRetry }: { text: string; onReply: () 
             </svg>
           )}
       </button>
-      <button type="button" aria-label="Reply quoting this message" title="Reply" onClick={onReply}>
+      <button type="button" aria-label="Reply to this message" title="Reply" onClick={onReply}>
         <svg viewBox="0 0 16 16" aria-hidden="true">
           <path d="M14 7.5c0 3-2.7 4.5-6 4.5-.7 0-1.4-.1-2-.2L3 14l.9-2.7C2.7 10.5 2 9.5 2 7.5 2 4.5 4.7 3 8 3s6 1.5 6 4.5z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
         </svg>
@@ -379,7 +380,14 @@ export default function App(): JSX.Element {
   // Which input modalities the active model accepts (server probes, cached).
   const [abilities, setAbilities] = useState<{ image: 'yes' | 'no' | 'unknown'; video: 'yes' | 'no' | 'unknown' } | undefined>(undefined)
   const [attachment, setAttachment] = useState<OutgoingAttachment | undefined>(undefined)
+  // The message the next send answers, shown as a chip above the composer.
+  const [replyTarget, setReplyTarget] = useState<ReplyContext | undefined>(undefined)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+
+  // A reply target belongs to the conversation it was picked in.
+  useEffect(() => {
+    setReplyTarget(undefined)
+  }, [activeId])
 
   useEffect(() => {
     if (config === undefined) return
@@ -539,7 +547,12 @@ export default function App(): JSX.Element {
           break
         case 'tool-start':
           batcher.flushNow()
-          setItems(previous => [...previous, { role: 'tool', name: event.name, query: event.query, running: true }])
+          setItems(previous => [...previous, {
+            role: 'tool',
+            name: event.name,
+            ...event.query !== undefined ? { query: event.query } : {},
+            running: true,
+          }])
           break
         case 'tool-end':
           batcher.flushNow()
@@ -547,15 +560,15 @@ export default function App(): JSX.Element {
             const next = [...previous]
             for (let index = next.length - 1; index >= 0; index--) {
               const candidate = next[index]
-              if (candidate.role === 'tool' && candidate.running === true) {
+              if (candidate !== undefined && candidate.role === 'tool' && candidate.running === true) {
                 next[index] = {
                   role: 'tool',
-                  name: event.name,
-                  query: event.query,
-                  searchQuestion: event.searchQuestion,
-                  searchedAt: event.searchedAt,
-                  sources: event.sources,
-                  text: event.text,
+                  ...event.name !== undefined ? { name: event.name } : {},
+                  ...event.query !== undefined ? { query: event.query } : {},
+                  ...event.searchQuestion !== undefined ? { searchQuestion: event.searchQuestion } : {},
+                  ...event.searchedAt !== undefined ? { searchedAt: event.searchedAt } : {},
+                  ...event.sources !== undefined ? { sources: event.sources } : {},
+                  ...event.text !== undefined ? { text: event.text } : {},
                 }
                 break
               }
@@ -593,6 +606,7 @@ export default function App(): JSX.Element {
   const send = useCallback(async (): Promise<void> => {
     const text = draft.trim()
     const outgoing = attachment
+    const reply = replyTarget
     if ((text === '' && outgoing === undefined) || streaming) return
     setDraft('')
     // A programmatic value change never fires onChange, so the inline height
@@ -600,22 +614,24 @@ export default function App(): JSX.Element {
     const node = textareaRef.current
     if (node !== null) node.style.height = 'auto'
     setAttachment(undefined)
+    setReplyTarget(undefined)
     setItems(previous => [...previous, {
       role: 'user' as const,
       ...text !== '' ? { text } : {},
+      ...reply !== undefined ? { replyTo: reply } : {},
       ...outgoing !== undefined
         ? {
           attachments: [{
             kind: outgoing.kind,
             name: outgoing.name,
             mediaType: outgoing.dataUrl.slice(5, outgoing.dataUrl.indexOf(';')),
-            localUrl: outgoing.kind === 'file' ? undefined : outgoing.dataUrl,
+            ...outgoing.kind !== 'file' ? { localUrl: outgoing.dataUrl } : {},
           }],
         }
         : {},
     }])
-    await runTurn(onEvent => sendMessage(activeId, text, outgoing, onEvent))
-  }, [activeId, attachment, draft, runTurn, streaming])
+    await runTurn(onEvent => sendMessage(activeId, text, outgoing, reply, onEvent))
+  }, [activeId, attachment, draft, replyTarget, runTurn, streaming])
 
   /** Re-run the trailing user turn: after a failure, or to regenerate. */
   const retry = useCallback(async (): Promise<void> => {
@@ -629,18 +645,14 @@ export default function App(): JSX.Element {
     await runTurn(onEvent => retrySession(activeId, onEvent))
   }, [activeId, items.length, runTurn, streaming])
 
-  /** Quote one message into the composer as a reply. */
-  const quoteIntoDraft = useCallback((text: string): void => {
-    const quote = text.trim().slice(0, 300).split('\n').map(line => `> ${line}`).join('\n')
-    setDraft(previous => `${previous === '' ? '' : `${previous}\n\n`}${quote}\n\n`)
-    requestAnimationFrame(() => {
-      const node = textareaRef.current
-      if (node === null) return
-      node.style.height = 'auto'
-      node.style.height = `${String(Math.min(node.scrollHeight, 200))}px`
-      node.focus()
-      node.setSelectionRange(node.value.length, node.value.length)
-    })
+  /** Make one message the reply target: the composer answers it with a
+   * context chip, instead of pasting its text into the draft. */
+  const beginReply = useCallback((item: ChatItem): void => {
+    if (item.role === 'tool') return
+    const snippet = clampReplyText(item.text ?? '')
+    if (snippet === '') return
+    setReplyTarget({ role: item.role, text: snippet })
+    textareaRef.current?.focus()
   }, [])
 
   const stop = useCallback(() => {
@@ -764,17 +776,25 @@ export default function App(): JSX.Element {
       <main className="main">
         {collapsed
           ? (
-            <button
-              type="button"
-              className="icon-btn open-sidebar-fab"
-              aria-label="Open sidebar"
-              onClick={() => { setCollapsed(false) }}
-            >
-              <svg viewBox="0 0 16 16" aria-hidden="true">
-                <rect x="1.5" y="2.5" width="13" height="11" rx="2" fill="none" stroke="currentColor" strokeWidth="1.5" />
-                <line x1="5.5" y1="2.5" x2="5.5" y2="13.5" stroke="currentColor" strokeWidth="1.5" />
-              </svg>
-            </button>
+            <div className="collapsed-bar">
+              <button
+                type="button"
+                className="icon-btn open-sidebar-btn"
+                aria-label="Open sidebar"
+                onClick={() => { setCollapsed(false) }}
+              >
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <rect x="1.5" y="2.5" width="13" height="11" rx="2" fill="none" stroke="currentColor" strokeWidth="1.5" />
+                  <line x1="5.5" y1="2.5" x2="5.5" y2="13.5" stroke="currentColor" strokeWidth="1.5" />
+                </svg>
+              </button>
+              <button type="button" className="icon-btn new-chat-btn" aria-label="New chat" title="New chat" onClick={startNewChat}>
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <line x1="8" y1="3" x2="8" y2="13" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                  <line x1="3" y1="8" x2="13" y2="8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                </svg>
+              </button>
+            </div>
           )
           : undefined}
         <div className="thread" ref={threadRef}>
@@ -791,17 +811,28 @@ export default function App(): JSX.Element {
                   if (item.role === 'user') {
                     return (
                       <div key={index} className="row user">
-                        {item.text !== undefined && item.text !== ''
-                          ? (
-                            <MessageActions
-                              text={item.text}
-                              onReply={() => { quoteIntoDraft(item.text ?? '') }}
-                            />
-                          )
-                          : undefined}
-                        <div className="user-bubble">
-                          {(item.attachments ?? []).map((one, at) => <BubbleAttachment key={at} attachment={one} />)}
-                          {item.text}
+                        <div className="user-col">
+                          <div className="user-bubble">
+                            {item.replyTo !== undefined
+                              ? (
+                                <div className="reply-quote">
+                                  <span className="reply-quote-label">{replyLabel(item.replyTo.role)}</span>
+                                  <span className="reply-quote-text">{item.replyTo.text}</span>
+                                </div>
+                              )
+                              : undefined}
+                            {(item.attachments ?? []).map((one, at) => <BubbleAttachment key={at} attachment={one} />)}
+                            {item.text}
+                          </div>
+                          {item.text !== undefined && item.text !== ''
+                            ? (
+                              <MessageActions
+                                text={item.text}
+                                onReply={() => { beginReply(item) }}
+                                {...!streaming && index === items.length - 1 ? { onRetry: () => { void retry() } } : {}}
+                              />
+                            )
+                            : undefined}
                         </div>
                       </div>
                     )
@@ -816,16 +847,18 @@ export default function App(): JSX.Element {
                   return (
                     <div key={index} className="row assistant">
                       <div className="assistant-avatar" aria-hidden="true"><img src={BOT_AVATAR_SRC} alt="" draggable={false} /></div>
-                      <AssistantText text={item.text ?? ''} streaming={false} />
-                      {!streaming && index === items.length - 1 && item.text !== undefined && item.text !== ''
-                        ? (
-                          <MessageActions
-                            text={item.text}
-                            onReply={() => { quoteIntoDraft(item.text ?? '') }}
-                            onRetry={() => { void retry() }}
-                          />
-                        )
-                        : undefined}
+                      <div className="assistant-col">
+                        <AssistantText text={item.text ?? ''} streaming={false} />
+                        {!streaming && index === items.length - 1 && item.text !== undefined && item.text !== ''
+                          ? (
+                            <MessageActions
+                              text={item.text}
+                              onReply={() => { beginReply(item) }}
+                              onRetry={() => { void retry() }}
+                            />
+                          )
+                          : undefined}
+                      </div>
                     </div>
                   )
                 })}
@@ -895,6 +928,25 @@ export default function App(): JSX.Element {
               </div>
             )
             : undefined}
+          {replyTarget !== undefined
+            ? (
+              <div className="reply-chip">
+                <svg className="reply-chip-icon" viewBox="0 0 16 16" aria-hidden="true">
+                  <path d="M14 7.5c0 3-2.7 4.5-6 4.5-.7 0-1.4-.1-2-.2L3 14l.9-2.7C2.7 10.5 2 9.5 2 7.5 2 4.5 4.7 3 8 3s6 1.5 6 4.5z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+                </svg>
+                <span className="reply-chip-body">
+                  <span className="reply-chip-label">{replyLabel(replyTarget.role)}</span>
+                  <span className="reply-chip-text">{replyTarget.text}</span>
+                </span>
+                <button type="button" aria-label="Cancel reply" onClick={() => { setReplyTarget(undefined) }}>
+                  <svg viewBox="0 0 16 16" aria-hidden="true">
+                    <line x1="4" y1="4" x2="12" y2="12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                    <line x1="12" y1="4" x2="4" y2="12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                  </svg>
+                </button>
+              </div>
+            )
+            : undefined}
           <form
             className="composer"
             onSubmit={(event) => {
@@ -942,6 +994,10 @@ export default function App(): JSX.Element {
                 node.style.height = `${String(Math.min(node.scrollHeight, 200))}px`
               }}
               onKeyDown={(event) => {
+                if (event.key === 'Escape' && replyTarget !== undefined) {
+                  setReplyTarget(undefined)
+                  return
+                }
                 if (event.key === 'Enter' && !event.shiftKey) {
                   event.preventDefault()
                   void send()

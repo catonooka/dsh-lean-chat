@@ -1,5 +1,7 @@
 /** Browser API client for the dsh chat surface (/api + SSE). */
 
+import type { ReplyContext } from './reply.ts'
+
 export interface ChatSource {
   url: string
   title?: string
@@ -22,6 +24,8 @@ export interface ChatItem {
   role: 'user' | 'assistant' | 'tool'
   text?: string
   attachments?: ChatAttachment[]
+  /** Which message this user message answers, as a short quote. */
+  replyTo?: ReplyContext
   name?: string
   query?: string
   searchQuestion?: string
@@ -241,11 +245,12 @@ export interface OutgoingAttachment {
   dataUrl: string
 }
 
-/** Send one message (with its optional attachment) and dispatch its SSE stream. */
+/** Send one message (with its optional attachment and reply target) and dispatch its SSE stream. */
 export async function sendMessage(
   sessionId: string,
   text: string,
   attachment: OutgoingAttachment | undefined,
+  replyTo: ReplyContext | undefined,
   onEvent: (event: StreamEvent) => void,
 ): Promise<void> {
   const response = await fetchWithSessionHeal(`/api/sessions/${sessionId}/messages`, {
@@ -254,6 +259,7 @@ export async function sendMessage(
     body: JSON.stringify({
       text,
       ...attachment !== undefined ? { attachment: { kind: attachment.kind, name: attachment.name, dataUrl: attachment.dataUrl } } : {},
+      ...replyTo !== undefined ? { replyTo } : {},
     }),
   })
   await readEventStream(response, onEvent)

@@ -33,7 +33,7 @@ import { routeSearchTarget, toSources, UserChromeSearchProvider } from '@deepsee
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { createUserMessage, ReasoningEffortId, type ContentBlock } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, ReasoningEffortId, type ContentBlock, type UserMessage } from '@deepseek-ai/dsh-llm'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { SessionQueryError, SessionSearchCursor, type SessionSearchHit, type SessionSearchPage } from '@deepseek-ai/dsh-session-query'
@@ -775,16 +775,46 @@ const MIME: Record<string, string> = {
   '.txt': 'text/plain; charset=utf-8',
 }
 
+/** Which message a user message answers, as a short display-only quote. */
+export interface ReplyContext {
+  role: 'user' | 'assistant'
+  text: string
+}
+
 /** One projected chat item served to the browser. */
 export interface ChatItem {
   role: 'user' | 'assistant' | 'tool'
   text?: string
   attachments?: { kind: 'image' | 'video' | 'file'; attachmentId: string; mediaType: string; name?: string; ref?: unknown }[]
+  replyTo?: ReplyContext
   name?: string
   query?: string
   searchQuestion?: string
   searchedAt?: string
   sources?: { url: string; title?: string; publishedAt?: string }[]
+}
+
+/** Longest reply quote the server keeps; longer text is cut, not rejected. */
+const REPLY_SNIPPET_MAX = 300
+
+/**
+ * Validate one request's reply context: which message the new message
+ * answers, as `{ role, text }`.
+ * @param value - the raw `replyTo` field of a message POST body.
+ * @returns the normalized quote, or the reason it is invalid.
+ */
+export function parseReplyTo(value: unknown): { ok: true; replyTo: ReplyContext } | { ok: false; error: string } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return { ok: false, error: 'replyTo must be an object with role and text' }
+  }
+  const record = value as Record<string, unknown>
+  if (record.role !== 'user' && record.role !== 'assistant') {
+    return { ok: false, error: 'replyTo role must be user or assistant' }
+  }
+  if (typeof record.text !== 'string' || record.text.trim() === '') {
+    return { ok: false, error: 'replyTo text must be a non-empty string' }
+  }
+  return { ok: true, replyTo: { role: record.role, text: record.text.replace(/\s+/g, ' ').trim().slice(0, REPLY_SNIPPET_MAX) } }
 }
 
 /** Read and parse one JSON request body, size-capped. */
@@ -957,7 +987,16 @@ export function projectSurfaceEvent(event: SessionEvent): ChatItem | undefined {
       const attachments = attachmentDescriptors(event.data.content)
       // Queue bookkeeping can produce empty user payloads; nothing to render.
       if (text === '' && attachments.length === 0) return undefined
-      return { role: 'user', ...text !== '' ? { text } : {}, ...attachments.length > 0 ? { attachments } : {} }
+      // The reply quote rides the message as a sibling of `content`: the
+      // ledger stores it verbatim, and the model context (built from
+      // `content`) never sees it.
+      const replyTo = (event.data as UserMessage & { replyTo?: ReplyContext }).replyTo
+      return {
+        role: 'user',
+        ...text !== '' ? { text } : {},
+        ...attachments.length > 0 ? { attachments } : {},
+        ...replyTo !== undefined ? { replyTo } : {},
+      }
     }
     case 'assistant/message': {
       const text = textOf(event.data.message.content)
@@ -1756,6 +1795,17 @@ export function apply(ctx: Context, config: Config): void {
           sendJson(res, 400, { error: 'a message needs text or an attachment' })
           return
         }
+        // The reply target quotes one message in the thread; it rides the
+        // message as display metadata, never inside the model-facing content.
+        let replyTo: ReplyContext | undefined
+        if (body.replyTo !== undefined) {
+          const parsed = parseReplyTo(body.replyTo)
+          if (!parsed.ok) {
+            sendJson(res, 400, { error: parsed.error })
+            return
+          }
+          replyTo = parsed.replyTo
+        }
         let content: ContentBlock[] = []
         if (body.attachment !== undefined) {
           const store = ctx.get('attachments')
@@ -1821,6 +1871,7 @@ export function apply(ctx: Context, config: Config): void {
         handle.agent.followup(createUserMessage({
           content,
           source: { kind: 'user' },
+          ...replyTo !== undefined ? { replyTo } : {},
         }))
         return
       }
@@ -1854,10 +1905,13 @@ export function apply(ctx: Context, config: Config): void {
       }
       const surface = await ctx.sessionQuery.readSurface(SessionId(sessionId))
       let content: ContentBlock[] | undefined
+      let replyTo: ReplyContext | undefined
       for (let index = surface.events.length - 1; index >= 0; index--) {
         const event = surface.events[index]
         if (event !== undefined && event.type === 'user/message') {
-          content = event.data.content as ContentBlock[]
+          const data = event.data as UserMessage & { replyTo?: ReplyContext }
+          content = data.content as ContentBlock[]
+          replyTo = data.replyTo
           break
         }
       }
@@ -1888,6 +1942,7 @@ export function apply(ctx: Context, config: Config): void {
       handle.agent.followup(createUserMessage({
         content,
         source: { kind: 'user' },
+        ...replyTo !== undefined ? { replyTo } : {},
       }))
       return
     }

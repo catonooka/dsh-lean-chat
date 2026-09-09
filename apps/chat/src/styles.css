@@ -441,13 +441,18 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 
 .main { position: relative; }
 
-.open-sidebar-fab {
+/* The sidebar is hidden: a small rail keeps opening it and starting a new
+   conversation one click away. */
+.collapsed-bar {
   position: absolute;
   top: 10px;
   left: 10px;
   z-index: 5;
-  background: var(--bg);
+  display: flex;
+  gap: 8px;
 }
+
+.collapsed-bar .icon-btn { background: var(--bg); }
 
 .icon-btn {
   width: 32px;
@@ -502,8 +507,16 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .row { display: flex; }
 .row.user { justify-content: flex-end; }
 
-.user-bubble {
+/* The bubble and its hover actions stack: message on top, actions below. */
+.user-col {
   max-width: 75%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.user-bubble {
+  max-width: 100%;
   padding: 10px 16px;
   border-radius: 18px;
   background: var(--bubble);
@@ -511,7 +524,36 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   overflow-wrap: anywhere;
 }
 
+/* Which message this bubble answers, as a short quote. */
+.reply-quote {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-bottom: 6px;
+  padding: 4px 10px;
+  border-left: 3px solid color-mix(in srgb, var(--fg) 30%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+}
+.reply-quote-label { font-size: 12px; font-weight: 600; color: var(--fg-muted); }
+.reply-quote-text {
+  font-size: 13px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 .row.assistant { gap: 12px; align-items: flex-start; }
+
+/* The streamed text and its hover actions stack the same way. */
+.assistant-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
 
 .assistant-avatar {
   width: 28px;
@@ -587,13 +629,14 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   display: flex;
   gap: 2px;
   flex: none;
-  align-self: center;
+  margin-top: 2px;
   opacity: 0;
   transition: opacity 120ms ease;
 }
 .row:hover .msg-actions,
 .msg-actions:focus-within { opacity: 1; }
-.row.assistant .msg-actions { align-self: flex-start; margin-top: 3px; }
+.row.user .msg-actions { align-self: flex-end; }
+.row.assistant .msg-actions { align-self: flex-start; }
 .msg-actions button {
   width: 26px;
   height: 26px;
@@ -726,8 +769,8 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 
 @media (max-width: 720px) {
   .sidebar { display: none; }
-  /* The sidebar is force-hidden here; the toggle would be a dead button. */
-  .open-sidebar-fab { display: none; }
+  /* The sidebar is force-hidden here; its toggle would be a dead button. */
+  .open-sidebar-btn { display: none; }
 }
 
 .avatar-grid {
@@ -813,7 +856,8 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   white-space: nowrap;
 }
 
-.attachment-chip button {
+.attachment-chip button,
+.reply-chip button {
   width: 26px;
   height: 26px;
   border: none;
@@ -826,7 +870,8 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   justify-content: center;
 }
 
-.attachment-chip button svg { width: 12px; height: 12px; }
+.attachment-chip button svg,
+.reply-chip button svg { width: 12px; height: 12px; }
 
 .bubble-attachment {
   display: block;
@@ -837,6 +882,38 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 }
 
 .attachment-chip .attachment-doc { width: 44px; height: 44px; color: var(--fg-muted); }
+
+/* The pending reply target, shown above the composer until sent or cancelled. */
+.reply-chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  font-size: 13px;
+}
+
+.reply-chip-icon { width: 14px; height: 14px; flex: none; color: var(--fg-muted); }
+
+.reply-chip-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.reply-chip-label { flex: none; font-size: 12px; font-weight: 600; color: var(--fg-muted); }
+
+.reply-chip-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted);
+}
 
 .bubble-attachment.file {
   display: inline-flex;
