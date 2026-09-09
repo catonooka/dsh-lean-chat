@@ -18,16 +18,20 @@ endpoint** — DeepSeek, an mLLM gateway, or a local Ollama/vLLM.
   runs searches inside your logged-in browser (no debug port, no tab), with a
   CDP fallback; `x:`-prefixed queries search your own X account.
 - **Multimodal input** — the probe gates a clip button; attach images and
-  videos (≤ 8MB / 64MB) that ride the message to the model and render in
-  history.
+  videos (≤ 8MB / 64MB). Uploads stream as raw bytes straight into durable
+  storage and the message carries only a reference; the composer previews
+  from a local blob URL, so no base64 copy ever sits in page memory.
 - **Clean UI** — collapsible sidebar (with a new-chat rail when collapsed),
   chat-style replies that quote the answered message, per-message
   copy/reply/try-again actions, full-text chat search, lazy-loaded
-  history, streaming with batched rendering, avatars, light/dark theme.
+  history, streaming that re-renders only the growing row, avatars,
+  light/dark theme.
 - **Efficient conversations** — auto-compaction keeps long chats inside the
   model's context window: older turns become a model-readable summary while
   the recent tail stays verbatim (optional in Settings; the full ledger stays
-  on disk).
+  on disk). The hot paths stay flat too: cached sidebar titles and listings,
+  memoized history rows, bounded agent lifetimes, and search caches with a
+  tight question-generator budget.
 - **Hardened localhost surface** — loopback-only, boot-minted HttpOnly session
   cookie, extension trust scoped to exactly two bridge routes, rate-limited
   probe endpoint.

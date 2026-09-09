@@ -87,19 +87,25 @@ Environment:
 
 The composer grows a clip button once the ability probe says the active
 model accepts images or video (the accept list filters to the supported
-kinds). One attachment rides a message as a base64 data URL — images up
-to 8MB (png/jpeg/webp/gif, byte-sniffed by the durable store under
-`$DSH_HOME/attachments`), videos and files up to 64MB (stored verbatim).
-The cap guards transport only: 64MB raw becomes ~86MB of base64 body,
-under the ~100MB request ceiling Cloudflare enforces in front of many
-gateways. Model context is unrelated to file size — providers price
+kinds). Attachments upload as their exact raw bytes — `POST
+/api/uploads?kind=…&name=…` with the media type in `content-type` — and
+the message send echoes the returned durable reference instead of
+re-riding the bytes: images up to 8MB (png/jpeg/webp/gif, byte-sniffed
+by the durable store under `$DSH_HOME/attachments`), videos and files
+up to 64MB (stored verbatim, streamed straight into the store so
+nothing large is ever buffered whole; oversized uploads abort before
+their tail is read). The composer previews from a local blob URL and
+uploads once on send, so no base64 copy of the file ever sits in page
+memory. Model context is unrelated to file size — providers price
 video by resolution × duration (a 300KB 4K clip can cost 100K+ tokens
 while a 23MB 1080p clip costs ~5K), and some models adapt their frame
 sampling to self-cap video tokens. The
 model receives them as `image_url`/`video_url` parts; reloaded history
-renders attachments from digest-verified storage. The profile opts into
+renders attachments from digest-verified storage, streamed to the
+socket chunk-by-chunk with backpressure. The profile opts into
 `uncataloguedImageInput` on the adapter so custom-gateway models take
-attachments instead of placeholder text.
+attachments instead of placeholder text. (The legacy base64-in-JSON
+form still works for old tabs.)
 
 Hovering a message shows its actions **under** the bubble: **copy**
 (clipboard with a selection-based fallback), **reply**, and **try again**
@@ -233,11 +239,48 @@ present); there is no token exchange.
 - `POST /api/sessions/:id/messages` `{text}` — SSE stream (`user`, `delta`,
   `assistant`, `tool-start`, `tool-end`, `status`, `turn-end`, `error`)
 - `POST /api/sessions/:id/stop` — cancel the active turn
+- `POST /api/uploads?kind=image|video|file&name=…` — raw-body attachment
+  upload; the response's durable `ref` rides the message send
+
+## Performance model
+
+Where the hot paths spend their budget, and what keeps them flat:
+
+- **Sidebar listing** (`GET /api/sessions`): the corpus listing (a directory
+  walk plus one header read per session) caches behind a 2s TTL with
+  invalidation at every liveness flip this plugin controls (agent mint,
+  eviction, model swap); title snapshots — a whole-JSONL parse per cold
+  session — cache per session until a `session/title` event lands (only
+  live, in-memory sessions invalidate).
+- **Attachments**: raw-body uploads stream into the store (`saveFileStream`)
+  so a 64MB video never buffers whole; downloads write store chunks
+  straight to the socket with backpressure; the composer holds a `File`
+  plus a blob-URL preview, never a base64 string.
+- **Streaming UI**: the live text lives in a feed outside React state —
+  only the streaming row re-renders per 50ms batch, its markdown re-parses
+  at a 200ms throttle, and history rows plus the sidebar are memoized so
+  typing and streaming leave them untouched.
+- **Lifetime**: one plugin teardown retires every agent (per-agent effect
+  closures would pin each conversation's event log for the process life);
+  the in-memory activity ledger trims to its persisted 500 entries; blob
+  URLs are revoked when their rows leave the view.
+- **Search**: generated questions cache per raw query (the generator also
+  has a 3s budget and fails fast to the raw query), the keyless metasearch
+  caches results for 60s, the extension runs up to three searches
+  concurrently, backs off failed polls exponentially (letting its service
+  worker park), and stops SERP candidate collection once it has enough.
+
+Known deferred costs (upstream-owned, deliberate): `GET /messages` deep-
+clones history through the session-query corpus on every load (a cursor
+API belongs upstream), and the FTS search reconciles the corpus per
+request (the client debounces at 300ms and the index build is one-time).
 
 ## Limitations
 
 - Loopback-only; no auth token (the full `web` profile's browser
   authentication is deliberately not pulled in).
-- No session deletion, no history full-text search, no attachments.
-- Question generation costs one extra small model request per search
-  (disable with `generateQuestion: false` on the `tool-web-search-tiny` row).
+- No session deletion; history full-text search and attachments both
+  exist but attachments are capped at one per message.
+- Question generation costs one extra small model request per uncached
+  search (disable with `generateQuestion: false` on the
+  `tool-web-search-tiny` row).
