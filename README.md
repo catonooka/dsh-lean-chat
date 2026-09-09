@@ -17,6 +17,12 @@ endpoint** — DeepSeek, an mLLM gateway, or a local Ollama/vLLM.
   a tiny [companion extension](packages/web/web-search-chrome/extension/README.md)
   runs searches inside your logged-in browser (no debug port, no tab), with a
   CDP fallback; `x:`-prefixed queries search your own X account.
+- **A browser tool that is you** — the `browser` tool drives a real tab in
+  your own Chrome, with your logins: your X timeline, GitHub, mail — pages
+  no search engine can see. Read-only steps (open / snapshot / extract /
+  close) with hard-capped observations, one compact schema, browsing chips
+  in the thread, and multi-profile routing so the model acts in the right
+  Chrome identity.
 - **Multimodal input** — the probe gates a clip button; attach images and
   videos (≤ 8MB / 64MB). Uploads stream as raw bytes straight into durable
   storage and the message carries only a reference; the composer previews

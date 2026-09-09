@@ -50,6 +50,12 @@ context**.
   extension is not connected. While "Your Chrome" is selected, the settings
   panel shows a live connection row with a one-click **Test search** and the
   exact install steps.
+- **A browser tool that is you**: the `browser` tool drives a real tab in
+  your own Chrome — with your logins — for pages no search engine can see
+  (your X timeline, GitHub, mail). Read-only steps in this build (open,
+  snapshot, extract, close), one compact schema, hard-capped observations,
+  and multi-profile routing so the model can act in the right identity
+  (see below).
 
 ## Run
 
@@ -169,16 +175,57 @@ session; `x:` queries call X's internal search API riding your signed-in
 `auth_token`/`ct0` cookies, so `from:me` and other operators search your own
 account.
 
+The same connection also serves the **browser tool**: browser jobs open a
+real tab in your window, attach the Chrome debugger to it, and navigate it,
+so JavaScript-rendered pages load with your logins (Chrome shows its usual
+"started debugging this tab" banner while a tab is driven). One tab exists
+per named session, steps on it serialize, and tabs idle for ten minutes are
+closed automatically.
+
+**Chrome profiles**: load the extension in several profiles and give each a
+label in its options page. Labels ride the long-poll, jobs can pin to one,
+and `/api/chrome/status` lists who is connected — the model picks the right
+identity (right logins, right accounts) with the tool's `profile` argument.
+
 Install once: `chrome://extensions` → Developer mode → Load unpacked → the
 `extension/` folder (the settings panel's *How to connect* prints the exact
 path while the app runs). A different app port goes in the extension's
 options page. Details and privacy notes: `extension/README.md`.
 
 The bridge is four local-only routes — `GET /api/chrome/next` (the
-long-poll/heartbeat), `POST /api/chrome/result`, `GET /api/chrome/status`,
-and `POST /api/chrome/test` — served by the app and consumed by the
-extension. Without the extension, "Your Chrome" falls back to the CDP engine
-(`--remote-debugging-port=9222`).
+long-poll/heartbeat, carrying the profile label), `POST /api/chrome/result`,
+`GET /api/chrome/status`, and `POST /api/chrome/test` — served by the app and
+consumed by the extension. Without the extension, "Your Chrome" falls back
+to the CDP engine (`--remote-debugging-port=9222`) — for searches; browser
+steps need the extension.
+
+### The browser tool
+
+`browser` (from `dsh-tool-browser-chrome`) is the second model-facing tool:
+it drives the user's own Chrome step by step for pages a search engine
+cannot see — their X timeline, their GitHub, their mail. One compact schema
+(an `action` enum plus optional `url`, `goal`, `profile`, `session`) keeps
+the initial context small, and every observation is hard-capped so steps
+stay cheap:
+
+- `status` — list connected Chrome profile labels (answered server-side,
+  no extension round trip).
+- `open` — navigate a session tab, wait for the render, and return the page
+  outline: a bracket-format snapshot where interactive elements carry `@eN`
+  refs (refs on interactive elements only measured 51–79% cheaper in tokens
+  than YAML accessibility trees; snapshots cap at 400 lines / 12k chars).
+- `extract` — the page's main readable text (readability-lite: content
+  container picked, page chrome stripped, middle elided past the 8k cap).
+  With a `url` it navigates first, so open-and-read costs one round trip.
+- `snapshot` — re-serialize the current page (SPA content that changed).
+- `close` — release the session tab.
+
+This build is deliberately **read-only**: nothing is clicked, typed, or
+submitted. The `@eN` refs are stashed on the page so actuation
+(click/type/press/scroll/back) can land as a follow-up without re-
+architecting. Every step's result renders in the chat as a browsing chip
+(globe icon, action + URL, excerpt behind the toggle), and the untrusted-
+content guard the search tool uses prefixes every observation.
 
 ### Settings panel
 
@@ -219,6 +266,8 @@ pnpm dsh --profile chat
 | Bundle (standalone Cordis tree) | `packages/bundle/chat-app` |
 | Glue (static dist, `/api`, SSE, browser handoff) | `packages/bundle/chat-app/src/index.ts` |
 | Tiny web-search tool | `packages/web/tool-web-search-tiny` |
+| Browser tool (user's Chrome, step by step) | `packages/web/tool-browser-chrome` |
+| Companion extension + bridge (searches, browser steps) | `packages/web/web-search-chrome` |
 | Front end (Vite + React) | `apps/chat` |
 | Profile template registration | `PROFILE_TEMPLATES` in `packages/boot/app-boot/src/profile.ts` |
 
@@ -269,6 +318,11 @@ Where the hot paths spend their budget, and what keeps them flat:
   caches results for 60s, the extension runs up to three searches
   concurrently, backs off failed polls exponentially (letting its service
   worker park), and stops SERP candidate collection once it has enough.
+- **Browser steps**: every observation is capped before the model sees it —
+  snapshots at 400 lines / 12k chars with refs on interactive elements only
+  (bracket format measured 51–79% cheaper than YAML trees), extractions at
+  8k chars with middle elision — and steps on one session tab serialize, so
+  a long page never floods the conversation.
 
 Known deferred costs (upstream-owned, deliberate): `GET /messages` deep-
 clones history through the session-query corpus on every load (a cursor
@@ -281,6 +335,8 @@ request (the client debounces at 300ms and the index build is one-time).
   authentication is deliberately not pulled in).
 - No session deletion; history full-text search and attachments both
   exist but attachments are capped at one per message.
+- Browser steps are read-only in this build (open/snapshot/extract/close);
+  click/type actuation is the planned follow-up, riding the same `@eN` refs.
 - Question generation costs one extra small model request per uncached
   search (disable with `generateQuestion: false` on the
   `tool-web-search-tiny` row).
