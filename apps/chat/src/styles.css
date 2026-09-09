@@ -740,6 +740,9 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   gap: 4px;
 }
 .tool-sources a { color: var(--fg); text-decoration: underline; text-underline-offset: 2px; }
+.tool-excerpt { color: var(--fg-muted); line-height: 1.45; white-space: pre-wrap; }
+
+.chrome-profiles { opacity: 0.75; }
 
 /* ── composer ─────────────────────────────────────────────────────────────── */
 

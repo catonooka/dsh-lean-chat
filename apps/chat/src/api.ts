@@ -31,6 +31,10 @@ export interface ChatItem {
   searchQuestion?: string
   searchedAt?: string
   sources?: ChatSource[]
+  action?: string
+  url?: string
+  title?: string
+  excerpt?: string
   running?: boolean
 }
 
@@ -187,6 +191,8 @@ export function updateConfig(patch: SettingsPatch): Promise<AppConfig> {
 /** Whether each chrome engine answers right now. */
 export interface ChromeStatus {
   extension: boolean
+  /** Connected Chrome profile labels, freshest first. */
+  clients?: { client: string; lastSeenAt: number }[]
   cdp: boolean
   extensionPath?: string
 }
@@ -235,8 +241,8 @@ export type StreamEvent =
   | { t: 'user'; text: string }
   | { t: 'delta'; text: string }
   | { t: 'assistant'; text: string }
-  | { t: 'tool-start'; name: string; query?: string }
-  | { t: 'tool-end'; name?: string; query?: string; searchQuestion?: string; searchedAt?: string; sources?: ChatSource[]; text?: string; isError?: boolean }
+  | { t: 'tool-start'; name: string; query?: string; action?: string; url?: string }
+  | { t: 'tool-end'; name?: string; query?: string; searchQuestion?: string; searchedAt?: string; sources?: ChatSource[]; action?: string; url?: string; title?: string; excerpt?: string; text?: string; isError?: boolean }
   | { t: 'status'; status: 'running' | 'idle' }
   | { t: 'turn-end'; reason: string }
   | { t: 'compaction'; text: string }

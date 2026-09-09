@@ -215,8 +215,38 @@ const AssistantText = memo(function AssistantText({ text, streaming }: { text: s
 
 const ToolChip = memo(function ToolChip({ item }: { item: ChatItem }): JSX.Element {
   const [open, setOpen] = useState(false)
-  const label = item.searchQuestion ?? item.query ?? item.text ?? 'web search'
   const count = item.sources?.length
+  // Browser steps get their own face: a globe, the action and page instead of
+  // a search question, and the page excerpt behind the toggle.
+  if (item.action !== undefined || item.name === 'browser') {
+    const label = [item.action, item.url ?? item.title ?? ''].filter(part => part !== '').join(' ')
+    return (
+      <div className="tool-chip-wrap">
+        <button type="button" className="tool-chip" onClick={() => { setOpen(value => !value) }}>
+          <svg className="tool-icon" viewBox="0 0 16 16" aria-hidden="true">
+            <circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
+            <ellipse cx="8" cy="8" rx="3" ry="6.5" fill="none" stroke="currentColor" strokeWidth="1.2" />
+            <line x1="1.5" y1="8" x2="14.5" y2="8" stroke="currentColor" strokeWidth="1.2" />
+          </svg>
+          <span className="tool-label">
+            {item.running === true ? 'Browsing' : 'Browsed'}
+            {label === '' ? '' : ` · ${label}`}
+          </span>
+        </button>
+        {open && item.excerpt !== undefined
+          ? (
+            <div className="tool-sources">
+              <div className="tool-excerpt">{item.excerpt}</div>
+              {item.url !== undefined
+                ? <a href={item.url} target="_blank" rel="noopener noreferrer">{item.url}</a>
+                : undefined}
+            </div>
+          )
+          : undefined}
+      </div>
+    )
+  }
+  const label = item.searchQuestion ?? item.query ?? item.text ?? 'web search'
   return (
     <div className="tool-chip-wrap">
       <button type="button" className="tool-chip" onClick={() => { setOpen(value => !value) }}>
@@ -812,6 +842,8 @@ export default function App(): JSX.Element {
             role: 'tool',
             name: event.name,
             ...event.query !== undefined ? { query: event.query } : {},
+            ...event.action !== undefined ? { action: event.action } : {},
+            ...event.url !== undefined ? { url: event.url } : {},
             running: true,
           }])
           break
@@ -829,6 +861,10 @@ export default function App(): JSX.Element {
                   ...event.searchQuestion !== undefined ? { searchQuestion: event.searchQuestion } : {},
                   ...event.searchedAt !== undefined ? { searchedAt: event.searchedAt } : {},
                   ...event.sources !== undefined ? { sources: event.sources } : {},
+                  ...event.action !== undefined ? { action: event.action } : {},
+                  ...event.url !== undefined ? { url: event.url } : {},
+                  ...event.title !== undefined ? { title: event.title } : {},
+                  ...event.excerpt !== undefined ? { excerpt: event.excerpt } : {},
                   ...event.text !== undefined ? { text: event.text } : {},
                 }
                 break

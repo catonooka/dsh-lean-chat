@@ -499,6 +499,14 @@ export function SettingsPanel({ config, theme, onTheme, avatar, onAvatar, onAppl
                     : chromeStatus?.cdp === true
                       ? 'debug port connected'
                       : chromeStatus === undefined ? 'checking…' : 'not connected'}
+                  {chromeStatus?.extension === true && chromeStatus.clients !== undefined && chromeStatus.clients.length > 0
+                    ? (
+                      <span className="chrome-profiles">
+                        {' · '}
+                        {chromeStatus.clients.map(entry => entry.client).join(', ')}
+                      </span>
+                    )
+                    : undefined}
                 </span>
               </span>
               <div className="chrome-row">

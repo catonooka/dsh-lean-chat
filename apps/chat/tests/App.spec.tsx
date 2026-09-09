@@ -519,6 +519,47 @@ describe('streaming turn', () => {
     await screen.findByText('streamed only, never framed', {}, { timeout: 3000 })
     await waitFor(() => { expect(document.querySelector('.caret')).toBeNull() })
   })
+
+  it('runs browser steps as browsing chips that settle with the page', async () => {
+    localStorage.setItem('dsh-chat-active', 'sess-a')
+    await renderApp({
+      sessions: [{ id: 'sess-a', title: 'A', items: [] }],
+      streams: [delayedSseResponse([
+        { t: 'delta', text: 'Looking at your posts.' },
+        { t: 'tool-start', name: 'browser', action: 'open', url: 'https://x.com/me' },
+        { t: 'tool-end', name: 'browser', action: 'extract', url: 'https://x.com/me', title: 'me (@me)', excerpt: 'Shipped the browser tool.' },
+        { t: 'assistant', text: 'here are your five posts' },
+        { t: 'turn-end', reason: 'completed' },
+      ], 30)],
+    })
+    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    fireEvent.change(composer, { target: { value: 'my recent 5 posts on X' } })
+    fireEvent.keyDown(composer, { key: 'Enter' })
+    await screen.findByText('Browsing · open https://x.com/me', {}, { timeout: 3000 })
+    await screen.findByText('Browsed · extract https://x.com/me', {}, { timeout: 3000 })
+    // The settled chip opens to the page excerpt.
+    fireEvent.click(screen.getByText('Browsed · extract https://x.com/me'))
+    await screen.findByText('Shipped the browser tool.')
+    await screen.findByText('here are your five posts', {}, { timeout: 3000 })
+  })
+
+  it('renders a browser card from history with the browsed label', async () => {
+    localStorage.setItem('dsh-chat-active', 'sess-a')
+    await renderApp({
+      sessions: [{
+        id: 'sess-a',
+        title: 'A',
+        items: [
+          { role: 'user', text: 'my recent 5 posts on X' },
+          { role: 'tool', name: 'browser', action: 'extract', url: 'https://x.com/me', title: 'me (@me)', excerpt: 'Post one.' },
+          { role: 'assistant', text: 'here they are' },
+        ],
+      }],
+    })
+    await screen.findByText('Browsed · extract https://x.com/me', {}, { timeout: 3000 })
+    fireEvent.click(screen.getByText('Browsed · extract https://x.com/me'))
+    await screen.findByText('Post one.')
+  })
 })
 
 describe('post-turn sidebar refresh', () => {
