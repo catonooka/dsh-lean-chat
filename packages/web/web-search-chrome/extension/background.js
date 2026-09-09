@@ -9,9 +9,18 @@
 const DEFAULT_ORIGIN = 'http://127.0.0.1:3095'
 const POLL_WAIT_SECONDS = 25
 const SEARCH_FETCH_TIMEOUT_MS = 8000
+// Failed-poll backoff: doubling up to half a minute. Past that the idle
+// service worker is allowed to die — the 30-second alarm wakes it to retry,
+// instead of a fixed 2s loop keeping it alive forever while the app is down.
+const BACKOFF_FIRST_MS = 2000
+const BACKOFF_MAX_MS = 30000
+// Searches may arrive faster than one finishes; run up to this many
+// concurrently before the poll loop falls back to running one inline.
+const MAX_CONCURRENT_JOBS = 3
 
 let origin = DEFAULT_ORIGIN
 let polling = false
+let runningJobs = 0
 
 chrome.storage.local.get({ appOrigin: DEFAULT_ORIGIN }, (stored) => {
   origin = stored.appOrigin
@@ -36,40 +45,55 @@ function startPolling() {
 }
 
 async function poll() {
+  let backoffMs = 0
   for (;;) {
     try {
       const response = await fetch(`${origin}/api/chrome/next?wait=${String(POLL_WAIT_SECONDS)}`, { cache: 'no-store' })
       if (response.ok) {
         const body = await response.json()
-        if (body.job !== null && body.job !== undefined) await run(body.job)
-        // An empty long-poll just lapsed; reconnect immediately.
+        if (body.job !== null && body.job !== undefined) {
+          // The search tool is concurrency-safe; overlapping jobs would
+          // otherwise queue behind each other and blow the app-side 9s
+          // budget. At capacity the poll runs one inline (serial, like
+          // before) rather than dropping it.
+          if (runningJobs < MAX_CONCURRENT_JOBS) void run(body.job)
+          else await run(body.job)
+        }
+        // A healthy connection resets the failure backoff.
+        backoffMs = 0
         continue
       }
     } catch (error) {
-      // The app is down or starting; back off briefly.
+      // The app is down or starting; back off below.
     }
-    await sleep(2000)
+    backoffMs = backoffMs === 0 ? BACKOFF_FIRST_MS : Math.min(backoffMs * 2, BACKOFF_MAX_MS)
+    await sleep(backoffMs)
   }
 }
 
 async function run(job) {
-  let result
+  runningJobs += 1
   try {
-    const sources = job.kind === 'x'
-      ? await xSearch(job.query, job.maxResults)
-      : await webSearch(job.url, job.maxResults)
-    result = { id: job.id, ok: true, sources }
-  } catch (error) {
-    result = { id: job.id, ok: false, error: messageOf(error) }
-  }
-  try {
-    await fetch(`${origin}/api/chrome/result`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(result),
-    })
-  } catch (error) {
-    // The app went away mid-job; nothing to deliver to.
+    let result
+    try {
+      const sources = job.kind === 'x'
+        ? await xSearch(job.query, job.maxResults)
+        : await webSearch(job.url, job.maxResults)
+      result = { id: job.id, ok: true, sources }
+    } catch (error) {
+      result = { id: job.id, ok: false, error: messageOf(error) }
+    }
+    try {
+      await fetch(`${origin}/api/chrome/result`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(result),
+      })
+    } catch (error) {
+      // The app went away mid-job; nothing to deliver to.
+    }
+  } finally {
+    runningJobs -= 1
   }
 }
 
@@ -88,18 +112,24 @@ async function webSearch(url, maxResults) {
 // an <h2>/<h3> heading — either the heading sits inside the anchor (Google,
 // DuckDuckGo) or the anchor inside the heading (Bing). Both shapes are
 // collected, snippets come from the text that follows the heading block.
+// Collection stops once enough candidates are in hand: a megabyte SERP keeps
+// its results in the first fraction of the page, and scanning the rest is
+// pure service-worker CPU.
 function parseSerp(html, limit) {
   const hits = []
   const seen = new Set()
   const anchors = []
+  const wanted = limit * 3
   const anchorRe = /<a\b([^>]*)>([\s\S]*?)<\/a>/g
   for (let match = anchorRe.exec(html); match !== null; match = anchorRe.exec(html)) {
     if (/<h[23][\s>]/.test(match[2])) anchors.push({ attrs: match[1], body: match[2], after: html.slice(anchorRe.lastIndex, anchorRe.lastIndex + 700) })
+    if (anchors.length >= wanted) break
   }
   const headingRe = /<h([23])\b[^>]*>([\s\S]*?)<\/h\1>/g
   for (let match = headingRe.exec(html); match !== null; match = headingRe.exec(html)) {
     const inner = /<a\b([^>]*)>/.exec(match[2])
     if (inner !== null) anchors.push({ attrs: inner[1], body: match[2], after: html.slice(headingRe.lastIndex, headingRe.lastIndex + 700) })
+    if (anchors.length >= wanted) break
   }
   for (const anchor of anchors) {
     if (hits.length >= limit) break

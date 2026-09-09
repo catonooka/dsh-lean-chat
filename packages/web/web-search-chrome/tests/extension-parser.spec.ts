@@ -178,3 +178,16 @@ describe('extension parseAdaptive', () => {
     expect(worker.parseAdaptive(undefined, 5)).toEqual([])
   })
 })
+
+describe('extension parseSerp — early collection exit', () => {
+  const result = (n: number): string =>
+    `<a href="https://example.com/page${String(n)}"><h3>Result ${String(n)}</h3></a><p>snippet ${String(n)}</p>`
+
+  it('returns the earliest results and respects the limit on a huge SERP', () => {
+    const serp = `<html><body>${Array.from({ length: 200 }, (_, index) => result(index + 1)).join('')}</body></html>`
+    const hits = worker.parseSerp(serp, 10)
+    expect(hits.length).toBe(10)
+    expect(hits[0]?.title).toBe('Result 1')
+    expect(hits[9]?.title).toBe('Result 10')
+  })
+})
