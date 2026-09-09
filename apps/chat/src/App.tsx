@@ -137,22 +137,50 @@ const MessageActions = memo(function MessageActions(
 })
 
 const BubbleAttachment = memo(function BubbleAttachment({ attachment }: { attachment: ChatAttachment }): JSX.Element {
-  const [url, setUrl] = useState<string | undefined>(attachment.localUrl)
+  // Which bytes the rendered URL points at: the composer's local preview, or
+  // the object URL minted from the fetched bytes for one attachment id.
+  // History refetches (compaction) replace item objects wholesale — the same
+  // attachment id must keep its URL and not refetch, while a genuinely
+  // different attachment swaps it. Minted URLs are revoked only when a newer
+  // URL has taken their place or the row unmounts — never the instant they
+  // are handed to the DOM.
+  const sourceKey = attachment.localUrl ?? attachment.attachmentId
+  const urlRef = useRef<string | undefined>(attachment.localUrl)
+  const sourceRef = useRef(sourceKey)
+  const mintedRef = useRef<string | undefined>(undefined)
+  const [, setVersion] = useState(0)
   useEffect(() => {
-    if (url !== undefined) return
-    let revoked = false
-    let objectUrl: string | undefined
+    if (attachment.localUrl !== undefined) {
+      urlRef.current = attachment.localUrl
+      sourceRef.current = sourceKey
+      setVersion(version => version + 1)
+      return undefined
+    }
+    // Same attachment id, URL already in hand: a refetched history row.
+    if (urlRef.current !== undefined && sourceRef.current === sourceKey) return undefined
+    let cancelled = false
     fetchAttachmentBlob(attachment)
       .then((blob) => {
-        objectUrl = URL.createObjectURL(blob)
-        if (!revoked) setUrl(objectUrl)
+        const objectUrl = URL.createObjectURL(blob)
+        if (cancelled) {
+          URL.revokeObjectURL(objectUrl)
+          return
+        }
+        const stale = mintedRef.current
+        mintedRef.current = objectUrl
+        urlRef.current = objectUrl
+        sourceRef.current = sourceKey
+        setVersion(version => version + 1)
+        if (stale !== undefined) URL.revokeObjectURL(stale)
       })
       .catch(() => { /* the bubble falls back to a placeholder */ })
-    return () => {
-      revoked = true
-      if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl)
-    }
-  }, [attachment, url])
+    return () => { cancelled = true }
+  }, [sourceKey, attachment.localUrl])
+  // Unmount releases what this row minted; the composer owns its previews.
+  useEffect(() => () => {
+    if (mintedRef.current !== undefined) URL.revokeObjectURL(mintedRef.current)
+  }, [])
+  const url = urlRef.current
   if (attachment.kind === 'image') {
     return <img className="bubble-attachment" src={url} alt={attachment.mediaType} />
   }
@@ -394,6 +422,19 @@ const SessionListBody = memo(function SessionListBody({ searchActive, hits, sess
   )
 })
 
+/**
+ * Merge one refreshed first page into the loaded sidebar rows: page rows
+ * update or prepend in their fresh order, deeper pages keep their rows, and
+ * anything the page already covers drops out of the tail. A turn therefore
+ * refreshes 20 rows, not every row ever scrolled past.
+ */
+export function mergeSessionPage<T extends { id: string }>(previous: readonly T[], page: readonly T[]): T[] {
+  if (previous.length <= page.length) return [...page]
+  const headIds = new Set(page.map(session => session.id))
+  const tail = previous.filter(session => !headIds.has(session.id))
+  return [...page, ...tail]
+}
+
 export default function App(): JSX.Element {
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [total, setTotal] = useState(0)
@@ -435,16 +476,16 @@ export default function App(): JSX.Element {
     fetchConfig().then(setConfig).catch(() => { /* the header simply stays generic */ })
   }, [])
 
-  // After a turn, reload from the top without shrinking the loaded pages.
+  // After a turn, refresh the first page only and merge it into the loaded
+  // rows — deep sidebars do not refetch everything they ever scrolled past.
   const refreshSessions = useCallback(() => {
-    const limit = Math.max(SESSION_PAGE_SIZE, sessions.length)
-    listSessions({ limit })
+    listSessions({ limit: SESSION_PAGE_SIZE })
       .then((body) => {
-        setSessions(body.sessions)
+        setSessions(previous => mergeSessionPage(previous, body.sessions))
         setTotal(body.total)
       })
       .catch((err: unknown) => { setError(err instanceof Error ? err.message : String(err)) })
-  }, [sessions.length])
+  }, [])
 
   const loadMoreSessions = useCallback(async (): Promise<void> => {
     if (loadingMore || sessions.length >= total) return

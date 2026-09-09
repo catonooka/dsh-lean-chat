@@ -10,7 +10,7 @@
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import App from '../src/App.tsx'
+import App, { mergeSessionPage } from '../src/App.tsx'
 import type { ChatItem } from '../src/api.ts'
 
 /** One stubbed JSON Response for the mount-time GETs. */
@@ -63,11 +63,13 @@ async function renderApp(options: {
   posts: { url: string; body: Record<string, unknown> }[]
   historyFetches: string[]
   uploads: { url: string; body: unknown }[]
+  attachmentFetches: string[]
 }> {
   const sessions = options.sessions ?? []
   const posts: { url: string; body: Record<string, unknown> }[] = []
   const historyFetches: string[] = []
   const uploads: { url: string; body: unknown }[] = []
+  const attachmentFetches: string[] = []
   const streams = [...options.streams ?? []]
   const summaries = sessions.map(session => ({
     id: session.id,
@@ -87,6 +89,10 @@ async function renderApp(options: {
         image: options.abilities?.image ?? 'no',
         video: options.abilities?.video ?? 'no',
       }))
+    }
+    if (url === '/api/attachment') {
+      attachmentFetches.push(String(init?.body ?? ''))
+      return Promise.resolve({ ok: true, status: 200, statusText: 'OK', blob: async () => new Blob(['x']) } as unknown as Response)
     }
     if (url.startsWith('/api/uploads')) {
       uploads.push({ url, body: init?.body })
@@ -112,7 +118,7 @@ async function renderApp(options: {
     return Promise.resolve(jsonResponse({}))
   }))
   render(<App />)
-  return { posts, historyFetches, uploads }
+  return { posts, historyFetches, uploads, attachmentFetches }
 }
 
 const userItem = (text: string): ChatItem => ({ role: 'user', text })
@@ -371,5 +377,61 @@ describe('attachment upload flow', () => {
       if (originalRevoke !== undefined) URL.revokeObjectURL = originalRevoke
       else delete (URL as { revokeObjectURL?: unknown }).revokeObjectURL
     }
+  })
+})
+
+describe('history attachment lifecycle', () => {
+  it('fetches one attachment once and keeps its URL across a compaction refetch', async () => {
+    const originalCreate = URL.createObjectURL
+    const originalRevoke = URL.revokeObjectURL
+    let minted = 0
+    URL.createObjectURL = vi.fn(() => `blob:hist-${String(++minted)}`)
+    URL.revokeObjectURL = vi.fn()
+    try {
+      localStorage.setItem('dsh-chat-active', 'sess-a')
+      const attachment = { kind: 'image' as const, attachmentId: 'a1', mediaType: 'image/png', ref: { attachmentId: 'a1' } }
+      const { attachmentFetches, historyFetches } = await renderApp({
+        sessions: [{
+          id: 'sess-a',
+          title: 'A',
+          items: [
+            { role: 'user', text: 'look at this', attachments: [attachment] },
+            assistantItem('nice'),
+          ],
+        }],
+        streams: [sseResponse([{ t: 'compaction', text: 'summary' }, { t: 'turn-end', reason: 'completed' }])],
+      })
+      await screen.findByText('look at this')
+      await waitFor(() => { expect(attachmentFetches.length).toBe(1) })
+      expect(document.querySelector('img.bubble-attachment')?.getAttribute('src')).toBe('blob:hist-1')
+      // A turn whose compaction event refetches history replaces the item
+      // objects wholesale; the same attachment id must not refetch or swap.
+      const composer = screen.getByPlaceholderText('Message dsh chat…')
+      fireEvent.change(composer, { target: { value: 'again' } })
+      fireEvent.submit(composer.closest('form') as HTMLFormElement)
+      await waitFor(() => { expect(historyFetches.length).toBe(2) })
+      expect(attachmentFetches.length).toBe(1)
+      expect(document.querySelector('img.bubble-attachment')?.getAttribute('src')).toBe('blob:hist-1')
+    } finally {
+      if (originalCreate !== undefined) URL.createObjectURL = originalCreate
+      else delete (URL as { createObjectURL?: unknown }).createObjectURL
+      if (originalRevoke !== undefined) URL.revokeObjectURL = originalRevoke
+      else delete (URL as { revokeObjectURL?: unknown }).revokeObjectURL
+    }
+  })
+})
+
+describe('mergeSessionPage', () => {
+  const session = (id: string): { id: string } => ({ id })
+
+  it('adopts the page outright when it already covers the loaded rows', () => {
+    expect(mergeSessionPage([session('a'), session('b')], [session('b'), session('c')]))
+      .toEqual([session('b'), session('c')])
+  })
+
+  it('keeps deep pages, drops tail rows the fresh page covers', () => {
+    const loaded = ['a', 'b', 'c', 'd', 'e'].map(session)
+    const page = [session('e'), session('f')]
+    expect(mergeSessionPage(loaded, page)).toEqual([session('e'), session('f'), session('a'), session('b'), session('c'), session('d')])
   })
 })

@@ -504,7 +504,13 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   gap: 18px;
 }
 
-.row { display: flex; }
+/* Long threads skip layout and paint for off-screen rows; the intrinsic
+ * size keeps the scrollbar stable while rows are skipped. */
+.row {
+  display: flex;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 96px;
+}
 .row.user { justify-content: flex-end; }
 
 /* The bubble and its hover actions stack: message on top, actions below. */
