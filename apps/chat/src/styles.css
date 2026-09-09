@@ -623,6 +623,41 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 
 .row.tool { padding-left: 40px; }
 
+/* ── compaction checkpoint ────────────────────────────────────────────────── */
+
+/* The summary card that replaces turns compacted out of the model context. */
+.row.compaction { padding-left: 40px; }
+
+.compaction-card {
+  display: flex;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--code-bg) 40%, transparent);
+}
+
+.compaction-card svg { width: 16px; height: 16px; flex: none; margin-top: 2px; color: var(--fg-muted); }
+
+.compaction-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.compaction-label { font-size: 12px; font-weight: 600; color: var(--fg-muted); }
+
+.compaction-text {
+  font-size: 13px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
 /* ── per-message actions ─────────────────────────────────────────────────── */
 
 .msg-actions {

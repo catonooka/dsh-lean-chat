@@ -529,6 +529,7 @@ export default function App(): JSX.Element {
     setStreaming(true)
     setStreamText('')
     let sawAssistant = false
+    let sawCompaction = false
     // Deltas land in coarse batches so the tree and the markdown parser run
     // at frame cadence, not once per token; order-critical events flush first.
     const batcher = new DeltaBatcher((chunk) => { setStreamText(previous => previous + chunk) })
@@ -578,6 +579,11 @@ export default function App(): JSX.Element {
           break
         case 'status':
           break
+        case 'compaction':
+          // Old turns were replaced by a checkpoint mid-turn; the history
+          // refetch below lands the compacted view once the stream ends.
+          sawCompaction = true
+          break
         case 'error':
           setError(event.message)
           break
@@ -600,8 +606,13 @@ export default function App(): JSX.Element {
       })
       setStreaming(false)
       refreshSessions()
+      if (sawCompaction) {
+        fetchMessages(activeId)
+          .then(setItems)
+          .catch(() => { /* the history stays as rendered */ })
+      }
     }
-  }, [refreshSessions])
+  }, [activeId, refreshSessions])
 
   const send = useCallback(async (): Promise<void> => {
     const text = draft.trim()
@@ -807,6 +818,23 @@ export default function App(): JSX.Element {
             : (
               <div className="thread-inner">
                 {items.map((item, index) => {
+                  if (item.role === 'compaction') {
+                    return (
+                      <div key={index} className="row compaction">
+                        <div className="compaction-card">
+                          <svg viewBox="0 0 16 16" aria-hidden="true">
+                            <rect x="2" y="3.5" width="12" height="4" rx="1.2" fill="none" stroke="currentColor" strokeWidth="1.3" />
+                            <path d="M3.5 7.5v4.3a1.2 1.2 0 0 0 1.2 1.2h6.6a1.2 1.2 0 0 0 1.2-1.2V7.5" fill="none" stroke="currentColor" strokeWidth="1.3" />
+                            <line x1="6.4" y1="10.2" x2="9.6" y2="10.2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+                          </svg>
+                          <div className="compaction-body">
+                            <span className="compaction-label">Earlier conversation compacted</span>
+                            <span className="compaction-text">{item.text}</span>
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  }
                   if (item.role === 'user') {
                     return (
                       <div key={index} className="row user">

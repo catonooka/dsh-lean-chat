@@ -33,7 +33,8 @@ import { routeSearchTarget, toSources, UserChromeSearchProvider } from '@deepsee
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { createUserMessage, ReasoningEffortId, type ContentBlock, type UserMessage } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, ReasoningEffortId, type ContentBlock, type MessageSource, type UserMessage } from '@deepseek-ai/dsh-llm'
+import { isCompactCheckpointSource, ManualCompactionError } from '@deepseek-ai/dsh-compaction'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { SessionQueryError, SessionSearchCursor, type SessionSearchHit, type SessionSearchPage } from '@deepseek-ai/dsh-session-query'
@@ -783,7 +784,7 @@ export interface ReplyContext {
 
 /** One projected chat item served to the browser. */
 export interface ChatItem {
-  role: 'user' | 'assistant' | 'tool'
+  role: 'user' | 'assistant' | 'tool' | 'compaction'
   text?: string
   attachments?: { kind: 'image' | 'video' | 'file'; attachmentId: string; mediaType: string; name?: string; ref?: unknown }[]
   replyTo?: ReplyContext
@@ -983,6 +984,14 @@ function textOf(content: readonly ContentBlock[] | undefined): string {
 export function projectSurfaceEvent(event: SessionEvent): ChatItem | undefined {
   switch (event.type) {
     case 'user/message': {
+      // A compaction checkpoint rides the surface as a user message whose
+      // source carries the compact marker; it renders as the summary card,
+      // not as something the user said.
+      const checkpointSource = (event.data as UserMessage & { source?: MessageSource }).source
+      if (checkpointSource !== undefined && isCompactCheckpointSource(checkpointSource)) {
+        const summary = textOf(event.data.content)
+        return summary === '' ? undefined : { role: 'compaction', text: summary }
+      }
       const text = textOf(event.data.content)
       const attachments = attachmentDescriptors(event.data.content)
       // Queue bookkeeping can produce empty user payloads; nothing to render.
@@ -1490,6 +1499,14 @@ export function apply(ctx: Context, config: Config): void {
         activityDirty = true
         const used = handles.get(sessionId)
         if (used !== undefined) used.lastUsed = Date.now()
+        // The compaction checkpoint replaces compacted history: flag it so
+        // the live client refetches once the turn ends, instead of echoing
+        // the summary as a user row.
+        const checkpointSource = (event.data as UserMessage & { source?: MessageSource }).source
+        if (checkpointSource !== undefined && isCompactCheckpointSource(checkpointSource)) {
+          broadcast(sessionId, { t: 'compaction', text: textOf(event.data.content) })
+          break
+        }
         broadcast(sessionId, { t: 'user', text: textOf(event.data.content) })
         break
       }
@@ -1944,6 +1961,39 @@ export function apply(ctx: Context, config: Config): void {
         source: { kind: 'user' },
         ...replyTo !== undefined ? { replyTo } : {},
       }))
+      return
+    }
+
+    // Manually compact one conversation: a useful summarize-and-replace
+    // reduction even below the automatic pressure threshold. The settings
+    // toggle gates the automatic triggers only — this stays always available.
+    if (req.method === 'POST' && parts.length === 3 && parts[0] === 'sessions' && parts[2] === 'compact') {
+      const sessionId = parts[1] as string
+      if (!/^[a-zA-Z0-9-]{1,64}$/.test(sessionId)) {
+        sendJson(res, 400, { error: 'invalid session id' })
+        return
+      }
+      const open = streams.get(sessionId)
+      if (open !== undefined && open.size > 0) {
+        sendJson(res, 409, { error: 'this conversation is still streaming' })
+        return
+      }
+      const compaction = ctx.get('compaction')
+      if (compaction === undefined) {
+        sendJson(res, 503, { error: 'compaction is not available in this composition' })
+        return
+      }
+      const handle = await getOrCreateAgent(sessionId)
+      try {
+        const result = await compaction.compactNow(handle.agent, AbortSignal.timeout(120_000))
+        sendJson(res, 200, { compacted: result !== null })
+      } catch (err: unknown) {
+        if (err instanceof ManualCompactionError) {
+          sendJson(res, 409, { error: err.message })
+          return
+        }
+        throw err
+      }
       return
     }
 

@@ -26,10 +26,10 @@ export function replyLabel(role: 'user' | 'assistant'): string {
 
 /**
  * The reply target one chat row yields, if any: user and assistant messages
- * with text can be answered; tool rows and empty texts cannot.
+ * with text can be answered; tool and compaction rows cannot.
  */
-export function replyTargetFor(item: { role: 'user' | 'assistant' | 'tool'; text?: string }): ReplyContext | undefined {
-  if (item.role === 'tool') return undefined
+export function replyTargetFor(item: { role: 'user' | 'assistant' | 'tool' | 'compaction'; text?: string }): ReplyContext | undefined {
+  if (item.role !== 'user' && item.role !== 'assistant') return undefined
   const text = clampReplyText(item.text ?? '')
   if (text === '') return undefined
   return { role: item.role, text }

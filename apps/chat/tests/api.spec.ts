@@ -8,6 +8,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   SESSION_PAGE_SIZE,
+  compactSession,
   fetchMessages,
   fetchModels,
   fetchProviders,
@@ -279,5 +280,20 @@ describe('retrySession', () => {
   it('surfaces the server error for a stream-less conversation', async () => {
     stubFetch(() => jsonResponse(400, { error: 'nothing to retry' }))
     await expect(retrySession('sess-1', () => {})).rejects.toThrow('nothing to retry')
+  })
+})
+
+describe('compactSession', () => {
+  it('posts to the compact route with no body and unwraps the outcome', async () => {
+    const mock = stubFetch(() => jsonResponse(200, { compacted: true }))
+    await expect(compactSession('sess-1')).resolves.toEqual({ compacted: true })
+    expect(mock.mock.calls[0]?.[0]).toBe('/api/sessions/sess-1/compact')
+    expect(mock.mock.calls[0]?.[1]?.method).toBe('POST')
+    expect(mock.mock.calls[0]?.[1]?.body).toBeUndefined()
+  })
+
+  it('reports a no-op when nothing useful can be compacted', async () => {
+    stubFetch(() => jsonResponse(200, { compacted: false }))
+    await expect(compactSession('sess-1')).resolves.toEqual({ compacted: false })
   })
 })

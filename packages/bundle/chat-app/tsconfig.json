@@ -46,6 +46,12 @@
       "path": "../../session-query/session-query"
     },
     {
+      "path": "../../interaction/commands"
+    },
+    {
+      "path": "../../compaction/compaction"
+    },
+    {
       "path": "../../host/webserver"
     }
   ]

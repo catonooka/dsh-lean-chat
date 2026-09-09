@@ -58,9 +58,10 @@ async function renderApp(options: {
   sessions?: SessionFixture[]
   activeId?: string
   streams?: Response[]
-} = {}): Promise<{ posts: { url: string; body: Record<string, unknown> }[] }> {
+} = {}): Promise<{ posts: { url: string; body: Record<string, unknown> }[]; historyFetches: string[] }> {
   const sessions = options.sessions ?? []
   const posts: { url: string; body: Record<string, unknown> }[] = []
+  const historyFetches: string[] = []
   const streams = [...options.streams ?? []]
   const summaries = sessions.map(session => ({
     id: session.id,
@@ -76,7 +77,10 @@ async function renderApp(options: {
     if (url === '/api/config') return Promise.resolve(jsonResponse({ provider: 'p', model: 'm', persona: 'x' }))
     if (url === '/api/capabilities') return Promise.resolve(jsonResponse({ model: 'm', image: 'no', video: 'no' }))
     const history = sessions.find(session => url === `/api/sessions/${session.id}/messages`)
-    if (history !== undefined && method === 'GET') return Promise.resolve(jsonResponse({ sessionId: history.id, items: history.items }))
+    if (history !== undefined && method === 'GET') {
+      historyFetches.push(history.id)
+      return Promise.resolve(jsonResponse({ sessionId: history.id, items: history.items }))
+    }
     if (url.endsWith('/messages') && method === 'POST') {
       posts.push({ url, body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown> })
       const stream = streams.shift()
@@ -91,7 +95,7 @@ async function renderApp(options: {
     return Promise.resolve(jsonResponse({}))
   }))
   render(<App />)
-  return { posts }
+  return { posts, historyFetches }
 }
 
 const userItem = (text: string): ChatItem => ({ role: 'user', text })
@@ -227,6 +231,50 @@ describe('message actions layout', () => {
     expect(children[1]?.classList.contains('msg-actions')).toBe(true)
     expect(col?.querySelector('button[aria-label="Try again"]')).not.toBeNull()
     expect(document.querySelector('.retry-hint')).toBeNull()
+  })
+})
+
+describe('compaction rendering', () => {
+  it('renders the compaction checkpoint as a summary card in history', async () => {
+    localStorage.setItem('dsh-chat-active', 'sess-a')
+    await renderApp({
+      sessions: [{
+        id: 'sess-a',
+        title: 'A',
+        items: [
+          { role: 'compaction', text: 'Summary of earlier turns: the user asked about the weather.' },
+          userItem('recent question'),
+          assistantItem('recent answer'),
+        ],
+      }],
+    })
+    await screen.findByText('recent answer')
+    expect(screen.getByText('Earlier conversation compacted')).toBeDefined()
+    const text = document.querySelector('.row.compaction .compaction-text')
+    expect(text?.textContent).toContain('the weather')
+  })
+
+  it('refetches history after a turn that reported a compaction', async () => {
+    localStorage.setItem('dsh-chat-active', 'sess-a')
+    const { historyFetches } = await renderApp({
+      sessions: [{ id: 'sess-a', title: 'A', items: [userItem('old question'), assistantItem('old answer')] }],
+      streams: [
+        sseResponse([
+          { t: 'compaction', text: 'checkpoint summary' },
+          { t: 'delta', text: 'new answer' },
+          { t: 'assistant', text: 'new answer' },
+          { t: 'turn-end', reason: 'completed' },
+        ]),
+      ],
+    })
+    await screen.findByText('old answer')
+    expect(historyFetches).toHaveLength(1)
+
+    const draft = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    fireEvent.change(draft, { target: { value: 'next question' } })
+    fireEvent.keyDown(draft, { key: 'Enter' })
+    await screen.findByText('new answer')
+    await waitFor(() => { expect(historyFetches.length).toBeGreaterThanOrEqual(2) })
   })
 })
 

@@ -99,6 +99,13 @@ describe('projectSurfaceEvent', () => {
     expect(projectSurfaceEvent(surfaceEvent('user/message', { content: [{ type: 'text', text: 'plain' }] })))
       .toEqual({ role: 'user', text: 'plain' })
   })
+
+  it('projects a compaction checkpoint as a summary card, not a user bubble', () => {
+    expect(projectSurfaceEvent(surfaceEvent('user/message', {
+      content: [{ type: 'text', text: '# Compacted checkpoint\nthe user asked about weather' }],
+      source: { kind: 'plugin', plugin: 'compact', compactionId: 'c1' },
+    }))).toEqual({ role: 'compaction', text: '# Compacted checkpoint\nthe user asked about weather' })
+  })
 })
 
 describe('parseReplyTo', () => {
@@ -972,5 +979,18 @@ describe('collapseRetriedUserTurns', () => {
       ({ role: 'user', text, replyTo: { role: 'assistant', text: 'earlier' } })
     const items: ChatItem[] = [withQuote('hi'), withQuote('hi'), { role: 'assistant', text: 'hello' }]
     expect(collapseRetriedUserTurns(items)).toEqual([withQuote('hi'), { role: 'assistant', text: 'hello' }])
+  })
+
+  it('keeps compaction checkpoint rows untouched while folding retries', () => {
+    const items: ChatItem[] = [
+      { role: 'compaction', text: 'summary of early turns' },
+      user('hi'), user('hi'),
+      { role: 'assistant', text: 'hello' },
+    ]
+    expect(collapseRetriedUserTurns(items)).toEqual([
+      { role: 'compaction', text: 'summary of early turns' },
+      user('hi'),
+      { role: 'assistant', text: 'hello' },
+    ])
   })
 })

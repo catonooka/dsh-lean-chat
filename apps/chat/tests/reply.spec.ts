@@ -53,8 +53,9 @@ describe('replyTargetFor', () => {
       .toEqual({ role: 'assistant', text: clampReplyText('x'.repeat(400)) })
   })
 
-  it('refuses tool rows and rows without text', () => {
+  it('refuses tool and compaction rows and rows without text', () => {
     expect(replyTargetFor({ role: 'tool', text: 'searched' })).toBeUndefined()
+    expect(replyTargetFor({ role: 'compaction', text: 'summary' })).toBeUndefined()
     expect(replyTargetFor({ role: 'user', text: '' })).toBeUndefined()
     expect(replyTargetFor({ role: 'assistant', text: '   \n ' })).toBeUndefined()
     expect(replyTargetFor({ role: 'user' })).toBeUndefined()

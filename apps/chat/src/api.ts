@@ -21,7 +21,7 @@ export interface ChatAttachment {
 }
 
 export interface ChatItem {
-  role: 'user' | 'assistant' | 'tool'
+  role: 'user' | 'assistant' | 'tool' | 'compaction'
   text?: string
   attachments?: ChatAttachment[]
   /** Which message this user message answers, as a short quote. */
@@ -236,6 +236,7 @@ export type StreamEvent =
   | { t: 'tool-end'; name?: string; query?: string; searchQuestion?: string; searchedAt?: string; sources?: ChatSource[]; text?: string; isError?: boolean }
   | { t: 'status'; status: 'running' | 'idle' }
   | { t: 'turn-end'; reason: string }
+  | { t: 'compaction'; text: string }
   | { t: 'error'; message: string }
 
 /** One upload ready to ride a message. */
@@ -269,6 +270,11 @@ export async function sendMessage(
 export async function retrySession(sessionId: string, onEvent: (event: StreamEvent) => void): Promise<void> {
   const response = await fetchWithSessionHeal(`/api/sessions/${sessionId}/retry`, { method: 'POST' })
   await readEventStream(response, onEvent)
+}
+
+/** Compact one conversation now and report whether a reduction ran. */
+export function compactSession(sessionId: string): Promise<{ compacted: boolean }> {
+  return fetchJson<{ compacted: boolean }>(`/api/sessions/${sessionId}/compact`, { method: 'POST' })
 }
 
 /** Verify one SSE response and pump its `data:` frames to the callback. */
