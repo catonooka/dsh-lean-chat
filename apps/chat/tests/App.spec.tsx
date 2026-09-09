@@ -9,6 +9,7 @@
  */
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { SESSION_PAGE_SIZE } from '../src/api.ts'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App, { mergeSessionPage } from '../src/App.tsx'
 import type { ChatItem } from '../src/api.ts'
@@ -48,6 +49,8 @@ interface SessionFixture {
   id: string
   title: string
   items: ChatItem[]
+  /** Served from this session's second history GET onward, when set. */
+  refetchItems?: ChatItem[]
 }
 
 /**
@@ -64,12 +67,15 @@ async function renderApp(options: {
   historyFetches: string[]
   uploads: { url: string; body: unknown }[]
   attachmentFetches: string[]
+  sessionListFetches: string[]
 }> {
   const sessions = options.sessions ?? []
   const posts: { url: string; body: Record<string, unknown> }[] = []
   const historyFetches: string[] = []
   const uploads: { url: string; body: unknown }[] = []
   const attachmentFetches: string[] = []
+  const sessionListFetches: string[] = []
+  const historyFetchCount = new Map<string, number>()
   const streams = [...options.streams ?? []]
   const summaries = sessions.map(session => ({
     id: session.id,
@@ -81,7 +87,10 @@ async function renderApp(options: {
   vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     const method = init?.method ?? 'GET'
-    if (url.startsWith('/api/sessions?')) return Promise.resolve(jsonResponse({ sessions: summaries, total: summaries.length }))
+    if (url.startsWith('/api/sessions?')) {
+      sessionListFetches.push(url)
+      return Promise.resolve(jsonResponse({ sessions: summaries, total: summaries.length }))
+    }
     if (url === '/api/config') return Promise.resolve(jsonResponse({ provider: 'p', model: 'm', persona: 'x' }))
     if (url === '/api/capabilities') {
       return Promise.resolve(jsonResponse({
@@ -102,7 +111,10 @@ async function renderApp(options: {
     const history = sessions.find(session => url === `/api/sessions/${session.id}/messages`)
     if (history !== undefined && method === 'GET') {
       historyFetches.push(history.id)
-      return Promise.resolve(jsonResponse({ sessionId: history.id, items: history.items }))
+      const count = (historyFetchCount.get(history.id) ?? 0) + 1
+      historyFetchCount.set(history.id, count)
+      const items = count > 1 && history.refetchItems !== undefined ? history.refetchItems : history.items
+      return Promise.resolve(jsonResponse({ sessionId: history.id, items }))
     }
     if (url.endsWith('/messages') && method === 'POST') {
       posts.push({ url, body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown> })
@@ -118,7 +130,7 @@ async function renderApp(options: {
     return Promise.resolve(jsonResponse({}))
   }))
   render(<App />)
-  return { posts, historyFetches, uploads, attachmentFetches }
+  return { posts, historyFetches, uploads, attachmentFetches, sessionListFetches }
 }
 
 const userItem = (text: string): ChatItem => ({ role: 'user', text })
@@ -506,5 +518,71 @@ describe('streaming turn', () => {
     // feed's accumulated text by itself.
     await screen.findByText('streamed only, never framed', {}, { timeout: 3000 })
     await waitFor(() => { expect(document.querySelector('.caret')).toBeNull() })
+  })
+})
+
+describe('post-turn sidebar refresh', () => {
+  it('refetches only the first page even with deep pages loaded', async () => {
+    localStorage.setItem('dsh-chat-active', 'sess-a')
+    const deep = Array.from({ length: 25 }, (_, index) => ({
+      id: index === 0 ? 'sess-a' : `sess-${String(index)}`,
+      title: index === 0 ? 'A' : `Chat ${String(index)}`,
+      items: [] as ChatItem[],
+    }))
+    const { sessionListFetches } = await renderApp({
+      sessions: deep,
+      streams: [sseResponse([{ t: 'turn-end', reason: 'completed' }])],
+    })
+    await screen.findByText('A')
+    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    fireEvent.change(composer, { target: { value: 'hello' } })
+    fireEvent.keyDown(composer, { key: 'Enter' })
+    await waitFor(() => { expect(sessionListFetches.length).toBe(2) })
+    // The refresh asks for one page — never for every row the user scrolled
+    // past (the old behavior refetched all 25 with limit=25).
+    expect(sessionListFetches[1]).toBe(`/api/sessions?limit=${String(SESSION_PAGE_SIZE)}`)
+    expect(sessionListFetches.some(url => url.includes('limit=25'))).toBe(false)
+  })
+})
+
+describe('history attachment swap', () => {
+  it('refetches and swaps the URL when a refetch carries a different attachment', async () => {
+    const originalCreate = URL.createObjectURL
+    const originalRevoke = URL.revokeObjectURL
+    let minted = 0
+    URL.createObjectURL = vi.fn(() => `blob:swap-${String(++minted)}`)
+    URL.revokeObjectURL = vi.fn()
+    try {
+      localStorage.setItem('dsh-chat-active', 'sess-a')
+      const first = { kind: 'image' as const, attachmentId: 'a1', mediaType: 'image/png', ref: { attachmentId: 'a1' } }
+      const second = { kind: 'image' as const, attachmentId: 'a2', mediaType: 'image/png', ref: { attachmentId: 'a2' } }
+      const { attachmentFetches } = await renderApp({
+        sessions: [{
+          id: 'sess-a',
+          title: 'A',
+          items: [{ role: 'user', text: 'first', attachments: [first] }, assistantItem('ok')],
+          refetchItems: [{ role: 'user', text: 'first', attachments: [second] }, assistantItem('ok')],
+        }],
+        streams: [sseResponse([{ t: 'compaction', text: 'summary' }, { t: 'turn-end', reason: 'completed' }])],
+      })
+      await screen.findByText('first')
+      await waitFor(() => { expect(attachmentFetches.length).toBe(1) })
+      expect(document.querySelector('img.bubble-attachment')?.getAttribute('src')).toBe('blob:swap-1')
+      // The refetched history carries a different attachment id: the row
+      // fetches the new bytes and swaps its URL, revoking the stale one.
+      const composer = screen.getByPlaceholderText('Message dsh chat…')
+      fireEvent.change(composer, { target: { value: 'again' } })
+      fireEvent.submit(composer.closest('form') as HTMLFormElement)
+      await waitFor(() => { expect(attachmentFetches.length).toBe(2) })
+      await waitFor(() => {
+        expect(document.querySelector('img.bubble-attachment')?.getAttribute('src')).toBe('blob:swap-2')
+      })
+      expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:swap-1')
+    } finally {
+      if (originalCreate !== undefined) URL.createObjectURL = originalCreate
+      else delete (URL as { createObjectURL?: unknown }).createObjectURL
+      if (originalRevoke !== undefined) URL.revokeObjectURL = originalRevoke
+      else delete (URL as { revokeObjectURL?: unknown }).revokeObjectURL
+    }
   })
 })
