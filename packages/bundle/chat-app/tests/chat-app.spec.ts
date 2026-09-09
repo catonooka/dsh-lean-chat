@@ -28,6 +28,7 @@ import {
   parseSettingsFile,
   projectSurfaceEvent,
   requestChunks,
+  toolCallSummary,
   resolveProviderFallback,
   TitleSnapshotCache,
   truncateSnippet,
@@ -49,68 +50,105 @@ function surfaceEvent(type: string, data: unknown): SessionEvent {
   } as unknown as SessionEvent
 }
 
-describe('projectSurfaceEvent', () => {
-  it('projects user and assistant text messages', () => {
-    expect(projectSurfaceEvent(surfaceEvent('user/message', { content: [{ type: 'text', text: 'hi' }] })))
-      .toEqual({ role: 'user', text: 'hi' })
-    expect(projectSurfaceEvent(surfaceEvent('assistant/message', {
-      message: { content: [{ type: 'text', text: 'hello' }] },
-    }))).toEqual({ role: 'assistant', text: 'hello' })
-  })
+describe('projectSurfaceEvent', () => {  it('projects user and assistant text messages', () => {
+  expect(projectSurfaceEvent(surfaceEvent('user/message', { content: [{ type: 'text', text: 'hi' }] })))
+    .toEqual({ role: 'user', text: 'hi' })
+  expect(projectSurfaceEvent(surfaceEvent('assistant/message', {
+    message: { content: [{ type: 'text', text: 'hello' }] },
+  }))).toEqual({ role: 'assistant', text: 'hello' })
+})
 
-  it('skips empty (tool-call-only) assistant messages and empty user payloads', () => {
-    expect(projectSurfaceEvent(surfaceEvent('assistant/message', { message: { content: [] } })))
-      .toBeUndefined()
-    expect(projectSurfaceEvent(surfaceEvent('user/message', { content: [] })))
-      .toBeUndefined()
-  })
+it('skips empty (tool-call-only) assistant messages and empty user payloads', () => {
+  expect(projectSurfaceEvent(surfaceEvent('assistant/message', { message: { content: [] } })))
+    .toBeUndefined()
+  expect(projectSurfaceEvent(surfaceEvent('user/message', { content: [] })))
+    .toBeUndefined()
+})
 
-  it('projects a web_search result from its presentation meta', () => {
-    expect(projectSurfaceEvent(surfaceEvent('tool/result', {
-      message: { content: [] },
-      meta: {
-        query: 'q?',
-        searchQuestion: 'the real question',
-        searchedAt: '2026-09-08T00:00:00.000Z',
-        sources: [{ url: 'https://a', title: 'A', publishedAt: '2026-09-01' }, { url: 'https://b' }],
-        truncated: false,
-      },
-    }))).toEqual({
-      role: 'tool',
-      name: 'web_search',
+it('projects a web_search result from its presentation meta', () => {
+  expect(projectSurfaceEvent(surfaceEvent('tool/result', {
+    message: { content: [] },
+    meta: {
       query: 'q?',
       searchQuestion: 'the real question',
       searchedAt: '2026-09-08T00:00:00.000Z',
       sources: [{ url: 'https://a', title: 'A', publishedAt: '2026-09-01' }, { url: 'https://b' }],
-    })
+      truncated: false,
+    },
+  }))).toEqual({
+    role: 'tool',
+    name: 'web_search',
+    query: 'q?',
+    searchQuestion: 'the real question',
+    searchedAt: '2026-09-08T00:00:00.000Z',
+    sources: [{ url: 'https://a', title: 'A', publishedAt: '2026-09-01' }, { url: 'https://b' }],
+  })
+})
+
+it('falls back to rendered text when meta is absent', () => {
+  expect(projectSurfaceEvent(surfaceEvent('tool/result', {
+    message: { content: [{ type: 'text', text: 'Error: no provider' }] },
+    error: { name: 'WebError', code: 'WEB_PROVIDER_UNAVAILABLE' },
+  }))).toEqual({ role: 'tool', name: 'web_search', text: 'Error: no provider' })
+})
+
+it('projects a browser result from its presentation meta, keeping the tool name', () => {
+  expect(projectSurfaceEvent(surfaceEvent('tool/result', {
+    message: { content: [{ type: 'text', text: 'External web content follows…' }] },
+    meta: {
+      name: 'browser',
+      action: 'extract',
+      url: 'https://x.com/me',
+      title: 'me (@me)',
+      truncated: true,
+      excerpt: 'Shipped the browser tool.',
+    },
+  }))).toEqual({
+    role: 'tool',
+    name: 'browser',
+    action: 'extract',
+    url: 'https://x.com/me',
+    title: 'me (@me)',
+    excerpt: 'Shipped the browser tool.',
+  })
+})
+
+it('ignores non-surface events', () => {
+  expect(projectSurfaceEvent(surfaceEvent('turn/end', { turn: 1, reason: { kind: 'completed' } })))
+    .toBeUndefined()
+})
+
+it('projects the reply quote that rides a user message next to its content', () => {
+  expect(projectSurfaceEvent(surfaceEvent('user/message', {
+    content: [{ type: 'text', text: 'same to you' }],
+    replyTo: { role: 'assistant', text: 'hello' },
+  }))).toEqual({ role: 'user', text: 'same to you', replyTo: { role: 'assistant', text: 'hello' } })
+  expect(projectSurfaceEvent(surfaceEvent('user/message', { content: [{ type: 'text', text: 'plain' }] })))
+    .toEqual({ role: 'user', text: 'plain' })
+})
+
+it('projects a compaction checkpoint as a summary card, not a user bubble', () => {
+  expect(projectSurfaceEvent(surfaceEvent('user/message', {
+    content: [{ type: 'text', text: '# Compacted checkpoint\nthe user asked about weather' }],
+    source: { kind: 'plugin', plugin: 'compact', compactionId: 'c1' },
+  }))).toEqual({ role: 'compaction', text: '# Compacted checkpoint\nthe user asked about weather' })
+})
+})
+
+describe('toolCallSummary', () => {
+  it('pulls the search query out of a web_search call', () => {
+    expect(toolCallSummary('{"query":"bridge routing"}')).toEqual({ query: 'bridge routing' })
   })
 
-  it('falls back to rendered text when meta is absent', () => {
-    expect(projectSurfaceEvent(surfaceEvent('tool/result', {
-      message: { content: [{ type: 'text', text: 'Error: no provider' }] },
-      error: { name: 'WebError', code: 'WEB_PROVIDER_UNAVAILABLE' },
-    }))).toEqual({ role: 'tool', name: 'web_search', text: 'Error: no provider' })
+  it('pulls action and url out of a browser call, ignoring everything else', () => {
+    expect(toolCallSummary('{"action":"open","url":"https://x.com/me","session":"x-feed","goal":"posts"}'))
+      .toEqual({ action: 'open', url: 'https://x.com/me' })
   })
 
-  it('ignores non-surface events', () => {
-    expect(projectSurfaceEvent(surfaceEvent('turn/end', { turn: 1, reason: { kind: 'completed' } })))
-      .toBeUndefined()
-  })
-
-  it('projects the reply quote that rides a user message next to its content', () => {
-    expect(projectSurfaceEvent(surfaceEvent('user/message', {
-      content: [{ type: 'text', text: 'same to you' }],
-      replyTo: { role: 'assistant', text: 'hello' },
-    }))).toEqual({ role: 'user', text: 'same to you', replyTo: { role: 'assistant', text: 'hello' } })
-    expect(projectSurfaceEvent(surfaceEvent('user/message', { content: [{ type: 'text', text: 'plain' }] })))
-      .toEqual({ role: 'user', text: 'plain' })
-  })
-
-  it('projects a compaction checkpoint as a summary card, not a user bubble', () => {
-    expect(projectSurfaceEvent(surfaceEvent('user/message', {
-      content: [{ type: 'text', text: '# Compacted checkpoint\nthe user asked about weather' }],
-      source: { kind: 'plugin', plugin: 'compact', compactionId: 'c1' },
-    }))).toEqual({ role: 'compaction', text: '# Compacted checkpoint\nthe user asked about weather' })
+  it('answers nothing for malformed or non-object arguments', () => {
+    expect(toolCallSummary('not json')).toEqual({})
+    expect(toolCallSummary('["array"]')).toEqual({})
+    expect(toolCallSummary('{"action":7,"url":null,"query":42}')).toEqual({})
   })
 })
 

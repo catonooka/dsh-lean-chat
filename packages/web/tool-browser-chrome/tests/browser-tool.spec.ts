@@ -173,11 +173,13 @@ describe('browser tool rendering', () => {
     expect(text).toContain('…')
   })
 
-  it('presents an excerpt for the UI chip', () => {
+  it('presents an excerpt for the UI chip and names its producer', () => {
     const created = tool(stubBridge())
     const meta = created.output.presentationMeta({ action: 'extract' }, {
       action: 'extract', url: 'https://x.com/me', title: 'me', text: 'first line of the extraction\nsecond line', truncated: false,
     })
-    expect(meta).toEqual({ action: 'extract', url: 'https://x.com/me', title: 'me', excerpt: 'first line of the extraction' })
+    expect(meta).toEqual({
+      name: BROWSER_TOOL_NAME, action: 'extract', url: 'https://x.com/me', title: 'me', excerpt: 'first line of the extraction',
+    })
   })
 })

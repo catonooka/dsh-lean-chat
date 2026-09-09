@@ -175,6 +175,9 @@ export function defineBrowserTool(options: BrowserToolOptions) {
         { type: 'text', text: `${EXTERNAL_PAGE_CONTENT_NOTICE}\n\n${renderValue(value)}` },
       ],
       presentationMeta: (_args: BrowserToolArgs, value: BrowserToolValue): JsonValue => ({
+        // The producing tool names itself: history projection has no other
+        // way to know which card this meta belongs to.
+        name: BROWSER_TOOL_NAME,
         action: value.action,
         ...(value.url !== undefined ? { url: value.url } : {}),
         ...(value.title !== undefined ? { title: value.title } : {}),

@@ -967,6 +967,10 @@ export interface ChatItem {
   searchQuestion?: string
   searchedAt?: string
   sources?: { url: string; title?: string; publishedAt?: string }[]
+  action?: string
+  url?: string
+  title?: string
+  excerpt?: string
 }
 
 /** Longest reply quote the server keeps; longer text is cut, not rejected. */
@@ -1214,13 +1218,20 @@ export function projectSurfaceEvent(event: SessionEvent): ChatItem | undefined {
       return { role: 'assistant', text }
     }
     case 'tool/result': {
+      // The producing tool names itself in its meta; sessions recorded before
+      // any second tool existed carry no name, and search is what they were.
       const item: ChatItem = { role: 'tool', name: 'web_search' }
       const meta = event.data.meta
       if (typeof meta === 'object' && meta !== null && !Array.isArray(meta)) {
         const record = meta as Record<string, unknown>
+        if (typeof record.name === 'string' && record.name !== '') item.name = record.name
         if (typeof record.query === 'string') item.query = record.query
         if (typeof record.searchQuestion === 'string') item.searchQuestion = record.searchQuestion
         if (typeof record.searchedAt === 'string') item.searchedAt = record.searchedAt
+        if (typeof record.action === 'string') item.action = record.action
+        if (typeof record.url === 'string') item.url = record.url
+        if (typeof record.title === 'string') item.title = record.title
+        if (typeof record.excerpt === 'string') item.excerpt = record.excerpt
         if (Array.isArray(record.sources)) {
           item.sources = record.sources
             .filter((source): source is { url: string; title?: string; publishedAt?: string } => {
@@ -1233,13 +1244,36 @@ export function projectSurfaceEvent(event: SessionEvent): ChatItem | undefined {
             .slice(0, MAX_TOOL_SOURCES)
         }
       }
-      if (item.searchQuestion === undefined && item.query === undefined) {
+      if (item.searchQuestion === undefined && item.query === undefined && item.excerpt === undefined) {
         item.text = textOf(event.data.message.content).slice(0, 200)
       }
       return item
     }
     default:
       return undefined
+  }
+}
+
+/**
+ * The live chip's first line for a starting tool call: whichever short
+ * identifying fields the model's arguments carry — `query` for searches,
+ * `action`/`url` for browser steps. Malformed JSON contributes nothing; the
+ * structured tool-end meta lands moments later regardless.
+ * @param raw - the tool-call arguments exactly as the model produced them.
+ * @returns the sparse summary fields for the `tool-start` broadcast.
+ */
+export function toolCallSummary(raw: string): { query?: string; action?: string; url?: string } {
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {}
+    const record = parsed as Record<string, unknown>
+    const summary: { query?: string; action?: string; url?: string } = {}
+    if (typeof record.query === 'string') summary.query = record.query
+    if (typeof record.action === 'string') summary.action = record.action
+    if (typeof record.url === 'string') summary.url = record.url
+    return summary
+  } catch {
+    return {}
   }
 }
 
@@ -1830,17 +1864,8 @@ export function apply(ctx: Context, config: Config): void {
         broadcast(sessionId, { t: 'assistant', text: textOf(event.data.message.content) })
         break
       case 'tool/call': {
-        let query: string | undefined
-        try {
-          const parsed: unknown = JSON.parse(event.data.arguments)
-          if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-            const value = (parsed as Record<string, unknown>).query
-            if (typeof value === 'string') query = value
-          }
-        } catch {
-          // Leave the query unset; tool-end carries the structured meta anyway.
-        }
-        broadcast(sessionId, { t: 'tool-start', name: event.data.name, ...query !== undefined ? { query } : {} })
+        const summary = toolCallSummary(event.data.arguments)
+        broadcast(sessionId, { t: 'tool-start', name: event.data.name, ...summary })
         break
       }
       case 'tool/result': {
@@ -1854,6 +1879,10 @@ export function apply(ctx: Context, config: Config): void {
               ...projected.searchQuestion !== undefined ? { searchQuestion: projected.searchQuestion } : {},
               ...projected.searchedAt !== undefined ? { searchedAt: projected.searchedAt } : {},
               ...projected.sources !== undefined ? { sources: projected.sources } : {},
+              ...projected.action !== undefined ? { action: projected.action } : {},
+              ...projected.url !== undefined ? { url: projected.url } : {},
+              ...projected.title !== undefined ? { title: projected.title } : {},
+              ...projected.excerpt !== undefined ? { excerpt: projected.excerpt } : {},
               ...projected.text !== undefined ? { text: projected.text } : {},
             }
             : {},
@@ -2503,6 +2532,7 @@ export function apply(ctx: Context, config: Config): void {
     if (req.method === 'GET' && parts.length === 2 && parts[0] === 'chrome' && parts[1] === 'status') {
       sendJson(res, 200, {
         extension: extensionBridge.seenWithin(EXTENSION_TTL_MS),
+        clients: extensionBridge.clientList(EXTENSION_TTL_MS),
         cdp: await chromeEngine.probe(),
         ...extensionPath !== undefined ? { extensionPath } : {},
       }, chromeCors(req))
