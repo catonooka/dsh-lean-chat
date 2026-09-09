@@ -435,3 +435,76 @@ describe('mergeSessionPage', () => {
     expect(mergeSessionPage(loaded, page)).toEqual([session('e'), session('f'), session('a'), session('b'), session('c'), session('d')])
   })
 })
+
+/** One stubbed 200 SSE Response that delivers its frames with real delays,
+ * so mid-stream states (the streaming row, its caret, running tool chips)
+ * are observable before the turn commits. */
+const delayedSseResponse = (events: readonly unknown[], delayMs: number): Response => {
+  const chunks = events.map(event => `data: ${JSON.stringify(event)}\n\n`)
+  let index = 0
+  return {
+    ok: true,
+    status: 200,
+    statusText: 'OK',
+    body: {
+      getReader: () => ({
+        read: async () => {
+          if (index >= chunks.length) return { done: true as const, value: undefined }
+          await new Promise((resolve) => { setTimeout(resolve, delayMs) })
+          return { done: false as const, value: new TextEncoder().encode(chunks[index++] as string) }
+        },
+      }),
+    },
+  } as unknown as Response
+}
+
+describe('streaming turn', () => {
+  it('shows the thinking and streamed states, then commits the final row', async () => {
+    localStorage.setItem('dsh-chat-active', 'sess-a')
+    await renderApp({
+      sessions: [{ id: 'sess-a', title: 'A', items: [] }],
+      streams: [delayedSseResponse([
+        { t: 'delta', text: 'The answer is ' },
+        { t: 'delta', text: '42 and change.' },
+        { t: 'tool-start', name: 'web_search', query: 'node 25' },
+        { t: 'tool-end', name: 'web_search', query: 'node 25', searchedAt: '2026-09-08T00:00:00.000Z', sources: [{ url: 'https://nodejs.org', title: 'Node.js' }] },
+        { t: 'assistant', text: 'the full committed answer' },
+        { t: 'turn-end', reason: 'completed' },
+      ], 30)],
+    })
+    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    fireEvent.change(composer, { target: { value: 'what is the answer?' } })
+    fireEvent.keyDown(composer, { key: 'Enter' })
+    // Before the first delta lands, the streaming row thinks.
+    await waitFor(() => { expect(screen.getByText('Thinking…')).toBeTruthy() })
+    // Deltas batch into the streaming row with its caret.
+    await screen.findByText('The answer is 42 and change.', {}, { timeout: 3000 })
+    expect(document.querySelector('.caret')).not.toBeNull()
+    // A search tool chip runs and settles while the turn is still open.
+    await screen.findByText('Searching · node 25', {}, { timeout: 3000 })
+    await screen.findByText('Searched · node 25', {}, { timeout: 3000 })
+    // The committed frame replaces the streamed text; the caret goes away
+    // and the trailing row gains its actions.
+    await screen.findByText('the full committed answer', {}, { timeout: 3000 })
+    await waitFor(() => { expect(document.querySelector('.caret')).toBeNull() })
+    expect(screen.getByLabelText('Try again')).toBeTruthy()
+  })
+
+  it('lands the streamed text as the committed row when no frame supersedes it', async () => {
+    localStorage.setItem('dsh-chat-active', 'sess-a')
+    await renderApp({
+      sessions: [{ id: 'sess-a', title: 'A', items: [] }],
+      streams: [delayedSseResponse([
+        { t: 'delta', text: 'streamed only, never framed' },
+        { t: 'turn-end', reason: 'completed' },
+      ], 30)],
+    })
+    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    fireEvent.change(composer, { target: { value: 'go' } })
+    fireEvent.keyDown(composer, { key: 'Enter' })
+    // No `assistant` frame arrives: the turn's finally block commits the
+    // feed's accumulated text by itself.
+    await screen.findByText('streamed only, never framed', {}, { timeout: 3000 })
+    await waitFor(() => { expect(document.querySelector('.caret')).toBeNull() })
+  })
+})
