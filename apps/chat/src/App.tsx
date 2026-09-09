@@ -1,6 +1,6 @@
 /** The chat surface: sidebar of conversations, streamed thread, composer. */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent as ReactDragEvent, type JSX } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent as ReactDragEvent, type JSX } from 'react'
 import { randomUUID } from '@deepseek-ai/dsh-util-crypto'
 import {
   checkModelAbilities,
@@ -27,7 +27,7 @@ import { renderMarkdown } from './markdown.ts'
 import { SettingsPanel, applyTheme, readStoredTheme, storeTheme, type Theme } from './Settings.tsx'
 import { AvatarModal } from './AvatarModal.tsx'
 import { BOT_AVATAR_SRC, avatarSrc, readStoredAvatar, storeAvatar } from './avatar.ts'
-import { DeltaBatcher } from './delta.ts'
+import { StreamFeed } from './delta.ts'
 import { copyToClipboard } from './clipboard.ts'
 import { replyLabel, replyTargetFor, type ReplyContext } from './reply.ts'
 
@@ -40,18 +40,23 @@ const SEARCH_DEBOUNCE_MS = 300
 /** Scroll proximity that triggers loading the next list page. */
 const LOAD_MORE_TRIGGER_PX = 60
 
+/** While streaming, markdown re-parses at most this often; the committed
+ * row parses in full once the turn lands. */
+const STREAM_PARSE_THROTTLE_MS = 200
+
 function newSessionId(): string {
   return randomUUID()
 }
 
+// Allocated once: date formatting shows up per sidebar row and per tool
+// chip, so the formatters themselves must not be per-call.
+const clockFormatter = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' })
+const dayFormatter = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' })
+
 function relativeDate(createdAt: number): string {
   const date = new Date(createdAt)
-  const now = new Date()
-  const sameDay = date.toDateString() === now.toDateString()
-  if (sameDay) {
-    return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
-  }
-  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  const sameDay = date.toDateString() === new Date().toDateString()
+  return sameDay ? clockFormatter.format(date) : dayFormatter.format(date)
 }
 
 /** One attachment inside a user bubble: local preview while live, fetched
@@ -84,8 +89,11 @@ export function classifyPastedFile(file: { type: string; name: string }): Pasted
 }
 
 /** Hover actions under one message: copy its text, make it the reply target,
- * and on the trailing turn run the turn again. */
-function MessageActions({ text, onReply, onRetry }: { text: string; onReply: () => void; onRetry?: () => void }): JSX.Element {
+ * and on the trailing turn run the turn again. Memoized: unrelated state
+ * changes (typing, streaming batches) must not re-run its copy timer. */
+const MessageActions = memo(function MessageActions(
+  { text, onReply, onRetry }: { text: string; onReply: () => void; onRetry?: () => void },
+): JSX.Element {
   const [copied, setCopied] = useState(false)
   const copy = async (): Promise<void> => {
     if (await copyToClipboard(text)) {
@@ -126,9 +134,9 @@ function MessageActions({ text, onReply, onRetry }: { text: string; onReply: () 
         : undefined}
     </div>
   )
-}
+})
 
-function BubbleAttachment({ attachment }: { attachment: ChatAttachment }): JSX.Element {
+const BubbleAttachment = memo(function BubbleAttachment({ attachment }: { attachment: ChatAttachment }): JSX.Element {
   const [url, setUrl] = useState<string | undefined>(attachment.localUrl)
   useEffect(() => {
     if (url !== undefined) return
@@ -164,9 +172,9 @@ function BubbleAttachment({ attachment }: { attachment: ChatAttachment }): JSX.E
     )
   }
   return <video className="bubble-attachment" src={url} muted controls playsInline />
-}
+})
 
-function AssistantText({ text, streaming }: { text: string; streaming: boolean }): JSX.Element {
+const AssistantText = memo(function AssistantText({ text, streaming }: { text: string; streaming: boolean }): JSX.Element {
   const html = useMemo(() => renderMarkdown(text), [text])
   return (
     <div className="assistant-text">
@@ -175,9 +183,9 @@ function AssistantText({ text, streaming }: { text: string; streaming: boolean }
       {streaming ? <span className="caret" aria-label="generating" /> : undefined}
     </div>
   )
-}
+})
 
-function ToolChip({ item }: { item: ChatItem }): JSX.Element {
+const ToolChip = memo(function ToolChip({ item }: { item: ChatItem }): JSX.Element {
   const [open, setOpen] = useState(false)
   const label = item.searchQuestion ?? item.query ?? item.text ?? 'web search'
   const count = item.sources?.length
@@ -194,7 +202,7 @@ function ToolChip({ item }: { item: ChatItem }): JSX.Element {
           {label}
         </span>
         {count !== undefined ? <span className="tool-count">{String(count)} results</span> : undefined}
-        {item.searchedAt !== undefined ? <span className="tool-time">{new Date(item.searchedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}</span> : undefined}
+        {item.searchedAt !== undefined ? <span className="tool-time">{clockFormatter.format(new Date(item.searchedAt))}</span> : undefined}
       </button>
       {open && item.sources !== undefined && item.sources.length > 0
         ? (
@@ -212,7 +220,179 @@ function ToolChip({ item }: { item: ChatItem }): JSX.Element {
         : undefined}
     </div>
   )
+})
+
+/**
+ * The streaming turn's row — the only component that re-renders per delta
+ * batch. It subscribes to the turn's feed directly (the accumulated text
+ * never enters app-level state), re-parses markdown on a coarse throttle,
+ * and keeps the thread pinned to the bottom through a direct scroll write.
+ */
+function StreamTurn({ feed, searching, follow }: { feed: StreamFeed; searching: boolean; follow: () => void }): JSX.Element {
+  const [html, setHtml] = useState<string | undefined>(undefined)
+  const parsedRef = useRef({ at: 0, length: 0 })
+  useEffect(() => {
+    return feed.subscribe((text) => {
+      const parsed = parsedRef.current
+      const now = Date.now()
+      // A replacement (setFull) shows as non-growing text: parse it now, it
+      // is a fresh message rather than the incremental tail.
+      if (text.length <= parsed.length || now - parsed.at >= STREAM_PARSE_THROTTLE_MS) {
+        parsedRef.current = { at: now, length: text.length }
+        setHtml(renderMarkdown(text))
+      }
+      follow()
+    })
+  }, [feed, follow])
+  if (feed.text === '') {
+    return <div className="assistant-text thinking">{searching ? 'Searching the web…' : 'Thinking…'}</div>
+  }
+  return (
+    <div className="assistant-text">
+      {/* Safe HTML: renderMarkdown escapes everything and emits a fixed tag vocabulary. */}
+      <div dangerouslySetInnerHTML={{ __html: html ?? renderMarkdown(feed.text) }} />
+      <span className="caret" aria-label="generating" />
+    </div>
+  )
 }
+
+/** One compaction checkpoint row: a muted summary card. Memoized so
+ * unrelated app state changes never re-render history rows. */
+const CompactionRow = memo(function CompactionRow({ item }: { item: ChatItem }): JSX.Element {
+  return (
+    <div className="row compaction">
+      <div className="compaction-card">
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <rect x="2" y="3.5" width="12" height="4" rx="1.2" fill="none" stroke="currentColor" strokeWidth="1.3" />
+          <path d="M3.5 7.5v4.3a1.2 1.2 0 0 0 1.2 1.2h6.6a1.2 1.2 0 0 0 1.2-1.2V7.5" fill="none" stroke="currentColor" strokeWidth="1.3" />
+          <line x1="6.4" y1="10.2" x2="9.6" y2="10.2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+        </svg>
+        <div className="compaction-body">
+          <span className="compaction-label">Earlier conversation compacted</span>
+          <span className="compaction-text">{item.text}</span>
+        </div>
+      </div>
+    </div>
+  )
+})
+
+interface RowActions {
+  /** Whether this row is the thread's last (retry actions appear on it). */
+  trailing: boolean
+  streaming: boolean
+  onReply: (item: ChatItem) => void
+  onRetry: () => void
+}
+
+/** One user bubble with its reply quote, attachments, and hover actions. */
+const UserRow = memo(function UserRow({ item, trailing, streaming, onReply, onRetry }: RowActions & { item: ChatItem }): JSX.Element {
+  return (
+    <div className="row user">
+      <div className="user-col">
+        <div className="user-bubble">
+          {item.replyTo !== undefined
+            ? (
+              <div className="reply-quote">
+                <span className="reply-quote-label">{replyLabel(item.replyTo.role)}</span>
+                <span className="reply-quote-text">{item.replyTo.text}</span>
+              </div>
+            )
+            : undefined}
+          {(item.attachments ?? []).map((one, at) => <BubbleAttachment key={at} attachment={one} />)}
+          {item.text}
+        </div>
+        {item.text !== undefined && item.text !== ''
+          ? (
+            <MessageActions
+              text={item.text}
+              onReply={() => { onReply(item) }}
+              {...!streaming && trailing ? { onRetry } : {}}
+            />
+          )
+          : undefined}
+      </div>
+    </div>
+  )
+})
+
+/** One assistant bubble: avatar, markdown text, and hover actions. */
+const AssistantRow = memo(function AssistantRow(
+  { item, trailing, streaming, onReply, onRetry }: RowActions & { item: ChatItem },
+): JSX.Element {
+  return (
+    <div className="row assistant">
+      <div className="assistant-avatar" aria-hidden="true"><img src={BOT_AVATAR_SRC} alt="" draggable={false} /></div>
+      <div className="assistant-col">
+        <AssistantText text={item.text ?? ''} streaming={false} />
+        {!streaming && trailing && item.text !== undefined && item.text !== ''
+          ? (
+            <MessageActions
+              text={item.text}
+              onReply={() => { onReply(item) }}
+              onRetry={onRetry}
+            />
+          )
+          : undefined}
+      </div>
+    </div>
+  )
+})
+
+/** The sidebar's list body — conversations or search hits. Memoized so
+ * composer typing and streaming batches never re-render the loaded rows. */
+const SessionListBody = memo(function SessionListBody({ searchActive, hits, sessions, activeId, searching, loadingMore, onSelect }: {
+  searchActive: boolean
+  hits: readonly SearchHit[]
+  sessions: readonly SessionSummary[]
+  activeId: string
+  searching: boolean
+  loadingMore: boolean
+  onSelect: (id: string) => void
+}): JSX.Element {
+  return (
+    <>
+      {searchActive
+        ? (
+          hits.length === 0 && !searching
+            ? <div className="list-empty">No chats found</div>
+            : hits.map(hit => (
+              <button
+                key={hit.id}
+                type="button"
+                className={hit.id === activeId ? 'session-item active' : 'session-item'}
+                onClick={() => { onSelect(hit.id) }}
+                title={hit.title}
+                data-id={hit.id}
+              >
+                <span className="session-hit">
+                  <span className="session-title">{hit.title}</span>
+                  <span className="session-snippet">{hit.snippet}</span>
+                </span>
+                <span className="session-date">{relativeDate(hit.updatedAt)}</span>
+              </button>
+            ))
+        )
+        : (
+          sessions.length === 0
+            ? <div className="list-empty">No conversations yet</div>
+            : sessions.map(session => (
+              <button
+                key={session.id}
+                type="button"
+                className={session.id === activeId ? 'session-item active' : 'session-item'}
+                onClick={() => { onSelect(session.id) }}
+                title={session.title}
+                data-id={session.id}
+              >
+                <span className="session-title">{session.title}</span>
+                <span className="session-date">{relativeDate(session.updatedAt)}</span>
+              </button>
+            ))
+        )}
+      {loadingMore || (searchActive && searching) ? <div className="list-status">Loading…</div> : undefined}
+    </>
+  )
+})
 
 export default function App(): JSX.Element {
   const [sessions, setSessions] = useState<SessionSummary[]>([])
@@ -339,6 +519,12 @@ export default function App(): JSX.Element {
     else void loadMoreSessions()
   }, [loadMoreHits, loadMoreSessions, searchActive])
 
+  /** Switching conversations is blocked mid-stream; the callback stays
+   * identity-stable so the memoized sidebar rows skip re-renders. */
+  const selectSession = useCallback((id: string): void => {
+    if (!streaming) setActiveId(id)
+  }, [streaming])
+
   useEffect(() => {
     localStorage.setItem(ACTIVE_KEY, activeId)
   }, [activeId])
@@ -372,9 +558,9 @@ export default function App(): JSX.Element {
     return undefined
   }, [activeId, knownSession])
 
-  // Track the assistant text of the streaming turn separately so deltas
-  // accumulate without rewriting committed history items.
-  const [streamText, setStreamText] = useState('')
+  // The streaming turn's text lives in the feed (outside React state): only
+  // the subscribed streaming row re-renders as deltas land, never the app.
+  const [feed, setFeed] = useState<StreamFeed | undefined>(undefined)
 
   // The conversation whose history has already been landed on the bottom.
   const anchoredSessionRef = useRef('')
@@ -412,6 +598,9 @@ export default function App(): JSX.Element {
     return () => { cancelled = true }
   }, [config?.model])
 
+  // Structural scroll behavior: land on the newest message when a
+  // conversation opens, and follow new rows while pinned near the bottom.
+  // Per-batch following during streaming is StreamTurn's direct write.
   useEffect(() => {
     const thread = threadRef.current
     if (thread === null) return
@@ -426,7 +615,16 @@ export default function App(): JSX.Element {
     }
     const nearBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 120
     if (nearBottom) thread.scrollTop = thread.scrollHeight
-  }, [activeId, items, streamText])
+  }, [activeId, items])
+
+  /** Follow the stream: pin the thread to the bottom while the user is
+   * already near it (a direct DOM write — no re-render, no layout effect). */
+  const followStream = useCallback((): void => {
+    const thread = threadRef.current
+    if (thread === null) return
+    const nearBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 120
+    if (nearBottom) thread.scrollTop = thread.scrollHeight
+  }, [])
 
   const acceptsImages = abilities?.image === 'yes'
   const acceptsVideos = abilities?.video === 'yes'
@@ -539,37 +737,36 @@ export default function App(): JSX.Element {
     if (streaming) return
     setActiveId(newSessionId())
     setItems([])
-    setStreamText('')
     textareaRef.current?.focus()
   }, [streaming])
 
   /**
    * Drive one model turn and stream it into the view. Both sends and retries
-   * share this: `drive` performs the fetch and pumps SSE events back.
+   * share this: `drive` performs the fetch and pumps SSE events back. Deltas
+   * land in the feed at a coarse cadence — only the streaming row hears
+   * them; order-critical events flush first.
    */
   const runTurn = useCallback(async (drive: (onEvent: (event: StreamEvent) => void) => Promise<void>): Promise<void> => {
     setStreaming(true)
-    setStreamText('')
     let sawAssistant = false
     let sawCompaction = false
-    // Deltas land in coarse batches so the tree and the markdown parser run
-    // at frame cadence, not once per token; order-critical events flush first.
-    const batcher = new DeltaBatcher((chunk) => { setStreamText(previous => previous + chunk) })
+    const feed = new StreamFeed()
+    setFeed(feed)
     const onEvent = (event: StreamEvent): void => {
       switch (event.t) {
         case 'user':
           break
         case 'delta':
           sawAssistant = true
-          batcher.push(event.text)
+          feed.push(event.text)
           break
         case 'assistant':
-          batcher.flushNow()
+          feed.flushNow()
           sawAssistant = true
-          setStreamText(event.text)
+          feed.setFull(event.text)
           break
         case 'tool-start':
-          batcher.flushNow()
+          feed.flushNow()
           setItems(previous => [...previous, {
             role: 'tool',
             name: event.name,
@@ -578,7 +775,7 @@ export default function App(): JSX.Element {
           }])
           break
         case 'tool-end':
-          batcher.flushNow()
+          feed.flushNow()
           setItems((previous) => {
             const next = [...previous]
             for (let index = next.length - 1; index >= 0; index--) {
@@ -618,15 +815,13 @@ export default function App(): JSX.Element {
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
-      batcher.dispose()
-      // Commit the streamed text into the item list, then clear the draft.
-      setStreamText((current) => {
-        if (sawAssistant && current !== '') {
-          setItems(previous => [...previous, { role: 'assistant', text: current }])
-        }
-        return ''
-      })
+      // Commit the streamed text into the item list, then clear the feed.
+      const finalText = feed.reset()
+      if (sawAssistant && finalText !== '') {
+        setItems(previous => [...previous, { role: 'assistant', text: finalText }])
+      }
       setStreaming(false)
+      setFeed(undefined)
       refreshSessions()
       if (sawCompaction) {
         fetchMessages(activeId)
@@ -710,6 +905,29 @@ export default function App(): JSX.Element {
     stopSession(activeId).catch(() => { /* the stream ends on its own */ })
   }, [activeId])
 
+  // Thread-shape flags and rows, derived once per structural change (items,
+  // streaming) instead of per render pass: with the rows memoized, typing
+  // and streaming no longer re-render the history.
+  const toolRunning = useMemo(
+    () => items.some(item => item.role === 'tool' && item.running === true),
+    [items],
+  )
+  const threadRows = useMemo(() => items.map((item, index) => {
+    const trailing = index === items.length - 1
+    if (item.role === 'compaction') return <CompactionRow key={index} item={item} />
+    if (item.role === 'user') {
+      return <UserRow key={index} item={item} trailing={trailing} streaming={streaming} onReply={beginReply} onRetry={retry} />
+    }
+    if (item.role === 'tool') {
+      return (
+        <div key={index} className="row tool">
+          <ToolChip item={item} />
+        </div>
+      )
+    }
+    return <AssistantRow key={index} item={item} trailing={trailing} streaming={streaming} onReply={beginReply} onRetry={retry} />
+  }), [items, streaming, beginReply, retry])
+
   return (
     <div className={collapsed ? 'app collapsed' : 'app'}>
       <aside className="sidebar">
@@ -762,45 +980,15 @@ export default function App(): JSX.Element {
             : undefined}
         </div>
         <nav className="session-list" aria-label="Conversations" ref={listRef} onScroll={handleListScroll}>
-          {searchActive
-            ? (
-              hits.length === 0 && !searching
-                ? <div className="list-empty">No chats found</div>
-                : hits.map(hit => (
-                  <button
-                    key={hit.id}
-                    type="button"
-                    className={hit.id === activeId ? 'session-item active' : 'session-item'}
-                    onClick={() => { if (!streaming) setActiveId(hit.id) }}
-                    title={hit.title}
-                    data-id={hit.id}
-                  >
-                    <span className="session-hit">
-                      <span className="session-title">{hit.title}</span>
-                      <span className="session-snippet">{hit.snippet}</span>
-                    </span>
-                    <span className="session-date">{relativeDate(hit.updatedAt)}</span>
-                  </button>
-                ))
-            )
-            : (
-              sessions.length === 0
-                ? <div className="list-empty">No conversations yet</div>
-                : sessions.map(session => (
-                  <button
-                    key={session.id}
-                    type="button"
-                    className={session.id === activeId ? 'session-item active' : 'session-item'}
-                    onClick={() => { if (!streaming) setActiveId(session.id) }}
-                    title={session.title}
-                    data-id={session.id}
-                  >
-                    <span className="session-title">{session.title}</span>
-                    <span className="session-date">{relativeDate(session.updatedAt)}</span>
-                  </button>
-                ))
-            )}
-          {loadingMore || (searchActive && searching) ? <div className="list-status">Loading…</div> : undefined}
+          <SessionListBody
+            searchActive={searchActive}
+            hits={hits}
+            sessions={sessions}
+            activeId={activeId}
+            searching={searching}
+            loadingMore={loadingMore}
+            onSelect={selectSession}
+          />
         </nav>
         <div className="sidebar-footer">
           <button type="button" className="user-row" onClick={() => { setSettingsOpen(true) }}>
@@ -849,7 +1037,7 @@ export default function App(): JSX.Element {
           )
           : undefined}
         <div className="thread" ref={threadRef}>
-          {items.length === 0 && streamText === ''
+          {items.length === 0 && feed === undefined
             ? (
               <div className="welcome">
                 <div className="welcome-mark" aria-hidden="true"><img src={BOT_AVATAR_SRC} alt="" draggable={false} /></div>
@@ -858,96 +1046,15 @@ export default function App(): JSX.Element {
             )
             : (
               <div className="thread-inner">
-                {items.map((item, index) => {
-                  if (item.role === 'compaction') {
-                    return (
-                      <div key={index} className="row compaction">
-                        <div className="compaction-card">
-                          <svg viewBox="0 0 16 16" aria-hidden="true">
-                            <rect x="2" y="3.5" width="12" height="4" rx="1.2" fill="none" stroke="currentColor" strokeWidth="1.3" />
-                            <path d="M3.5 7.5v4.3a1.2 1.2 0 0 0 1.2 1.2h6.6a1.2 1.2 0 0 0 1.2-1.2V7.5" fill="none" stroke="currentColor" strokeWidth="1.3" />
-                            <line x1="6.4" y1="10.2" x2="9.6" y2="10.2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-                          </svg>
-                          <div className="compaction-body">
-                            <span className="compaction-label">Earlier conversation compacted</span>
-                            <span className="compaction-text">{item.text}</span>
-                          </div>
-                        </div>
-                      </div>
-                    )
-                  }
-                  if (item.role === 'user') {
-                    return (
-                      <div key={index} className="row user">
-                        <div className="user-col">
-                          <div className="user-bubble">
-                            {item.replyTo !== undefined
-                              ? (
-                                <div className="reply-quote">
-                                  <span className="reply-quote-label">{replyLabel(item.replyTo.role)}</span>
-                                  <span className="reply-quote-text">{item.replyTo.text}</span>
-                                </div>
-                              )
-                              : undefined}
-                            {(item.attachments ?? []).map((one, at) => <BubbleAttachment key={at} attachment={one} />)}
-                            {item.text}
-                          </div>
-                          {item.text !== undefined && item.text !== ''
-                            ? (
-                              <MessageActions
-                                text={item.text}
-                                onReply={() => { beginReply(item) }}
-                                {...!streaming && index === items.length - 1 ? { onRetry: () => { void retry() } } : {}}
-                              />
-                            )
-                            : undefined}
-                        </div>
-                      </div>
-                    )
-                  }
-                  if (item.role === 'tool') {
-                    return (
-                      <div key={index} className="row tool">
-                        <ToolChip item={item} />
-                      </div>
-                    )
-                  }
-                  return (
-                    <div key={index} className="row assistant">
-                      <div className="assistant-avatar" aria-hidden="true"><img src={BOT_AVATAR_SRC} alt="" draggable={false} /></div>
-                      <div className="assistant-col">
-                        <AssistantText text={item.text ?? ''} streaming={false} />
-                        {!streaming && index === items.length - 1 && item.text !== undefined && item.text !== ''
-                          ? (
-                            <MessageActions
-                              text={item.text}
-                              onReply={() => { beginReply(item) }}
-                              onRetry={() => { void retry() }}
-                            />
-                          )
-                          : undefined}
-                      </div>
-                    </div>
-                  )
-                })}
-                {streaming && (streamText !== '' || items.every(item => item.role !== 'tool' || item.running !== true))
+                {threadRows}
+                {streaming
                   ? (
                     <div className="row assistant">
                       <div className="assistant-avatar" aria-hidden="true"><img src={BOT_AVATAR_SRC} alt="" draggable={false} /></div>
-                      {streamText === '' ? <div className="assistant-text thinking">Thinking…</div> : <AssistantText text={streamText} streaming />}
+                      <StreamTurn feed={feed ?? new StreamFeed()} searching={toolRunning} follow={followStream} />
                     </div>
                   )
                   : undefined}
-                {streaming && streamText !== ''
-                  ? undefined
-                  : (streaming && items.some(item => item.role === 'tool' && item.running === true)
-                    ? (
-                      <div className="row assistant">
-                        <div className="assistant-avatar" aria-hidden="true"><img src={BOT_AVATAR_SRC} alt="" draggable={false} /></div>
-                        <div className="assistant-text thinking">Searching the web…</div>
-                      </div>
-                    )
-                    : undefined)}
                 {!streaming && items.length > 0 && items[items.length - 1]?.role !== 'assistant'
                   ? (
                     <div className="retry-hint">
