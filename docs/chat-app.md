@@ -119,6 +119,40 @@ history view folds retried exchanges to their latest answer
 The sidebar collapses to a small rail that keeps both *open sidebar* and
 *new chat* one click away.
 
+### Context management (compaction)
+
+Conversations grow until they would not fit the model's context window.
+The chat profile mounts the harness's compaction stack: `token-meter`
+(one fold per session, anchored on the gateway's own per-turn usage
+numbers) and `compaction-basic` (the summarize-and-replace engine), with
+the engine's built-in triggers replaced by chat-owned ones gated on the
+settings panel's **Auto-compact** toggle (on by default).
+
+How a compaction runs: before each model call the estimated request is
+compared against 0.8 × the window; over the line, the engine keeps a
+verbatim tail (~0.16 × the window), asks the model to summarize
+everything older, and lands the summary as a replacement user message
+(`surfaceOp: replace`) — a durable, provenance-checked transaction in
+the append-only ledger. The model reads the summary in place of the
+trimmed turns; the full history stays on disk. If a request still
+overflows (the gateway's rejection wording is recognized), compaction
+runs and the request retries — only when the surface actually shrank,
+so unrepairable overflows still surface their error.
+
+The UI shows a muted "Earlier conversation compacted" card where the
+trimmed turns were: served by `/messages` after a reload, or right after
+the turn that compacted (a `compaction` stream frame makes the client
+refetch history once the stream ends — never mid-stream). With the
+toggle off, none of this happens: conversations grow until the gateway
+rejects them. `POST /api/sessions/:id/compact` compacts on demand
+either way — `{ compacted: false }` when there is nothing useful to
+reduce.
+
+The window itself comes from the `llm-deepseek` row's
+`defaultContextWindow` — 262144, the qwen flash gateway's measured
+ceiling (probed: it reports "maximum context length is 262144 tokens"
+past it). `DSH_CONTEXT_WINDOW` overrides it for other endpoints.
+
 ### The companion extension
 
 `packages/web/web-search-chrome/extension/` is a load-unpacked MV3 extension
