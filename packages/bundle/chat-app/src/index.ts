@@ -308,6 +308,24 @@ export class SessionListingCache<T> {
 }
 
 /**
+ * Share one in-flight async operation per key: concurrent callers of an
+ * uncached expensive start (a real, billed model probe) join the running
+ * promise instead of each firing their own. Settled entries leave
+ * immediately, so failures retry on the next caller.
+ */
+export class InFlightDedup<T> {
+  private readonly running = new Map<string, Promise<T>>()
+
+  run(key: string, start: () => Promise<T>): Promise<T> {
+    const existing = this.running.get(key)
+    if (existing !== undefined) return existing
+    const promise = start().finally(() => { this.running.delete(key) })
+    this.running.set(key, promise)
+    return promise
+  }
+}
+
+/**
  * Validate one partial settings update. `null` clears an optional field.
  * Unknown keys are rejected so a drifted frontend fails loudly, not silently.
  * The flat `model`/`baseUrl`/`apiKey` keys edit the active profile (a switch
@@ -1529,8 +1547,14 @@ export function apply(ctx: Context, config: Config): void {
   const extensionBridge = new ExtensionBridge()
   // Probe answers per model id; abilities do not change within a run, so
   // one probe per model is enough and the panel re-checks on demand.
+  // In-flight probes share their promise: concurrent first requests for the
+  // same uncached model fire the (real, billed) probe once, not per caller.
   const abilityCache = new Map<string, ModelAbilities>()
+  const abilityInFlight = new InFlightDedup<ModelAbilities>()
   const probeLimiter = new RateLimiter(20, 5 * 60_000)
+  // Model-list responses per provider/route; the picker re-reads on open.
+  const modelsCache = new Map<string, { models: string[]; at: number }>()
+  const MODELS_TTL_MS = 60_000
 
   /**
    * One model's input modalities, probed once and cached — and pushed into the
@@ -1539,27 +1563,28 @@ export function apply(ctx: Context, config: Config): void {
    * which ride the same machinery) claims image input for the uncatalogued
    * model; anything else restores upstream's conservative text-only default.
    */
-  async function ensureModelAbilities(model: string): Promise<ModelAbilities> {
+  function ensureModelAbilities(model: string): Promise<ModelAbilities> {
     const cached = abilityCache.get(model)
-    if (cached !== undefined) return cached
-    const active = activeProfile(settings)
-    const outcome = await probeModelAbilities({
-      base: (active.baseUrl ?? process.env.DEEPSEEK_BASE_URL ?? PUBLIC_BASE_URL).replace(/\/+$/, ''),
-      apiKey: process.env.DEEPSEEK_API_KEY ?? '',
-      model,
-      timeoutMs: 15_000,
-    })
-    abilityCache.set(model, outcome)
-    const settingsService = ctx.get('settings')
-    if (settingsService !== undefined) {
-      try {
-        await settingsService.update('llm-deepseek', { uncataloguedImageInput: modalityClaim(outcome) })
-      } catch (error: unknown) {
-        const reason = error instanceof Error ? error.message : String(error)
-        console.error(`chat-app: could not sync the model's modality claim because ${reason}`)
+    if (cached !== undefined) return Promise.resolve(cached)
+    return abilityInFlight.run(model, async () => {
+      const outcome = await probeModelAbilities({
+        base: (activeProfile(settings).baseUrl ?? process.env.DEEPSEEK_BASE_URL ?? PUBLIC_BASE_URL).replace(/\/+$/, ''),
+        apiKey: process.env.DEEPSEEK_API_KEY ?? '',
+        model,
+        timeoutMs: 15_000,
+      })
+      abilityCache.set(model, outcome)
+      const settingsService = ctx.get('settings')
+      if (settingsService !== undefined) {
+        try {
+          await settingsService.update('llm-deepseek', { uncataloguedImageInput: modalityClaim(outcome) })
+        } catch (error: unknown) {
+          const reason = error instanceof Error ? error.message : String(error)
+          console.error(`chat-app: could not sync the model's modality claim because ${reason}`)
+        }
       }
-    }
-    return outcome
+      return outcome
+    })
   }
   type ChromeSearchOutcome = {
     engine: 'extension' | 'cdp'
@@ -1698,16 +1723,20 @@ export function apply(ctx: Context, config: Config): void {
     // still calls it cold.
     listingCache.clear()
     knownSessionIds.add(sessionId)
-    ctx.effect(() => () => {
-      // A settings swap may have disposed this handle already; only the
-      // map's current entry owns cleanup.
-      if (handles.get(sessionId)?.handle === handle) {
-        void handle.dispose()
-        handles.delete(sessionId)
-      }
-    }, `chat-app.agent.${sessionId}`)
     return handle
   }
+
+  // Plugin teardown retires every agent this surface minted. Per-agent
+  // effects are deliberately avoided: cordis keeps every effect closure for
+  // the plugin's life, so one per agent would pin each conversation's full
+  // event log long after its eviction — the sweep would dispose the handle
+  // while the closure kept the memory reachable.
+  ctx.effect(() => () => {
+    for (const [id, entry] of [...handles]) {
+      handles.delete(id)
+      void entry.handle.dispose()
+    }
+  }, 'chat-app.agents')
 
   // Sampling is request-level, not agent identity: patch the frozen call
   // config on its way out so every conversation request carries the
@@ -1948,6 +1977,14 @@ export function apply(ctx: Context, config: Config): void {
     }
 
     if (req.method === 'GET' && parts.length === 1 && parts[0] === 'models') {
+      // The picker opens per panel visit; a short TTL keeps repeated visits
+      // off the endpoint without hiding a genuinely new model for long.
+      const cacheKey = `${settings.provider}\u0000${activeProfile(settings).model}\u0000${activeProfile(settings).baseUrl ?? process.env.DEEPSEEK_BASE_URL ?? ''}`
+      const cachedModels = modelsCache.get(cacheKey)
+      if (cachedModels !== undefined && Date.now() - cachedModels.at < MODELS_TTL_MS) {
+        sendJson(res, 200, { models: cachedModels.models })
+        return
+      }
       const active = activeProfile(settings)
       const base = (active.baseUrl ?? process.env.DEEPSEEK_BASE_URL ?? PUBLIC_BASE_URL).replace(/\/+$/, '')
       const apiKey = process.env.DEEPSEEK_API_KEY ?? ''
@@ -1966,7 +2003,9 @@ export function apply(ctx: Context, config: Config): void {
             : undefined))
           .filter((id): id is string => typeof id === 'string')
         : []
-      sendJson(res, 200, { models: [...new Set(models)].sort() })
+      const unique = [...new Set(models)].sort()
+      modelsCache.set(cacheKey, { models: unique, at: Date.now() })
+      sendJson(res, 200, { models: unique })
       return
     }
 

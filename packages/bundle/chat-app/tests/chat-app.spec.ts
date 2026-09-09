@@ -13,6 +13,7 @@ import {
   modalityClaim,
   evictableSessionIds,
   hasSessionCookie,
+  InFlightDedup,
   isLocalOrBridgeRequest,
   isLocalRequest,
   sortSessionsByActivity,
@@ -1112,5 +1113,43 @@ describe('parseAttachment — oversize rejection before decode', () => {
     // it by length alone, so no megabyte-scale decode ever runs.
     const huge = 'A'.repeat(100 * 1024 * 1024)
     expect(() => parseAttachment({ kind: 'video', dataUrl: `data:video/mp4;base64,${huge}` })).toThrow('at most 64MB')
+  })
+})
+
+describe('InFlightDedup', () => {
+  it('joins concurrent callers onto one running start', async () => {
+    const dedup = new InFlightDedup<number>()
+    let starts = 0
+    let release: (() => void) | undefined
+    const start = (): Promise<number> => {
+      starts += 1
+      return new Promise((resolve) => { release = () => { resolve(7) } })
+    }
+    const first = dedup.run('m', start)
+    const second = dedup.run('m', start)
+    const third = dedup.run('m', start)
+    release?.()
+    expect(await first).toBe(7)
+    expect(await second).toBe(7)
+    expect(await third).toBe(7)
+    expect(starts).toBe(1)
+  })
+
+  it('clears the slot on settle so the next caller starts fresh', async () => {
+    const dedup = new InFlightDedup<number>()
+    let starts = 0
+    const start = (): Promise<number> => { starts += 1; return Promise.resolve(starts) }
+    await expect(dedup.run('a', start)).resolves.toBe(1)
+    await expect(dedup.run('a', start)).resolves.toBe(2)
+    expect(starts).toBe(2)
+  })
+
+  it('a rejected start clears the slot and rejects its joiners', async () => {
+    const dedup = new InFlightDedup<number>()
+    let starts = 0
+    const start = (): Promise<number> => { starts += 1; return Promise.reject(new Error('probe down')) }
+    await expect(dedup.run('x', start)).rejects.toThrow('probe down')
+    await expect(dedup.run('x', start)).rejects.toThrow('probe down')
+    expect(starts).toBe(2)
   })
 })
