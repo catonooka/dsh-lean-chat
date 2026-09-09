@@ -81,6 +81,7 @@ export function SettingsPanel({ config, theme, onTheme, avatar, onAvatar, onAppl
   const [apiKey, setApiKey] = useState('')
   const [searchTool, setSearchTool] = useState<'tiny-metasearch' | 'user-chrome'>(
     config.searchTool === 'user-chrome' ? 'user-chrome' : 'tiny-metasearch')
+  const [autoCompact, setAutoCompact] = useState<boolean>(config.autoCompact !== false)
   const [models, setModels] = useState<string[]>([])
   const [loadingModels, setLoadingModels] = useState(false)
   const [abilities, setAbilities] = useState<ModelAbilities | undefined>(undefined)
@@ -202,7 +203,7 @@ export function SettingsPanel({ config, theme, onTheme, avatar, onAvatar, onAppl
   const save = async (): Promise<void> => {
     setSaving(true)
     try {
-      const patch: SettingsPatch = { model, reasoningEffort: effort, persona, searchTool }
+      const patch: SettingsPatch = { model, reasoningEffort: effort, persona, searchTool, autoCompact }
       if (activeId !== (config.activeProfileId ?? config.profiles?.[0]?.id)) patch.switchProfile = activeId
       if (temperature === undefined) patch.temperature = null
       else patch.temperature = temperature
@@ -432,6 +433,34 @@ export function SettingsPanel({ config, theme, onTheme, avatar, onAvatar, onAppl
           />
           <span className="settings-hint">The whole system prompt. Empty means the default persona.</span>
         </label>
+
+        <div className="settings-row">
+          <span className="settings-label">Auto-compact</span>
+          <div className="segmented" role="radiogroup" aria-label="Auto-compact">
+            <button
+              type="button"
+              role="radio"
+              aria-checked={autoCompact}
+              className={autoCompact ? 'segment active' : 'segment'}
+              onClick={() => { setAutoCompact(true) }}
+            >
+              On
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={!autoCompact}
+              className={autoCompact ? 'segment' : 'segment active'}
+              onClick={() => { setAutoCompact(false) }}
+            >
+              Off
+            </button>
+          </div>
+          <span className="settings-hint">
+            When the context window fills, older turns become a summary the model reads instead —
+            {' '}recent messages stay verbatim, and the full history stays on disk.
+          </span>
+        </div>
 
         <div className="settings-row">
           <span className="settings-label">Search tool</span>

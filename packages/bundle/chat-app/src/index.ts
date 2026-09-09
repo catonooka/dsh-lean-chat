@@ -33,7 +33,7 @@ import { routeSearchTarget, toSources, UserChromeSearchProvider } from '@deepsee
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { createUserMessage, ReasoningEffortId, type ContentBlock, type MessageSource, type UserMessage } from '@deepseek-ai/dsh-llm'
+import { CONTEXT_WINDOW_EXCEEDED_CODE, createUserMessage, ReasoningEffortId, type ContentBlock, type MessageSource, type UserMessage } from '@deepseek-ai/dsh-llm'
 import { isCompactCheckpointSource, ManualCompactionError } from '@deepseek-ai/dsh-compaction'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
@@ -130,6 +130,8 @@ export interface ChatSettings {
   persona: string
   /** Which engine the pinned chat-selector provider dispatches to. */
   searchTool: 'tiny-metasearch' | 'user-chrome'
+  /** Whether conversations auto-compact under context pressure; absent = on. */
+  autoCompact?: boolean
 }
 
 /** Longest accepted profile display name. */
@@ -404,6 +406,15 @@ export function applySettingsPatch(
         next.searchTool = value
         break
       }
+      case 'autoCompact': {
+        if (value === null) {
+          delete next.autoCompact
+          break
+        }
+        if (typeof value !== 'boolean') throw new Error('autoCompact must be a boolean')
+        next.autoCompact = value
+        break
+      }
       default:
         throw new Error(`unknown setting "${key}"`)
     }
@@ -514,6 +525,7 @@ function settingsJson(settings: ChatSettings): Record<string, unknown> {
     ...active.baseUrl !== undefined ? { baseUrl: active.baseUrl } : {},
     apiKeySet: active.apiKey !== undefined,
     searchTool: settings.searchTool,
+    autoCompact: settings.autoCompact ?? true,
     activeProfileId: settings.activeProfileId,
     profiles: settings.profiles.map(profile => ({
       id: profile.id,
@@ -542,6 +554,7 @@ async function persistSettings(path: string, settings: ChatSettings): Promise<vo
     ...settings.temperature !== undefined ? { temperature: settings.temperature } : {},
     persona: settings.persona,
     searchTool: settings.searchTool,
+    ...settings.autoCompact !== undefined ? { autoCompact: settings.autoCompact } : {},
   }, null, 2)}\n`
   await mkdir(dirname(path), { recursive: true, mode: 0o700 })
   await writeFile(path, body, { mode: 0o600, flag: 'w' })
@@ -1489,6 +1502,39 @@ export function apply(ctx: Context, config: Config): void {
     const base = await next()
     const temperature = settings.temperature
     return temperature === undefined ? base : { ...base, temperature }
+  })
+
+  // Auto-compaction triggers, gated on the settings toggle (on unless the
+  // panel turned it off). Mirrors the engine's own registration: pressure is
+  // checked before every model call, and a context-overflow failure recovers
+  // by compacting and retrying — but only when the surface actually shrank.
+  ctx.on('agent/pre-step', async ({ agent, signal }, next) => {
+    const compaction = ctx.get('compaction')
+    if (settings.autoCompact !== false && compaction !== undefined && !signal.aborted) {
+      try {
+        await compaction.compactIfNeeded(agent, 'pressure', signal)
+      } catch (err: unknown) {
+        ctx.logger.warn(`step compaction failed: ${err instanceof Error ? err.message : String(err)}; continuing the turn`)
+      }
+    }
+    return next()
+  })
+
+  ctx.on('agent/request-error', async ({ agent, failure, signal }, next) => {
+    const compaction = ctx.get('compaction')
+    if (settings.autoCompact === false
+      || compaction === undefined
+      || failure.code !== CONTEXT_WINDOW_EXCEEDED_CODE
+      || signal.aborted) return next()
+    const generation = agent.session.surface.replaceGeneration
+    try {
+      await compaction.compactIfNeeded(agent, 'context-overflow', signal)
+    } catch (err: unknown) {
+      ctx.logger.warn(`context-overflow compaction failed: ${err instanceof Error ? err.message : String(err)}`)
+      return next()
+    }
+    if (!signal.aborted && agent.session.surface.replaceGeneration > generation) return { kind: 'retry' }
+    return next()
   })
 
   ctx.on('session/event', (session, event) => {

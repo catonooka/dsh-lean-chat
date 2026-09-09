@@ -108,6 +108,31 @@ describe('projectSurfaceEvent', () => {
   })
 })
 
+describe('applySettingsPatch — auto-compact toggle', () => {
+  it('sets, flips, and clears the toggle', () => {
+    const off = applySettingsPatch(baseSettings, { autoCompact: false })
+    expect(off.autoCompact).toBe(false)
+    const on = applySettingsPatch(off, { autoCompact: true })
+    expect(on.autoCompact).toBe(true)
+    const cleared = applySettingsPatch(on, { autoCompact: null })
+    expect('autoCompact' in cleared).toBe(false)
+  })
+
+  it('rejects non-boolean values', () => {
+    expect(() => applySettingsPatch(baseSettings, { autoCompact: 'yes' })).toThrow('autoCompact must be a boolean')
+    expect(() => applySettingsPatch(baseSettings, { autoCompact: 1 })).toThrow('autoCompact must be a boolean')
+  })
+})
+
+describe('parseSettingsFile — auto-compact toggle', () => {
+  it('reads the persisted toggle and defaults to on when absent', () => {
+    expect(parseSettingsFile(JSON.stringify({ autoCompact: false }), baseConfig).autoCompact).toBe(false)
+    expect(parseSettingsFile(JSON.stringify({ autoCompact: true }), baseConfig).autoCompact).toBe(true)
+    expect(parseSettingsFile(undefined, baseConfig).autoCompact).toBeUndefined()
+    expect(parseSettingsFile(JSON.stringify({ persona: 'x' }), baseConfig).autoCompact).toBeUndefined()
+  })
+})
+
 describe('parseReplyTo', () => {
   it('accepts a well-formed reply target', () => {
     expect(parseReplyTo({ role: 'assistant', text: 'hello there' }))

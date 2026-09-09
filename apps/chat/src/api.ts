@@ -67,6 +67,7 @@ export interface AppConfig {
   baseUrl?: string
   apiKeySet?: boolean
   searchTool?: string
+  autoCompact?: boolean
   activeProfileId?: string
   profiles?: ProfileInfo[]
 }
@@ -81,6 +82,8 @@ export interface SettingsPatch {
   baseUrl?: string | null
   apiKey?: string
   searchTool?: string
+  /** Toggle conversation auto-compaction; `null` restores the default (on). */
+  autoCompact?: boolean | null
   /** Make this profile active; its fields become the flat projection. */
   switchProfile?: string
   renameProfile?: { id: string; name: string }
