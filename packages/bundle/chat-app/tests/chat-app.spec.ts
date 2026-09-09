@@ -16,6 +16,7 @@ import {
   isLocalOrBridgeRequest,
   isLocalRequest,
   sortSessionsByActivity,
+  SessionListingCache,
   normalizeSearchQuery,
   paginateSessions,
   parseAttachment,
@@ -24,6 +25,7 @@ import {
   parseSettingsFile,
   projectSurfaceEvent,
   resolveProviderFallback,
+  TitleSnapshotCache,
   truncateSnippet,
   type ChatItem,
   type ChatSettings,
@@ -1017,5 +1019,59 @@ describe('collapseRetriedUserTurns', () => {
       user('hi'),
       { role: 'assistant', text: 'hello' },
     ])
+  })
+})
+
+describe('TitleSnapshotCache', () => {
+  it('serves a set snapshot while fresh and drops it past the ttl', () => {
+    const cache = new TitleSnapshotCache(1_000, 8)
+    cache.set('s1', { text: 'Hello', updatedAt: 10 }, 0)
+    expect(cache.get('s1', 500)).toEqual({ text: 'Hello', updatedAt: 10 })
+    expect(cache.get('s1', 1_000)).toBeUndefined()
+    expect(cache.get('s1', 1_500)).toBeUndefined()
+  })
+
+  it('caches an explicit no-title snapshot distinctly from unknown', () => {
+    const cache = new TitleSnapshotCache(1_000, 8)
+    expect(cache.get('s1', 0)).toBeUndefined()
+    cache.set('s1', { text: undefined, updatedAt: 0 }, 0)
+    expect(cache.get('s1', 0)).toEqual({ text: undefined, updatedAt: 0 })
+  })
+
+  it('delete() drops a fresh snapshot immediately', () => {
+    const cache = new TitleSnapshotCache(60_000, 8)
+    cache.set('s1', { text: 't', updatedAt: 1 }, 0)
+    cache.delete('s1')
+    expect(cache.get('s1', 1)).toBeUndefined()
+  })
+
+  it('retires the stalest entry at the cap but refreshes in place', () => {
+    const cache = new TitleSnapshotCache(60_000, 3)
+    cache.set('a', { text: 'a', updatedAt: 0 }, 0)
+    cache.set('b', { text: 'b', updatedAt: 0 }, 0)
+    cache.set('c', { text: 'c', updatedAt: 0 }, 0)
+    cache.set('a', { text: 'a2', updatedAt: 5 }, 10)
+    cache.set('d', { text: 'd', updatedAt: 0 }, 20)
+    expect(cache.get('b', 20)).toBeUndefined()
+    expect(cache.get('a', 20)).toEqual({ text: 'a2', updatedAt: 5 })
+    expect(cache.get('d', 20)).toEqual({ text: 'd', updatedAt: 0 })
+  })
+})
+
+describe('SessionListingCache', () => {
+  it('serves the cached listing until the ttl lapses', () => {
+    const cache = new SessionListingCache<number[]>(2_000)
+    expect(cache.get(0)).toBeUndefined()
+    cache.set([1, 2], 0)
+    expect(cache.get(1_999)).toEqual([1, 2])
+    expect(cache.get(2_000)).toBeUndefined()
+  })
+
+  it('clear() forces a refetch of a fresh listing', () => {
+    const cache = new SessionListingCache<number[]>(60_000)
+    cache.set([1], 0)
+    expect(cache.get(1)).toEqual([1])
+    cache.clear()
+    expect(cache.get(1)).toBeUndefined()
   })
 })

@@ -37,7 +37,7 @@ import { CONTEXT_WINDOW_EXCEEDED_CODE, createUserMessage, ReasoningEffortId, typ
 import { isCompactCheckpointSource, ManualCompactionError } from '@deepseek-ai/dsh-compaction'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
-import { SessionQueryError, SessionSearchCursor, type SessionSearchHit, type SessionSearchPage } from '@deepseek-ai/dsh-session-query'
+import { SessionQueryError, SessionSearchCursor, type SessionRecord, type SessionSearchHit, type SessionSearchPage } from '@deepseek-ai/dsh-session-query'
 import type { AgentHandle } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 
@@ -226,6 +226,85 @@ export function sortSessionsByActivity<T extends { header: { id: SessionId; crea
     const bt = activity.get(String(b.header.id)) ?? b.header.createdAt
     return bt - at || String(a.header.id).localeCompare(String(b.header.id))
   })
+}
+
+/** One cached title snapshot; `text` undefined means "no title yet". */
+export interface TitleSnapshot {
+  text: string | undefined
+  updatedAt: number
+}
+
+/**
+ * Per-session title snapshot cache. A cold title read parses a session's
+ * whole JSONL log, which is far too much to repeat per sidebar refresh, so
+ * snapshots cache per session until their TTL lapses (the backstop for
+ * out-of-process writers sharing the same DSH home) or an appended
+ * `session/title` event invalidates them. Refreshes re-insert, so insertion
+ * order approximates recency and the cap retires the stalest first.
+ */
+export class TitleSnapshotCache {
+  private readonly entries = new Map<string, { entry: TitleSnapshot; at: number }>()
+
+  constructor(
+    private readonly ttlMs: number,
+    private readonly maxEntries: number,
+  ) {}
+
+  /** The cached snapshot when id is known and fresh, else undefined. */
+  get(id: string, now: number): TitleSnapshot | undefined {
+    const cached = this.entries.get(id)
+    if (cached === undefined) return undefined
+    if (now - cached.at >= this.ttlMs) {
+      this.entries.delete(id)
+      return undefined
+    }
+    return cached.entry
+  }
+
+  /** Cache one snapshot, retiring the stalest entry past the cap. */
+  set(id: string, entry: TitleSnapshot, now: number): void {
+    if (this.entries.size >= this.maxEntries && !this.entries.has(id)) {
+      const oldest = this.entries.keys().next().value
+      if (oldest !== undefined) this.entries.delete(oldest)
+    }
+    // Re-insert so insertion order tracks recency (Map.set alone would keep
+    // an existing key at its original position).
+    this.entries.delete(id)
+    this.entries.set(id, { entry, at: now })
+  }
+
+  /** Drop one session's snapshot (its title just changed). */
+  delete(id: string): void {
+    this.entries.delete(id)
+  }
+}
+
+/**
+ * Single-slot TTL cache for the session listing. Headers never mutate after
+ * creation, so the only freshness concerns are liveness flips (every one
+ * flows through this plugin: agent mint, eviction, model swap — all clear
+ * the slot) and out-of-process writers, which the TTL bounds.
+ */
+export class SessionListingCache<T> {
+  private cached: { records: T; at: number } | undefined
+
+  constructor(private readonly ttlMs: number) {}
+
+  /** The cached listing while fresh, else undefined. */
+  get(now: number): T | undefined {
+    if (this.cached === undefined || now - this.cached.at >= this.ttlMs) return undefined
+    return this.cached.records
+  }
+
+  /** Cache one listing fetched now. */
+  set(records: T, now: number): void {
+    this.cached = { records, at: now }
+  }
+
+  /** Force the next read to refetch (a liveness flip happened). */
+  clear(): void {
+    this.cached = undefined
+  }
 }
 
 /**
@@ -1218,8 +1297,9 @@ export function apply(ctx: Context, config: Config): void {
   // restart keeps already-served pages authenticated — index.html hands it
   // out as an HttpOnly cookie and every non-bridge API call must carry it.
   const tokenPath = dshHomePath('chat-session-token')
-  const sessionToken = parseSessionToken(readFileSyncSafe(tokenPath)) ?? randomUUID()
-  if (!parseSessionToken(readFileSyncSafe(tokenPath))) {
+  const storedToken = parseSessionToken(readFileSyncSafe(tokenPath))
+  const sessionToken = storedToken ?? randomUUID()
+  if (storedToken === undefined) {
     void mkdir(dirname(tokenPath), { recursive: true })
       .then(() => writeFile(tokenPath, `${sessionToken}\n`, { mode: 0o600, flag: 'w' }))
       .then(() => chmod(tokenPath, 0o600))
@@ -1264,6 +1344,10 @@ export function apply(ctx: Context, config: Config): void {
     if (!activityDirty) return
     activityDirty = false
     const entries = [...activity.entries()].sort((a, b) => b[1] - a[1]).slice(0, 500)
+    // The ledger file holds the top 500; mirror that in memory so ordering
+    // data for every session ever touched does not stay resident.
+    activity.clear()
+    for (const [id, stamp] of entries) activity.set(id, stamp)
     await mkdir(dirname(activityPath), { recursive: true })
     await writeFile(activityPath, `${JSON.stringify(Object.fromEntries(entries), null, 2)}\n`, { mode: 0o600, flag: 'w' })
   }
@@ -1316,6 +1400,28 @@ export function apply(ctx: Context, config: Config): void {
   }
   const handles = new Map<string, { handle: AgentHandle; options: ConversationOptions; lastUsed: number }>()
   const streams = new Map<string, Set<ServerResponse>>()
+  // Sidebar caches: a corpus listing is a directory walk plus one header read
+  // per session, and a cold title snapshot parses a session's whole JSONL
+  // log — repeated per sidebar refresh would dominate the request. Sessions
+  // that append events are live (their title re-read stays in memory), so
+  // the event listener below invalidates titles per session blanket.
+  const titleCache = new TitleSnapshotCache(60_000, 1_024)
+  const listingCache = new SessionListingCache<SessionRecord[]>(2_000)
+  // Ids this process knows exist (listing headers, successful creates), so a
+  // send picks create-vs-resume without the throw-and-catch full-tree scan;
+  // the catch stays for writers this process cannot see.
+  const knownSessionIds = new Set<string>()
+
+  /** The corpus listing, served from cache while fresh. */
+  async function listSessionRecords(): Promise<SessionRecord[]> {
+    const now = Date.now()
+    const cached = listingCache.get(now)
+    if (cached !== undefined) return cached
+    const records = await ctx.sessionQuery.listSessions()
+    listingCache.set(records, now)
+    for (const record of records) knownSessionIds.add(String(record.header.id))
+    return records
+  }
 
   // The web seam pins one provider id at boot, so the pinned id is a
   // chat-owned selector: every search dispatches to the engine the settings
@@ -1333,11 +1439,15 @@ export function apply(ctx: Context, config: Config): void {
   // resume transparently on demand.
   const evictTimer = setInterval(() => {
     const busy = new Set(streams.keys())
-    for (const id of evictableSessionIds(handles, busy, Date.now(), 10 * 60_000)) {
+    const retired = evictableSessionIds(handles, busy, Date.now(), 10 * 60_000)
+    for (const id of retired) {
       const entry = handles.get(id)
       handles.delete(id)
       if (entry !== undefined) void entry.handle.dispose()
     }
+    // Retired sessions leave the in-memory registry: their listing rows flip
+    // back to cold, so the cached listing is stale.
+    if (retired.length > 0) listingCache.clear()
   }, 60_000)
   ctx.effect(() => () => { clearInterval(evictTimer) }, 'chat-app.evict-sweep')
   const extensionBridge = new ExtensionBridge()
@@ -1426,37 +1536,61 @@ export function apply(ctx: Context, config: Config): void {
     if (open.size === 0) streams.delete(sessionId)
   }
 
-  /** Fold title snapshots for the given records into id → title info. */
+  /** Fold title snapshots for the given records into id → title info,
+   * reading from disk only for sessions whose snapshot is not cached fresh. */
   async function titleMapOf(
     records: readonly { header: { id: SessionId } }[],
-  ): Promise<Map<string, { text: string; updatedAt: number } | undefined>> {
-    const titles = await ctx.sessionQuery.readTitleSnapshots(records.map(record => record.header.id))
-    const titleOf = new Map<string, { text: string; updatedAt: number } | undefined>()
-    for (const entry of titles) {
-      if (entry.status !== 'fulfilled') continue
-      const snapshot = entry.value.title
-      titleOf.set(String(entry.sessionId), snapshot === undefined
-        ? undefined
-        : { text: snapshot.title, updatedAt: snapshot.updatedAt })
+  ): Promise<Map<string, TitleSnapshot>> {
+    const now = Date.now()
+    const titles = new Map<string, TitleSnapshot>()
+    const missing: SessionId[] = []
+    for (const record of records) {
+      const id = String(record.header.id)
+      const cached = titleCache.get(id, now)
+      if (cached !== undefined) titles.set(id, cached)
+      else missing.push(record.header.id)
     }
-    return titleOf
+    if (missing.length > 0) {
+      const snapshots = await ctx.sessionQuery.readTitleSnapshots(missing)
+      for (const settled of snapshots) {
+        if (settled.status !== 'fulfilled') continue
+        const id = String(settled.sessionId)
+        const entry: TitleSnapshot = {
+          text: settled.value.title?.title,
+          updatedAt: settled.value.title?.updatedAt ?? 0,
+        }
+        titleCache.set(id, entry, now)
+        titles.set(id, entry)
+      }
+    }
+    return titles
   }
 
   /**
    * Mint an agent for one session id: `create` for a conversation that does
-   * not exist yet, `resume` when it is already known (persisted on disk, or
-   * adopted into memory by a history read) — `create` refuses those ids with
-   * "session already exists".
+   * not exist yet, `resume` when it is already known — tracked in
+   * `knownSessionIds` from listings and past creates, because a refused
+   * `create` costs a full directory scan before it throws. The catch stays
+   * for sessions another process created that no listing has surfaced yet.
    */
   async function createOrResumeAgent(sessionId: string, options: ConversationOptions): Promise<AgentHandle> {
+    if (knownSessionIds.has(sessionId)) {
+      return await ctx.agents.resume({
+        resumeSessionId: SessionId(sessionId),
+        agentOptions: options,
+      })
+    }
     try {
-      return await ctx.agents.create({
+      const handle = await ctx.agents.create({
         sessionId: SessionId(sessionId),
         meta: { cwd: process.cwd() },
         agentOptions: options,
       })
+      knownSessionIds.add(sessionId)
+      return handle
     } catch (error: unknown) {
       if (!(error instanceof Error) || !error.message.includes('already exists')) throw error
+      knownSessionIds.add(sessionId)
       return await ctx.agents.resume({
         resumeSessionId: SessionId(sessionId),
         agentOptions: options,
@@ -1480,9 +1614,14 @@ export function apply(ctx: Context, config: Config): void {
       // the new route; a running turn finishes on the old one.
       handles.delete(sessionId)
       await existing.handle.dispose()
+      listingCache.clear()
     }
     const handle = await createOrResumeAgent(sessionId, options)
     handles.set(sessionId, { handle, options, lastUsed: Date.now() })
+    // The session is live in the registry now; the cached listing (if any)
+    // still calls it cold.
+    listingCache.clear()
+    knownSessionIds.add(sessionId)
     ctx.effect(() => () => {
       // A settings swap may have disposed this handle already; only the
       // map's current entry owns cleanup.
@@ -1539,6 +1678,10 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.on('session/event', (session, event) => {
     const sessionId = String(session.id)
+    // Any appended event can carry a title change (`session/title` rides the
+    // same stream), and only live sessions append — their title re-read stays
+    // in memory — so blanket invalidation is correct and free.
+    titleCache.delete(sessionId)
     switch (event.type) {
       case 'user/message': {
         activity.set(sessionId, Date.now())
@@ -1757,7 +1900,7 @@ export function apply(ctx: Context, config: Config): void {
       // own ledger (every user message) over creation, so it costs no
       // per-session file reads; title snapshots load for the returned page
       // alone (their refresh time refines the display stamp, not the order).
-      const records = (await ctx.sessionQuery.listSessions())
+      const records = (await listSessionRecords())
         .filter(record => record.header.origin !== 'subagent')
       const activityOf = new Map<string, number>()
       for (const record of records) {
