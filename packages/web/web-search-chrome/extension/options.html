@@ -15,10 +15,14 @@
 </head>
 <body>
   <h1>dsh-lean-chat bridge</h1>
-  <p class="hint">This extension runs the chat app's searches in this browser, using its cookies.
+  <p class="hint">This extension runs the chat app's searches and browser steps in this browser, using its cookies.
     Point it at the address the app prints on startup.</p>
   <label for="origin">Chat app origin</label>
   <input id="origin" type="url" spellcheck="false" placeholder="http://127.0.0.1:3095">
+  <label for="client">Chrome profile label</label>
+  <input id="client" type="text" spellcheck="false" placeholder="personal">
+  <p class="hint">Optional. Load this extension in several Chrome profiles and give each a label —
+    the model can then pick which profile to browse in (right logins, right accounts).</p>
   <button id="save">Save</button>
   <div id="status" role="status"></div>
   <script src="options.js"></script>

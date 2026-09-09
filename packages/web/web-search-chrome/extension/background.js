@@ -1,10 +1,14 @@
 // dsh-lean-chat chrome bridge — the companion extension's service worker.
 //
-// It long-polls the local chat app for search jobs and runs them with this
-// browser's own cookies: general engines through a plain fetch of the results
-// page, X through its internal search API. No tab ever opens, and nothing
-// leaves this browser except the search results posted back to the app on
-// loopback.
+// It long-polls the local chat app for jobs and runs them with this browser's
+// own cookies: searches through plain fetches (engines, X's internal API — no
+// tab), and browser steps by driving a real tab over the chrome.debugger API,
+// so pages render with this profile's logins. Nothing leaves this browser
+// except results posted back to the app on loopback.
+
+// The page serializer rides along as a sibling classic script; the guard keeps
+// the file loadable outside a worker (unit tests evaluate it directly).
+if (typeof importScripts === 'function') importScripts('serializer.js')
 
 const DEFAULT_ORIGIN = 'http://127.0.0.1:3095'
 const POLL_WAIT_SECONDS = 25
@@ -17,19 +21,28 @@ const BACKOFF_MAX_MS = 30000
 // Searches may arrive faster than one finishes; run up to this many
 // concurrently before the poll loop falls back to running one inline.
 const MAX_CONCURRENT_JOBS = 3
+// Browser steps wait on real page loads, so they get their own patience.
+const PAGE_LOAD_TIMEOUT_MS = 20000
+const SNAPSHOT_MAX_LINES = 400
+const SNAPSHOT_MAX_CHARS = 12000
 
 let origin = DEFAULT_ORIGIN
+let clientLabel = ''
 let polling = false
 let runningJobs = 0
 
-chrome.storage.local.get({ appOrigin: DEFAULT_ORIGIN }, (stored) => {
+chrome.storage.local.get({ appOrigin: DEFAULT_ORIGIN, clientLabel: '' }, (stored) => {
   origin = stored.appOrigin
+  clientLabel = stored.clientLabel || ''
   startPolling()
 })
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes.appOrigin !== undefined) {
     origin = changes.appOrigin.newValue || DEFAULT_ORIGIN
+  }
+  if (area === 'local' && changes.clientLabel !== undefined) {
+    clientLabel = changes.clientLabel.newValue || ''
   }
 })
 
@@ -44,11 +57,18 @@ function startPolling() {
   poll()
 }
 
+// The profile label this extension runs under, as a query suffix. Unlabeled
+// extensions poll as the bridge's default client and serve any job; labeled
+// ones also receive the jobs pinned to their label.
+function clientQuery() {
+  return clientLabel === '' ? '' : `&client=${encodeURIComponent(clientLabel)}`
+}
+
 async function poll() {
   let backoffMs = 0
   for (;;) {
     try {
-      const response = await fetch(`${origin}/api/chrome/next?wait=${String(POLL_WAIT_SECONDS)}`, { cache: 'no-store' })
+      const response = await fetch(`${origin}/api/chrome/next?wait=${String(POLL_WAIT_SECONDS)}${clientQuery()}`, { cache: 'no-store' })
       if (response.ok) {
         const body = await response.json()
         if (body.job !== null && body.job !== undefined) {
@@ -76,15 +96,20 @@ async function run(job) {
   try {
     let result
     try {
-      const sources = job.kind === 'x'
-        ? await xSearch(job.query, job.maxResults)
-        : await webSearch(job.url, job.maxResults)
-      result = { id: job.id, ok: true, sources }
+      if (job.type === 'browser') {
+        result = { id: job.id, ok: true, browser: await browserStep(job) }
+      } else {
+        const sources = job.kind === 'x'
+          ? await xSearch(job.query, job.maxResults)
+          : await webSearch(job.url, job.maxResults)
+        result = { id: job.id, ok: true, sources }
+      }
     } catch (error) {
       result = { id: job.id, ok: false, error: messageOf(error) }
     }
     try {
-      await fetch(`${origin}/api/chrome/result`, {
+      const suffix = clientLabel === '' ? '' : `?client=${encodeURIComponent(clientLabel)}`
+      await fetch(`${origin}/api/chrome/result${suffix}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(result),
@@ -95,6 +120,128 @@ async function run(job) {
   } finally {
     runningJobs -= 1
   }
+}
+
+// --- Browser steps: a real tab per named session, driven over CDP ----------
+
+// Session name -> the tab id currently holding it. The map is cached from
+// chrome.storage.session so an MV3 worker restart keeps its tabs.
+const sessionTabs = new Map()
+
+async function loadSessionTabs() {
+  if (sessionTabs.size > 0) return
+  const stored = await chrome.storage.session.get({ browserSessions: {} })
+  for (const [name, tabId] of Object.entries(stored.browserSessions)) {
+    if (typeof tabId === 'number') sessionTabs.set(name, tabId)
+  }
+}
+
+async function persistSessionTabs() {
+  await chrome.storage.session.set({ browserSessions: Object.fromEntries(sessionTabs) })
+}
+
+/** Browser steps on one session tab run one at a time, in arrival order. */
+const sessionLocks = new Map()
+
+async function withSessionLock(name, task) {
+  // The stored tail never rejects, so the next step always gets to run.
+  const previous = sessionLocks.get(name) ?? Promise.resolve()
+  const gate = previous.then(task)
+  sessionLocks.set(name, gate.catch(() => {}))
+  return await gate
+}
+
+/** Only real web pages open; everything else (chrome://, file://, js:) stays out. */
+function parseWebUrl(candidate) {
+  const parsed = new URL(String(candidate))
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('only http(s) pages can be opened')
+  }
+  return parsed.href
+}
+
+async function sessionTab(name) {
+  await loadSessionTabs()
+  const existing = sessionTabs.get(name)
+  if (existing !== undefined) {
+    try {
+      await chrome.tabs.get(existing)
+      return existing
+    } catch (error) {
+      // The tab is gone (closed, crashed); fall through and mint a fresh one.
+      sessionTabs.delete(name)
+    }
+  }
+  const tab = await chrome.tabs.create({ url: 'about:blank', active: false })
+  sessionTabs.set(name, tab.id)
+  await persistSessionTabs()
+  return tab.id
+}
+
+async function ensureAttached(tabId) {
+  try {
+    await chrome.debugger.attach({ tabId }, '1.3')
+  } catch (error) {
+    if (!/already attached/i.test(messageOf(error))) throw error
+  }
+}
+
+async function sendCommand(tabId, method, params) {
+  const response = await chrome.debugger.sendCommand({ tabId }, method, params ?? {})
+  return response
+}
+
+async function evaluate(tabId, expression) {
+  const response = await sendCommand(tabId, 'Runtime.evaluate', { expression, returnByValue: true })
+  if (response === null || response === undefined) return undefined
+  if (response.exceptionDetails !== undefined) {
+    throw new Error(`page script failed: ${messageOf(response.exceptionDetails.exception ?? response.exceptionDetails.text)}`)
+  }
+  return response.result !== undefined ? response.result.value : undefined
+}
+
+// Poll readiness the way the app's CDP provider does — no event bookkeeping to
+// clean up, and a page that never quiets down still snapshots whatever it has.
+async function settleLoad(tabId) {
+  const deadline = Date.now() + PAGE_LOAD_TIMEOUT_MS
+  while (Date.now() < deadline) {
+    if ((await evaluate(tabId, 'document.readyState === "complete"')) === true) {
+      // One settle beat for late hydration to paint the real content.
+      await sleep(400)
+      return
+    }
+    await sleep(300)
+  }
+}
+
+async function observe(tabId) {
+  const expression = `(${String(snapshotPage)})( ${String(SNAPSHOT_MAX_LINES)}, ${String(SNAPSHOT_MAX_CHARS)} )`
+  const observed = await evaluate(tabId, expression)
+  if (observed === null || typeof observed !== 'object') {
+    throw new Error('the page did not answer with an observation')
+  }
+  return observed
+}
+
+async function browserStep(job) {
+  const session = typeof job.session === 'string' && job.session !== '' ? job.session : 'main'
+  return await withSessionLock(session, async () => {
+    if (job.action === 'open') {
+      const url = parseWebUrl(job.url)
+      const tabId = await sessionTab(session)
+      await ensureAttached(tabId)
+      await sendCommand(tabId, 'Page.enable', {})
+      await sendCommand(tabId, 'Page.navigate', { url })
+      await settleLoad(tabId)
+      return await observe(tabId)
+    }
+    if (job.action === 'snapshot') {
+      const tabId = await sessionTab(session)
+      await ensureAttached(tabId)
+      return await observe(tabId)
+    }
+    throw new Error(`unsupported browser action: ${String(job.action)}`)
+  })
 }
 
 function fetchWithTimeout(url, options) {

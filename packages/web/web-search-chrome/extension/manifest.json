@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
   "name": "dsh-lean-chat Chrome bridge",
-  "version": "0.1.0",
-  "description": "Runs dsh-lean-chat's web searches inside this browser, with your cookies — no tab, no debug port.",
+  "version": "0.2.0",
+  "description": "Runs dsh-lean-chat's web searches and browser steps inside this browser, with your cookies — searches fetch silently, browser steps drive a real tab.",
   "minimum_chrome_version": "116",
-  "permissions": ["cookies", "storage", "alarms"],
+  "permissions": ["cookies", "storage", "alarms", "debugger"],
   "host_permissions": [
     "http://127.0.0.1/*",
     "http://localhost/*",

@@ -27,7 +27,7 @@ import { chmod, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname, extname, join, resolve, sep } from 'node:path'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { TinyMetasearchProvider } from '@deepseek-ai/dsh-web-search-tiny/src/provider.ts'
-import { ExtensionBridge } from '@deepseek-ai/dsh-web-search-chrome/src/bridge.ts'
+import { DEFAULT_BRIDGE_CLIENT, ExtensionBridge } from '@deepseek-ai/dsh-web-search-chrome/src/bridge.ts'
 import { probeModelAbilities, type ModelAbilities } from './capabilities.ts'
 import { routeSearchTarget, toSources, UserChromeSearchProvider } from '@deepseek-ai/dsh-web-search-chrome/src/provider.ts'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -1075,6 +1075,14 @@ export function isExtensionBridgePath(method: string, parts: readonly string[]):
   if (parts[1] === 'next') return method === 'GET' || method === 'OPTIONS'
   if (parts[1] === 'result') return method === 'POST' || method === 'OPTIONS'
   return false
+}
+
+/** The Chrome-profile label a bridge request polls under, clamped to a sane
+ * token; unlabeled extensions answer as the bridge's default client. */
+export function bridgeClientOf(url: URL): string {
+  const raw = url.searchParams.get('client') ?? ''
+  const trimmed = raw.trim().slice(0, 64)
+  return trimmed === '' ? DEFAULT_BRIDGE_CLIENT : trimmed
 }
 
 /**
@@ -2463,7 +2471,8 @@ export function apply(ctx: Context, config: Config): void {
     }
 
     if (req.method === 'GET' && parts.length === 2 && parts[0] === 'chrome' && parts[1] === 'next') {
-      extensionBridge.markSeen()
+      const client = bridgeClientOf(url)
+      extensionBridge.markSeen(Date.now(), client)
       const waitRaw = Number.parseInt(url.searchParams.get('wait') ?? '', 10)
       const waitSeconds = Math.min(Math.max(Number.isFinite(waitRaw) ? waitRaw : 25, 1), 55)
       // A poller that dies mid-park (sleeping machine, reloaded extension)
@@ -2471,13 +2480,14 @@ export function apply(ctx: Context, config: Config): void {
       // be handed to and lost.
       const pollAbort = new AbortController()
       req.once('close', () => { pollAbort.abort() })
-      const job = await extensionBridge.nextJob(waitSeconds * 1000, pollAbort.signal)
+      const job = await extensionBridge.nextJob(waitSeconds * 1000, pollAbort.signal, client)
       sendJson(res, 200, { job }, chromeCors(req))
       return
     }
 
     if (req.method === 'POST' && parts.length === 2 && parts[0] === 'chrome' && parts[1] === 'result') {
-      extensionBridge.markSeen()
+      const client = bridgeClientOf(url)
+      extensionBridge.markSeen(Date.now(), client)
       const body = await readJsonBody(req)
       sendJson(res, 200, { accepted: extensionBridge.settle(body) }, chromeCors(req))
       return
