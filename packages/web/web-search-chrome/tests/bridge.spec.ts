@@ -1,6 +1,7 @@
 /**
  * Unit coverage for the extension bridge: long-poll handoff, FIFO queueing,
- * settlements, timeouts, and the heartbeat that answers "connected".
+ * settlements, timeouts, profile-label routing, and the heartbeats that
+ * answer "connected".
  */
 
 import { afterEach, describe, expect, it } from 'vitest'
@@ -20,6 +21,13 @@ afterEach(() => {
 })
 
 const webJob = { kind: 'web' as const, query: 'dsh chat', url: 'https://duckduckgo.com/?q=dsh+chat', engine: 'duckduckgo' as const, maxResults: 5 }
+
+/** Queue-order tests only enqueue search jobs, so read the search arm back. */
+async function nextSearchJob(created: ExtensionBridge, waitMs = 5): Promise<ExtensionJob | null> {
+  const job = await created.nextJob(waitMs)
+  expect(job === null || 'kind' in job).toBe(true)
+  return job
+}
 
 describe('nextJob', () => {
   it('hands a queued job straight to the next long-poll', async () => {
@@ -42,8 +50,10 @@ describe('nextJob', () => {
     const created = bridge()
     const first = created.enqueue({ ...webJob, query: 'first' }, 60)
     const second = created.enqueue({ ...webJob, query: 'second' }, 60)
-    expect((await created.nextJob(5))?.query).toBe('first')
-    expect((await created.nextJob(5))?.query).toBe('second')
+    const firstJob = await nextSearchJob(created)
+    if (firstJob !== null && 'kind' in firstJob) expect(firstJob.query).toBe('first')
+    const secondJob = await nextSearchJob(created)
+    if (secondJob !== null && 'kind' in secondJob) expect(secondJob.query).toBe('second')
     created.dispose()
     await expect(first).resolves.toMatchObject({ ok: false })
     await expect(second).resolves.toMatchObject({ ok: false })
@@ -156,8 +166,8 @@ describe('job shape', () => {
     }, 60)
     const webSettlement = created.enqueue(webJob, 60)
     jobs.push((await created.nextJob(5)) as ExtensionJob, (await created.nextJob(5)) as ExtensionJob)
-    expect(jobs.find(job => job.kind === 'x')).toMatchObject({ query: 'from:me dsh', engine: 'x' })
-    expect(jobs.find(job => job.kind === 'web')).toMatchObject({ engine: 'duckduckgo', url: webJob.url })
+    expect(jobs.find(job => 'kind' in job && job.kind === 'x')).toMatchObject({ query: 'from:me dsh', engine: 'x' })
+    expect(jobs.find(job => 'kind' in job && job.kind === 'web')).toMatchObject({ engine: 'duckduckgo', url: webJob.url })
     created.dispose()
     await xSettlement
     await webSettlement
@@ -261,5 +271,124 @@ describe('stale queue hygiene', () => {
     expect(job).toMatchObject({ query: 'dsh chat' })
     expect(created.settle({ id: job?.id ?? '', ok: true, sources: [] })).toBe(true)
     await expect(settlement).resolves.toEqual({ ok: true, sources: [] })
+  })
+})
+
+describe('browser jobs', () => {
+  it('round-trips an open step and its observation', async () => {
+    const created = bridge()
+    const settlement = created.enqueue({ type: 'browser', action: 'open', session: 'main', url: 'https://x.com/me' }, 60)
+    const job = await created.nextJob(5)
+    expect(job).toMatchObject({ type: 'browser', action: 'open', session: 'main', url: 'https://x.com/me' })
+    expect(created.settle({
+      id: job?.id,
+      ok: true,
+      browser: { url: 'https://x.com/me', title: 'me (@me)', snapshot: 'page "me (@me)"', truncated: true },
+    })).toBe(true)
+    await expect(settlement).resolves.toEqual({
+      ok: true,
+      browser: { url: 'https://x.com/me', title: 'me (@me)', snapshot: 'page "me (@me)"', truncated: true },
+    })
+  })
+
+  it('defaults missing observation fields and refuses malformed payloads', async () => {
+    const created = bridge()
+    const settlement = created.enqueue({ type: 'browser', action: 'extract', session: 'main', goal: 'recent posts' }, 60)
+    const job = await created.nextJob(5)
+    // A success without a well-typed observation object does not consume the
+    // job: the extension would have to retry with a real payload.
+    expect(created.settle({ id: job?.id, ok: true })).toBe(false)
+    expect(created.settle({ id: job?.id, ok: true, browser: 'nope' })).toBe(false)
+    expect(created.settle({ id: job?.id, ok: true, browser: { url: 'https://x.com/me', extra: 1 } })).toBe(true)
+    await expect(settlement).resolves.toEqual({ ok: true, browser: { url: 'https://x.com/me', title: '', truncated: false } })
+  })
+
+  it('refuses settlements of the wrong arm without consuming the job', async () => {
+    const created = bridge()
+    const search = created.enqueue(webJob, 60)
+    const searchJob = await created.nextJob(5)
+    expect(created.settle({ id: searchJob?.id, ok: true, browser: { url: '', title: '', truncated: false } })).toBe(false)
+    expect(created.settle({ id: searchJob?.id, ok: true, sources: [] })).toBe(true)
+    await expect(search).resolves.toEqual({ ok: true, sources: [] })
+
+    const browse = created.enqueue({ type: 'browser', action: 'snapshot', session: 'main' }, 60)
+    const browseJob = await created.nextJob(5)
+    expect(created.settle({ id: browseJob?.id, ok: true, sources: [] })).toBe(false)
+    expect(created.settle({ id: browseJob?.id, ok: true, browser: { url: 'https://x.com/me', title: 'me', truncated: false } })).toBe(true)
+    await expect(browse).resolves.toMatchObject({ ok: true, browser: { title: 'me' } })
+  })
+})
+
+describe('profile-label routing', () => {
+  it('serves a pinned job only to a poller with the same label', async () => {
+    const created = bridge()
+    const settlement = created.enqueue({ type: 'browser', action: 'snapshot', session: 'main', client: 'work' }, 60)
+    // The unlabeled poller must not take a job pinned to another identity.
+    await expect(created.nextJob(5)).resolves.toBeNull()
+    const job = await created.nextJob(5, undefined, 'work')
+    expect(job).toMatchObject({ type: 'browser', client: 'work' })
+    created.dispose()
+    await settlement
+  })
+
+  it('skips ahead to the pinned job and leaves unpinned ones for any poller', async () => {
+    const created = bridge()
+    const plain = created.enqueue(webJob, 60)
+    const pinned = created.enqueue({ type: 'browser', action: 'open', session: 'main', url: 'https://a.dev', client: 'work' }, 60)
+    // The work poller jumps past the unpinned search waiting in front.
+    expect(await created.nextJob(5, undefined, 'work')).toMatchObject({ client: 'work' })
+    // The default poller still gets the unpinned job.
+    const plainJob = await nextSearchJob(created)
+    if (plainJob !== null && 'kind' in plainJob) expect(plainJob.kind).toBe('web')
+    created.dispose()
+    await plain
+    await pinned
+  })
+
+  it('hands a pinned job to the matching parked waiter, not the first one', async () => {
+    const created = bridge()
+    const defaultParked = created.nextJob(10_000)
+    const workParked = created.nextJob(10_000, undefined, 'work')
+    const pinned = created.enqueue({ type: 'browser', action: 'snapshot', session: 'main', client: 'work' }, 60)
+    await expect(workParked).resolves.toMatchObject({ client: 'work' })
+    const plain = created.enqueue(webJob, 60)
+    await expect(defaultParked).resolves.toMatchObject({ kind: 'web' })
+    created.dispose()
+    await pinned
+    await plain
+  })
+
+  it('times a pinned job out even while another profile keeps polling', async () => {
+    const created = bridge()
+    const settlement = created.enqueue({ type: 'browser', action: 'snapshot', session: 'main', client: 'work' }, 10)
+    await expect(settlement).resolves.toEqual({ ok: false, error: 'the extension did not answer within 10ms' })
+    // The dead job is gone for the eventual work poller too.
+    await expect(created.nextJob(5, undefined, 'work')).resolves.toBeNull()
+  })
+})
+
+describe('per-client heartbeats', () => {
+  it('tracks clients separately through markSeen, clientList, and clientSeenWithin', () => {
+    const created = bridge()
+    created.markSeen(1_000, 'work')
+    created.markSeen(2_000, 'default')
+    expect(created.seenWithin(15_000, 3_000)).toBe(true)
+    expect(created.clientList(15_000, 3_000)).toEqual([
+      { client: 'default', lastSeenAt: 2_000 },
+      { client: 'work', lastSeenAt: 1_000 },
+    ])
+    // An unlabelled markSeen lands on the default label.
+    created.markSeen(4_000)
+    expect(created.clientSeenWithin('default', 15_000, 4_500)).toBe(true)
+    expect(created.clientSeenWithin('work', 15_000, 16_001)).toBe(false)
+    expect(created.clientSeenWithin('work', 15_000, 15_999)).toBe(true)
+  })
+
+  it('drops stale clients from clientList while the bridge stays seen', () => {
+    const created = bridge()
+    created.markSeen(1_000, 'work')
+    created.markSeen(20_000, 'default')
+    expect(created.clientList(15_000, 20_000)).toEqual([{ client: 'default', lastSeenAt: 20_000 }])
+    expect(created.seenWithin(15_000, 20_000)).toBe(true)
   })
 })
