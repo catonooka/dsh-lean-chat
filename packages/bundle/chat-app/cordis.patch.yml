@@ -49,7 +49,11 @@
         # never needs the 256k default, which some backends reject outright.
         maxTokens: 16384
         apiKeyEnv: DEEPSEEK_API_KEY
-        defaultContextWindow: !!js Number(process.env.DSH_CONTEXT_WINDOW ?? 1000000)
+        # The measured ceiling of the qwen flash gateway (the endpoint reports
+        # "maximum context length is 262144 tokens" past it); compaction
+        # thresholds derive from this number. DSH_CONTEXT_WINDOW overrides for
+        # other endpoints.
+        defaultContextWindow: !!js Number(process.env.DSH_CONTEXT_WINDOW ?? 262144)
         streamIdleTimeoutMs: 172800000
 
     # The minimal agent kernel, explicit like sdk-minimal: every service row
@@ -128,6 +132,20 @@
       config:
         path: ':memory:'
         openAt: first-search
+
+    # Context accounting: one fold per session anchored on the gateway's own
+    # per-turn usage, shared by compaction and any pressure-sensitive plugin.
+    - id: token-meter
+      name: '@deepseek-ai/dsh-token-meter'
+
+    # The summarize-and-replace engine behind efficient conversations. Its
+    # built-in auto listeners stay off (`auto: false`): the chat glue registers
+    # the same triggers itself, gated on the settings panel's auto-compact
+    # toggle, and serves /api/sessions/:id/compact via compactNow.
+    - id: compaction-basic
+      name: '@deepseek-ai/dsh-compaction-basic'
+      config:
+        auto: false
 
     # The web seam plus the search engines. The pinned id is the chat-owned
     # `chat-selector`, which dispatches each search to the engine the settings
