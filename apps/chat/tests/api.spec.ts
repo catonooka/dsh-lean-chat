@@ -17,6 +17,7 @@ import {
   searchSessions,
   sendMessage,
   stopSession,
+  uploadAttachment,
   updateConfig,
 } from '../src/api.ts'
 
@@ -155,18 +156,37 @@ describe('sendMessage SSE parsing', () => {
 })
 
 describe('sendMessage attachments', () => {
-  it('rides the attachment in the POST body and omits it when absent', async () => {
+  it('rides the uploaded attachment reference in the POST body and omits it when absent', async () => {
     const calls: unknown[] = []
     stubFetch((_url, init) => {
       calls.push(JSON.parse(String(init?.body)))
       return okResponse(sseBody(['data: {"t":"turn-end","reason":"completed"}\n\n']))
     })
-    await sendMessage('s', 'what is this', { kind: 'image', name: 'red.png', dataUrl: 'data:image/png;base64,AAAA' }, undefined, () => undefined)
+    await sendMessage('s', 'what is this', { kind: 'image', name: 'red.png', mediaType: 'image/png', ref: { attachmentId: 'up-1' } }, undefined, () => undefined)
     await sendMessage('s', 'plain', undefined, undefined, () => undefined)
     expect(calls).toEqual([
-      { text: 'what is this', attachment: { kind: 'image', name: 'red.png', dataUrl: 'data:image/png;base64,AAAA' } },
+      { text: 'what is this', attachment: { kind: 'image', mediaType: 'image/png', ref: { attachmentId: 'up-1' } } },
       { text: 'plain' },
     ])
+  })
+
+  it('uploads the raw file once and returns the durable reference', async () => {
+    const file = new File([new Uint8Array([1, 2, 3])], 'red.png', { type: 'image/png' })
+    let seenUrl = ''
+    let seenInit: RequestInit | undefined
+    stubFetch((url, init) => {
+      seenUrl = String(url)
+      seenInit = init
+      return jsonResponse(200, { kind: 'image', mediaType: 'image/png', ref: { attachmentId: 'up-9', bytes: 3 } })
+    })
+    const uploaded = await uploadAttachment({
+      kind: 'image', name: 'red.png', mediaType: 'image/png', file, localUrl: 'blob:preview',
+    })
+    expect(seenUrl).toBe('/api/uploads?kind=image&name=red.png')
+    expect(seenInit?.method).toBe('POST')
+    expect(new Headers(seenInit?.headers).get('content-type')).toBe('image/png')
+    expect(seenInit?.body).toBe(file)
+    expect(uploaded).toEqual({ kind: 'image', name: 'red.png', mediaType: 'image/png', ref: { attachmentId: 'up-9', bytes: 3 } })
   })
 
   it('fetches attachment bytes by echoing the durable reference', async () => {

@@ -13,6 +13,7 @@ import {
   stopSession,
   SESSION_PAGE_SIZE,
   fetchAttachmentBlob,
+  uploadAttachment,
   type AppConfig,
   type ChatAttachment,
   type ChatItem,
@@ -20,6 +21,7 @@ import {
   type SearchHit,
   type SessionSummary,
   type StreamEvent,
+  type UploadedAttachment,
 } from './api.ts'
 import { renderMarkdown } from './markdown.ts'
 import { SettingsPanel, applyTheme, readStoredTheme, storeTheme, type Theme } from './Settings.tsx'
@@ -383,10 +385,22 @@ export default function App(): JSX.Element {
   // The message the next send answers, shown as a chip above the composer.
   const [replyTarget, setReplyTarget] = useState<ReplyContext | undefined>(undefined)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  // Blob URLs preview composer attachments in the chip and the sent bubble.
+  // They stay alive while their row is on screen and are revoked when the
+  // composer drops the file or the conversation switches (its rows leave).
+  const objectUrlsRef = useRef<string[]>([])
+  const trackObjectUrl = (url: string): void => { objectUrlsRef.current = [...objectUrlsRef.current, url] }
+  const revokeObjectUrl = (url: string): void => {
+    URL.revokeObjectURL(url)
+    objectUrlsRef.current = objectUrlsRef.current.filter(one => one !== url)
+  }
 
-  // A reply target belongs to the conversation it was picked in.
+  // A reply target belongs to the conversation it was picked in; the same
+  // switch retires the previous conversation's blob previews.
   useEffect(() => {
     setReplyTarget(undefined)
+    for (const url of objectUrlsRef.current) URL.revokeObjectURL(url)
+    objectUrlsRef.current = []
   }, [activeId])
 
   useEffect(() => {
@@ -433,18 +447,23 @@ export default function App(): JSX.Element {
       setError(`that ${isImage ? 'image' : 'video'} is over the ${String(Math.round(cap / 1024 / 1024))}MB limit`)
       return
     }
-    const reader = new FileReader()
-    reader.onerror = () => { setError('could not read that file') }
-    reader.onload = () => {
-      const dataUrl = typeof reader.result === 'string' ? reader.result : ''
-      if (dataUrl === '') {
-        setError('could not read that file')
-        return
-      }
-      setError(undefined)
-      setAttachment({ kind: isImage ? 'image' : 'video', name: file.name, dataUrl })
+    if (file.size === 0) {
+      setError('that file is empty')
+      return
     }
-    reader.readAsDataURL(file)
+    // The composer holds the raw file plus a local blob preview; the bytes
+    // upload as-is on send — never through a base64 string.
+    const localUrl = URL.createObjectURL(file)
+    trackObjectUrl(localUrl)
+    if (attachment !== undefined) revokeObjectUrl(attachment.localUrl)
+    setError(undefined)
+    setAttachment({
+      kind: isImage ? 'image' : 'video',
+      name: file.name,
+      mediaType: file.type !== '' ? file.type : 'application/octet-stream',
+      file,
+      localUrl,
+    })
   }
 
   /** Take one picked, pasted, or dropped file into the composer. */
@@ -483,18 +502,21 @@ export default function App(): JSX.Element {
       setError('files paste up to 64MB')
       return
     }
-    const reader = new FileReader()
-    reader.onerror = () => { setError('could not read that file') }
-    reader.onload = () => {
-      const dataUrl = typeof reader.result === 'string' ? reader.result : ''
-      if (dataUrl === '') {
-        setError('could not read that file')
-        return
-      }
-      setError(undefined)
-      setAttachment({ kind: 'file', name: file.name, dataUrl })
+    if (file.size === 0) {
+      setError('that file is empty')
+      return
     }
-    reader.readAsDataURL(file)
+    const localUrl = URL.createObjectURL(file)
+    trackObjectUrl(localUrl)
+    if (attachment !== undefined) revokeObjectUrl(attachment.localUrl)
+    setError(undefined)
+    setAttachment({
+      kind: 'file',
+      name: file.name,
+      mediaType: file.type !== '' ? file.type : 'application/octet-stream',
+      file,
+      localUrl,
+    })
   }
 
   /** Paste and drop share one ingestion path. */
@@ -619,6 +641,17 @@ export default function App(): JSX.Element {
     const outgoing = attachment
     const reply = replyTarget
     if ((text === '' && outgoing === undefined) || streaming) return
+    // The bytes upload once, raw; only the durable reference rides the
+    // message. A failed upload leaves the attachment in the composer.
+    let uploaded: UploadedAttachment | undefined
+    if (outgoing !== undefined) {
+      try {
+        uploaded = await uploadAttachment(outgoing)
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : String(err))
+        return
+      }
+    }
     setDraft('')
     // A programmatic value change never fires onChange, so the inline height
     // the typing grew the textarea to would stick after sending; reset it.
@@ -635,14 +668,22 @@ export default function App(): JSX.Element {
           attachments: [{
             kind: outgoing.kind,
             name: outgoing.name,
-            mediaType: outgoing.dataUrl.slice(5, outgoing.dataUrl.indexOf(';')),
-            ...outgoing.kind !== 'file' ? { localUrl: outgoing.dataUrl } : {},
+            mediaType: outgoing.mediaType,
+            ...outgoing.kind !== 'file' ? { localUrl: outgoing.localUrl } : {},
           }],
         }
         : {},
     }])
-    await runTurn(onEvent => sendMessage(activeId, text, outgoing, reply, onEvent))
+    await runTurn(onEvent => sendMessage(activeId, text, uploaded, reply, onEvent))
   }, [activeId, attachment, draft, replyTarget, runTurn, streaming])
+
+  /** Drop the pending attachment, releasing its preview URL. */
+  const removeAttachment = useCallback((): void => {
+    setAttachment((current) => {
+      if (current !== undefined) revokeObjectUrl(current.localUrl)
+      return undefined
+    })
+  }, [])
 
   /** Re-run the trailing user turn: after a failure, or to regenerate. */
   const retry = useCallback(async (): Promise<void> => {
@@ -936,17 +977,17 @@ export default function App(): JSX.Element {
             ? (
               <div className="attachment-chip">
                 {attachment.kind === 'image'
-                  ? <img src={attachment.dataUrl} alt="" />
+                  ? <img src={attachment.localUrl} alt="" />
                   : attachment.kind === 'video'
-                    ? <video src={attachment.dataUrl} muted playsInline />
+                    ? <video src={attachment.localUrl} muted playsInline />
                     : (
                       <svg className="attachment-doc" viewBox="0 0 16 16" aria-hidden="true">
-                        <path d="M4 1.5h5L12.5 5v9.5a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-12a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+                        <path d="M4 1.5h5L12.5 5v9.5a1.2 1.2 0 0 1-1 1H4a1.2 1.2 0 0 1-1-1v-12a1.2 1.2 0 0 1 1-1z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
                         <path d="M9 1.5V5h3.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
                       </svg>
                     )}
                 <span className="attachment-name">{attachment.name}</span>
-                <button type="button" aria-label="Remove attachment" onClick={() => { setAttachment(undefined) }}>
+                <button type="button" aria-label="Remove attachment" onClick={removeAttachment}>
                   <svg viewBox="0 0 16 16" aria-hidden="true">
                     <line x1="4" y1="4" x2="12" y2="12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
                     <line x1="12" y1="4" x2="4" y2="12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />

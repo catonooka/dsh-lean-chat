@@ -58,10 +58,16 @@ async function renderApp(options: {
   sessions?: SessionFixture[]
   activeId?: string
   streams?: Response[]
-} = {}): Promise<{ posts: { url: string; body: Record<string, unknown> }[]; historyFetches: string[] }> {
+  abilities?: { image: 'yes' | 'no' | 'unknown'; video: 'yes' | 'no' | 'unknown' }
+} = {}): Promise<{
+  posts: { url: string; body: Record<string, unknown> }[]
+  historyFetches: string[]
+  uploads: { url: string; body: unknown }[]
+}> {
   const sessions = options.sessions ?? []
   const posts: { url: string; body: Record<string, unknown> }[] = []
   const historyFetches: string[] = []
+  const uploads: { url: string; body: unknown }[] = []
   const streams = [...options.streams ?? []]
   const summaries = sessions.map(session => ({
     id: session.id,
@@ -75,7 +81,18 @@ async function renderApp(options: {
     const method = init?.method ?? 'GET'
     if (url.startsWith('/api/sessions?')) return Promise.resolve(jsonResponse({ sessions: summaries, total: summaries.length }))
     if (url === '/api/config') return Promise.resolve(jsonResponse({ provider: 'p', model: 'm', persona: 'x' }))
-    if (url === '/api/capabilities') return Promise.resolve(jsonResponse({ model: 'm', image: 'no', video: 'no' }))
+    if (url === '/api/capabilities') {
+      return Promise.resolve(jsonResponse({
+        model: 'm',
+        image: options.abilities?.image ?? 'no',
+        video: options.abilities?.video ?? 'no',
+      }))
+    }
+    if (url.startsWith('/api/uploads')) {
+      uploads.push({ url, body: init?.body })
+      const kind = new URLSearchParams(url.split('?')[1] ?? '').get('kind') ?? 'file'
+      return Promise.resolve(jsonResponse({ kind, mediaType: kind === 'image' ? 'image/png' : 'video/mp4', ref: { attachmentId: 'up-1', bytes: 3 } }))
+    }
     const history = sessions.find(session => url === `/api/sessions/${session.id}/messages`)
     if (history !== undefined && method === 'GET') {
       historyFetches.push(history.id)
@@ -95,7 +112,7 @@ async function renderApp(options: {
     return Promise.resolve(jsonResponse({}))
   }))
   render(<App />)
-  return { posts, historyFetches }
+  return { posts, historyFetches, uploads }
 }
 
 const userItem = (text: string): ChatItem => ({ role: 'user', text })
@@ -294,5 +311,65 @@ describe('collapsed rail', () => {
 
     fireEvent.click(screen.getByLabelText('New chat'))
     await waitFor(() => { expect(screen.getByText('What can I help with?')).toBeDefined() })
+  })
+})
+
+describe('attachment upload flow', () => {
+  it('uploads pasted media once, sends the reference, and previews from the blob URL', async () => {
+    const originalCreate = URL.createObjectURL
+    const originalRevoke = URL.revokeObjectURL
+    URL.createObjectURL = vi.fn(() => 'blob:mock-1')
+    URL.revokeObjectURL = vi.fn()
+    try {
+      localStorage.setItem('dsh-chat-active', 'sess-a')
+      const { posts, uploads } = await renderApp({
+        sessions: [{ id: 'sess-a', title: 'A', items: [] }],
+        abilities: { image: 'yes', video: 'no' },
+      })
+      const composer = await screen.findByPlaceholderText('Message dsh chat…')
+      const image = new File([new Uint8Array([1, 2, 3])], 'shot.png', { type: 'image/png' })
+      fireEvent.paste(composer, { clipboardData: { files: [image] } })
+      await screen.findByText('shot.png')
+      fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+      await waitFor(() => { expect(posts.length).toBe(1) })
+      // The bytes went up once as the raw file; the message rides the ref.
+      expect(uploads).toEqual([{ url: '/api/uploads?kind=image&name=shot.png', body: image }])
+      expect(posts[0]?.body).toEqual({
+        text: '',
+        attachment: { kind: 'image', mediaType: 'image/png', ref: { attachmentId: 'up-1', bytes: 3 } },
+      })
+      // The sent bubble previews from the local blob URL, not a data URL.
+      expect(document.querySelector('img.bubble-attachment')?.getAttribute('src')).toBe('blob:mock-1')
+    } finally {
+      if (originalCreate !== undefined) URL.createObjectURL = originalCreate
+      else delete (URL as { createObjectURL?: unknown }).createObjectURL
+      if (originalRevoke !== undefined) URL.revokeObjectURL = originalRevoke
+      else delete (URL as { revokeObjectURL?: unknown }).revokeObjectURL
+    }
+  })
+
+  it('removing the pending attachment releases its preview URL', async () => {
+    const originalCreate = URL.createObjectURL
+    const originalRevoke = URL.revokeObjectURL
+    URL.createObjectURL = vi.fn(() => 'blob:mock-2')
+    URL.revokeObjectURL = vi.fn()
+    try {
+      localStorage.setItem('dsh-chat-active', 'sess-a')
+      await renderApp({
+        sessions: [{ id: 'sess-a', title: 'A', items: [] }],
+        abilities: { image: 'yes', video: 'no' },
+      })
+      const composer = await screen.findByPlaceholderText('Message dsh chat…')
+      fireEvent.paste(composer, { clipboardData: { files: [new File([new Uint8Array([1])], 'x.png', { type: 'image/png' })] } })
+      await screen.findByText('x.png')
+      fireEvent.click(screen.getByRole('button', { name: 'Remove attachment' }))
+      await waitFor(() => { expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:mock-2') })
+      expect(screen.queryByText('x.png')).toBeNull()
+    } finally {
+      if (originalCreate !== undefined) URL.createObjectURL = originalCreate
+      else delete (URL as { createObjectURL?: unknown }).createObjectURL
+      if (originalRevoke !== undefined) URL.revokeObjectURL = originalRevoke
+      else delete (URL as { revokeObjectURL?: unknown }).revokeObjectURL
+    }
   })
 })

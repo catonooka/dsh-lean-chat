@@ -242,18 +242,42 @@ export type StreamEvent =
   | { t: 'compaction'; text: string }
   | { t: 'error'; message: string }
 
-/** One upload ready to ride a message. */
+/** One attachment the composer holds: the raw file plus a local blob preview.
+ * The bytes upload once (raw body, never base64-serialized); only the durable
+ * reference rides the message. */
 export interface OutgoingAttachment {
   kind: 'image' | 'video' | 'file'
   name: string
-  dataUrl: string
+  mediaType: string
+  file: File
+  /** Blob URL previewing the bytes in the chip and the sent bubble. */
+  localUrl: string
 }
 
-/** Send one message (with its optional attachment and reply target) and dispatch its SSE stream. */
+/** One stored upload: the message send echoes this durable reference. */
+export interface UploadedAttachment {
+  kind: 'image' | 'video' | 'file'
+  name: string
+  mediaType: string
+  ref: unknown
+}
+
+/** Upload one attachment's exact bytes ahead of the message that cites them. */
+export function uploadAttachment(attachment: OutgoingAttachment): Promise<UploadedAttachment> {
+  const search = new URLSearchParams({ kind: attachment.kind, name: attachment.name })
+  return fetchJson<{ kind: 'image' | 'video' | 'file'; mediaType: string; ref: unknown }>(`/api/uploads?${search.toString()}`, {
+    method: 'POST',
+    headers: { 'content-type': attachment.mediaType },
+    body: attachment.file,
+  }).then(body => ({ kind: body.kind, name: attachment.name, mediaType: body.mediaType, ref: body.ref }))
+}
+
+/** Send one message (with its optional uploaded attachment and reply target)
+ * and dispatch its SSE stream. */
 export async function sendMessage(
   sessionId: string,
   text: string,
-  attachment: OutgoingAttachment | undefined,
+  attachment: UploadedAttachment | undefined,
   replyTo: ReplyContext | undefined,
   onEvent: (event: StreamEvent) => void,
 ): Promise<void> {
@@ -262,7 +286,9 @@ export async function sendMessage(
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       text,
-      ...attachment !== undefined ? { attachment: { kind: attachment.kind, name: attachment.name, dataUrl: attachment.dataUrl } } : {},
+      ...attachment !== undefined
+        ? { attachment: { kind: attachment.kind, mediaType: attachment.mediaType, ref: attachment.ref } }
+        : {},
       ...replyTo !== undefined ? { replyTo } : {},
     }),
   })
