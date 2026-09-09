@@ -759,14 +759,75 @@ export function parseAttachment(body: unknown): ParsedAttachment {
     throw new Error('video attachments must carry a video/* media type')
   }
   // Files carry any media type; pasted unknowns fall back to octet-stream.
-  const data = Uint8Array.from(Buffer.from(payload, 'base64'))
   const cap = record.kind === 'image' ? MAX_IMAGE_BYTES : MAX_VIDEO_BYTES
+  // Reject oversize before decoding: base64 length bounds the decoded size,
+  // so a payload that cannot fit never pays the multi-megabyte decode.
+  if (payload.length > Math.ceil(cap / 3) * 4 + 4) {
+    throw new Error(`${record.kind} attachments must be at most ${String(Math.round(cap / 1024 / 1024))}MB`)
+  }
+  // Charset validation is linear in payload size. Every image (≤8MB → ≤11MB
+  // of base64) stays under the threshold; above it the payload is a video or
+  // file, whose durable path verifies integrity itself (byte sniffing,
+  // content addressing), so the full-string scan is not worth its cost.
+  if (payload === '' || (payload.length <= 16 * 1024 * 1024 && !/^[A-Za-z0-9+/]+={0,2}$/.test(payload))) {
+    throw new Error('attachment dataUrl is not valid base64')
+  }
+  const data = Buffer.from(payload, 'base64')
   if (data.byteLength === 0) throw new Error('attachment is empty')
   if (data.byteLength > cap) {
     throw new Error(`${record.kind} attachments must be at most ${String(Math.round(cap / 1024 / 1024))}MB`)
   }
   const name = typeof record.name === 'string' ? record.name.trim().slice(0, 200) : ''
   return { kind: record.kind, name: name === '' ? `upload.${mediaType.split('/')[1] ?? 'bin'}` : name, mediaType, data }
+}
+
+/** One message attachment that references bytes pre-uploaded to /api/uploads. */
+export type AttachmentRefInput =
+  | { kind: 'image'; ref: ImageAttachmentRef }
+  | { kind: 'video'; mediaType: string; ref: import('@deepseek-ai/dsh-attachment').FileAttachmentRef }
+  | { kind: 'file'; ref: import('@deepseek-ai/dsh-attachment').FileAttachmentRef }
+
+/**
+ * Validate one uploaded attachment reference: the client uploads bytes to
+ * `POST /api/uploads` first, then the message send echoes the durable ref
+ * back instead of re-riding the bytes. Shape-checked per kind so a malformed
+ * ref fails at the door, not mid-stream at model-call time.
+ * @param body - the request's `attachment` field: `{kind, mediaType?, ref}`.
+ * @returns the typed reference the content blocks carry.
+ */
+export function parseAttachmentRef(body: unknown): AttachmentRefInput {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) throw new Error('attachment must be an object')
+  const record = body as { kind?: unknown; mediaType?: unknown; ref?: unknown }
+  const ref = record.ref
+  if (typeof ref !== 'object' || ref === null) throw new Error('attachment ref must be an object')
+  const { attachmentId, bytes } = ref as { attachmentId?: unknown; bytes?: unknown }
+  if (typeof attachmentId !== 'string' || attachmentId === ''
+    || typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes < 0) {
+    throw new Error('attachment ref is not a durable storage reference')
+  }
+  if (record.kind === 'image') {
+    const image = ref as { mediaType?: unknown; width?: unknown; height?: unknown }
+    if (typeof image.mediaType !== 'string' || !IMAGE_MEDIA_TYPES.has(image.mediaType)) {
+      throw new Error('image attachment refs must carry png, jpeg, webp, or gif media')
+    }
+    if (typeof image.width !== 'number' || typeof image.height !== 'number') {
+      throw new Error('image attachment ref is incomplete')
+    }
+    return { kind: 'image', ref: ref as ImageAttachmentRef }
+  }
+  if (record.kind === 'video' || record.kind === 'file') {
+    if (typeof (ref as { name?: unknown }).name !== 'string' || (ref as { name: unknown }).name === '') {
+      throw new Error('attachment ref is not a durable file reference')
+    }
+    if (record.kind === 'video') {
+      if (typeof record.mediaType !== 'string' || !record.mediaType.startsWith('video/')) {
+        throw new Error('video attachments must carry a video/* media type')
+      }
+      return { kind: 'video', mediaType: record.mediaType, ref: ref as import('@deepseek-ai/dsh-attachment').FileAttachmentRef }
+    }
+    return { kind: 'file', ref: ref as import('@deepseek-ai/dsh-attachment').FileAttachmentRef }
+  }
+  throw new Error('attachment kind must be image, video, or file')
 }
 
 /** One attachment as the browser renders it: what it is and how to fetch it. */
@@ -933,6 +994,21 @@ function sendJson(res: ServerResponse, status: number, value: unknown, headers: 
   const body = JSON.stringify(value)
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...headers })
   res.end(body)
+}
+
+/**
+ * Stream one raw request body as bounded chunks, refusing past the cap so an
+ * oversized upload aborts before its tail is read — the body never
+ * accumulates whole for the streamed save path.
+ */
+async function* requestChunks(req: IncomingMessage, capBytes: number): AsyncGenerator<Uint8Array> {
+  let seen = 0
+  for await (const chunk of req) {
+    const bytes = chunk as Buffer
+    seen += bytes.byteLength
+    if (seen > capBytes) throw new Error(`upload exceeds the ${String(Math.round(capBytes / 1024 / 1024))}MB cap`)
+    yield bytes
+  }
 }
 
 /** Reflect the bridge extension's origin so its service worker can read the
@@ -2029,27 +2105,43 @@ export function apply(ctx: Context, config: Config): void {
             sendJson(res, 400, { error: `this model does not accept ${kind} input (probe says ${abilities[kind]})` })
             return
           }
-          const parsed = parseAttachment(body.attachment)
-          if (parsed.kind === 'image') {
-            const [ref] = await store.saveImages([{
-              data: parsed.data,
-              mediaType: parsed.mediaType as import('@deepseek-ai/dsh-attachment').ImageMediaType,
-              ...parsed.name !== '' ? { name: parsed.name } : {},
-            }])
-            if (ref === undefined) throw new Error('the image was not stored')
-            content.push({ type: 'image', attachment: ref })
-          } else if (parsed.kind === 'video') {
-            const ref = await store.saveFile({
-              data: parsed.data,
-              ...parsed.name !== '' ? { name: parsed.name } : {},
-            })
-            content.push({ type: 'video', attachment: ref, mediaType: parsed.mediaType })
+          const attachmentBody = body.attachment as { ref?: unknown }
+          if (typeof attachmentBody.ref === 'object' && attachmentBody.ref !== null) {
+            // Pre-uploaded through /api/uploads: the durable reference rides
+            // the message; no bytes cross this request.
+            const parsedRef = parseAttachmentRef(body.attachment)
+            if (parsedRef.kind === 'image') {
+              content.push({ type: 'image', attachment: parsedRef.ref })
+            } else if (parsedRef.kind === 'video') {
+              content.push({ type: 'video', attachment: parsedRef.ref, mediaType: parsedRef.mediaType })
+            } else {
+              content.push({ type: 'file', attachment: parsedRef.ref })
+            }
           } else {
-            const ref = await store.saveFile({
-              data: parsed.data,
-              ...parsed.name !== '' ? { name: parsed.name } : {},
-            })
-            content.push({ type: 'file', attachment: ref })
+            // Legacy inline form: the bytes ride the JSON body as a base64
+            // data URL (kept for old tabs and the API's early shape).
+            const parsed = parseAttachment(body.attachment)
+            if (parsed.kind === 'image') {
+              const [ref] = await store.saveImages([{
+                data: parsed.data,
+                mediaType: parsed.mediaType as import('@deepseek-ai/dsh-attachment').ImageMediaType,
+                ...parsed.name !== '' ? { name: parsed.name } : {},
+              }])
+              if (ref === undefined) throw new Error('the image was not stored')
+              content.push({ type: 'image', attachment: ref })
+            } else if (parsed.kind === 'video') {
+              const ref = await store.saveFile({
+                data: parsed.data,
+                ...parsed.name !== '' ? { name: parsed.name } : {},
+              })
+              content.push({ type: 'video', attachment: ref, mediaType: parsed.mediaType })
+            } else {
+              const ref = await store.saveFile({
+                data: parsed.data,
+                ...parsed.name !== '' ? { name: parsed.name } : {},
+              })
+              content.push({ type: 'file', attachment: ref })
+            }
           }
         }
         const trimmed = text.trim()
@@ -2186,6 +2278,67 @@ export function apply(ctx: Context, config: Config): void {
       return
     }
 
+    // Raw-body upload: the browser POSTs the file's exact bytes (media type
+    // in content-type, display name in the query), the store commits them —
+    // streamed for videos and files, so nothing large is ever buffered — and
+    // the message send references the returned durable ref instead of
+    // re-riding the bytes inside a base64 JSON envelope.
+    if (req.method === 'POST' && parts.length === 1 && parts[0] === 'uploads') {
+      const store = ctx.get('attachments')
+      if (store === undefined) {
+        sendJson(res, 400, { error: 'attachment storage is not available in this composition' })
+        return
+      }
+      const kindParam = url.searchParams.get('kind')
+      const nameParam = url.searchParams.get('name') ?? ''
+      const mediaType = (req.headers['content-type'] ?? '').split(';')[0]?.trim().toLowerCase() ?? ''
+      if (kindParam !== 'image' && kindParam !== 'video' && kindParam !== 'file') {
+        sendJson(res, 400, { error: 'upload kind must be image, video, or file' })
+        return
+      }
+      if (mediaType === '') {
+        sendJson(res, 400, { error: 'upload needs a content-type media type' })
+        return
+      }
+      if (kindParam === 'image' && !IMAGE_MEDIA_TYPES.has(mediaType)) {
+        sendJson(res, 400, { error: `image uploads must be png, jpeg, webp, or gif (got ${mediaType})` })
+        return
+      }
+      if (kindParam === 'video' && !mediaType.startsWith('video/')) {
+        sendJson(res, 400, { error: 'video uploads must carry a video/* media type' })
+        return
+      }
+      const cap = kindParam === 'image' ? MAX_IMAGE_BYTES : MAX_VIDEO_BYTES
+      const name = nameParam.trim().slice(0, 200)
+      try {
+        if (kindParam === 'image') {
+          // Images normalize during admission (sniff, decode, re-encode), so
+          // the store wants whole bytes; the 8MB image cap bounds the buffer.
+          const chunks: Buffer[] = []
+          for await (const chunk of requestChunks(req, cap)) chunks.push(chunk as Buffer)
+          const data = Buffer.concat(chunks)
+          if (data.byteLength === 0) throw new Error('upload is empty')
+          const [ref] = await store.saveImages([{
+            data,
+            mediaType: mediaType as import('@deepseek-ai/dsh-attachment').ImageMediaType,
+            ...name !== '' ? { name } : {},
+          }])
+          if (ref === undefined) throw new Error('the image was not stored')
+          sendJson(res, 200, { kind: kindParam, mediaType, ref })
+          return
+        }
+        const ref = await store.saveFileStream({
+          data: requestChunks(req, cap),
+          ...name !== '' ? { name } : {},
+        })
+        sendJson(res, 200, { kind: kindParam, mediaType, ref })
+        return
+      } catch (err: unknown) {
+        sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) })
+        return
+      }
+    }
+
     // Attachment bytes for rendered history: the caller echoes the durable
     // reference the projection handed it; digest verification inside the
     // store makes a tampered reference fail closed. Content-addressed ids
@@ -2206,18 +2359,30 @@ export function apply(ctx: Context, config: Config): void {
           'content-type': stored.ref.mediaType,
           'cache-control': 'public, max-age=31536000, immutable',
         })
-        res.end(Buffer.from(stored.data))
+        res.end(stored.data)
         return
-      }
-      const chunks: Buffer[] = []
-      for await (const chunk of store.readFileStream(body.ref as unknown as import('@deepseek-ai/dsh-attachment').FileAttachmentRef)) {
-        chunks.push(Buffer.from(chunk))
       }
       res.writeHead(200, {
         'content-type': body.mediaType,
         'cache-control': 'public, max-age=31536000, immutable',
       })
-      res.end(Buffer.concat(chunks))
+      try {
+        for await (const chunk of store.readFileStream(body.ref as unknown as import('@deepseek-ai/dsh-attachment').FileAttachmentRef)) {
+          // Stream as the store yields: a 64MB video never doubles in memory
+          // and the response starts before the last byte is verified.
+          if (!res.write(chunk)) {
+            await new Promise<void>((resolve) => { res.once('drain', resolve) })
+          }
+        }
+      } catch (err: unknown) {
+        // A digest failure past the headers cannot be un-sent; the loopback
+        // caller gets a truncated body and the fault is logged.
+        const reason = err instanceof Error ? err.message : String(err)
+        ctx.logger.warn(`attachment read failed mid-stream: ${reason}`)
+        res.destroy()
+        return
+      }
+      res.end()
       return
     }
 

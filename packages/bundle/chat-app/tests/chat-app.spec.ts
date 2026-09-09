@@ -20,6 +20,7 @@ import {
   normalizeSearchQuery,
   paginateSessions,
   parseAttachment,
+  parseAttachmentRef,
   parseReplyTo,
   parseSessionToken,
   parseSettingsFile,
@@ -1073,5 +1074,43 @@ describe('SessionListingCache', () => {
     expect(cache.get(1)).toEqual([1])
     cache.clear()
     expect(cache.get(1)).toBeUndefined()
+  })
+})
+
+describe('parseAttachmentRef', () => {
+  const imageRef = { attachmentId: 'img-1', mediaType: 'image/png', bytes: 70, width: 1, height: 1 }
+  const fileRef = { attachmentId: 'abc', name: 'clip.mp4', bytes: 1690 }
+
+  it('accepts a well-formed image reference', () => {
+    expect(parseAttachmentRef({ kind: 'image', ref: imageRef })).toEqual({ kind: 'image', ref: imageRef })
+  })
+
+  it('accepts video and file references, video with its media type', () => {
+    expect(parseAttachmentRef({ kind: 'video', mediaType: 'video/mp4', ref: fileRef }))
+      .toEqual({ kind: 'video', mediaType: 'video/mp4', ref: fileRef })
+    expect(parseAttachmentRef({ kind: 'file', ref: fileRef })).toEqual({ kind: 'file', ref: fileRef })
+  })
+
+  it('rejects malformed payloads with pointed errors', () => {
+    expect(() => parseAttachmentRef('nope')).toThrow('must be an object')
+    expect(() => parseAttachmentRef({ kind: 'image' })).toThrow('ref must be an object')
+    expect(() => parseAttachmentRef({ kind: 'image', ref: { attachmentId: 'x' } })).toThrow('durable storage reference')
+    expect(() => parseAttachmentRef({ kind: 'audio', ref: fileRef })).toThrow('image, video, or file')
+    expect(() => parseAttachmentRef({ kind: 'image', ref: { attachmentId: 'x', bytes: 1, mediaType: 'image/bmp', width: 1, height: 1 } }))
+      .toThrow('png, jpeg, webp')
+    expect(() => parseAttachmentRef({ kind: 'image', ref: { attachmentId: 'x', bytes: 1, mediaType: 'image/png' } }))
+      .toThrow('incomplete')
+    expect(() => parseAttachmentRef({ kind: 'video', ref: { attachmentId: 'x', bytes: 1, name: 'a' } })).toThrow('video/*')
+    expect(() => parseAttachmentRef({ kind: 'video', mediaType: 'video/mp4', ref: { attachmentId: 'x', bytes: 1 } }))
+      .toThrow('durable file reference')
+  })
+})
+
+describe('parseAttachment — oversize rejection before decode', () => {
+  it('refuses a payload whose base64 length already exceeds the video cap', () => {
+    // 100MB of base64 would decode past 64MB; the pre-decode check refuses
+    // it by length alone, so no megabyte-scale decode ever runs.
+    const huge = 'A'.repeat(100 * 1024 * 1024)
+    expect(() => parseAttachment({ kind: 'video', dataUrl: `data:video/mp4;base64,${huge}` })).toThrow('at most 64MB')
   })
 })
