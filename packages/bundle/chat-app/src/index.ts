@@ -30,6 +30,15 @@ import { TinyMetasearchProvider } from '@deepseek-ai/dsh-web-search-tiny/src/pro
 import { DEFAULT_BRIDGE_CLIENT, ExtensionBridge } from '@deepseek-ai/dsh-web-search-chrome/src/bridge.ts'
 import { defineBrowserTool } from '@deepseek-ai/dsh-tool-browser-chrome/src/index.ts'
 import { probeModelAbilities, type ModelAbilities } from './capabilities.ts'
+import {
+  activeUserFromHeader,
+  assignUnownedSessions,
+  createUser,
+  parseUsersFile,
+  persistUsers,
+  updateUser,
+  usersJson,
+} from './users-store.ts'
 import { routeSearchTarget, toSources, UserChromeSearchProvider } from '@deepseek-ai/dsh-web-search-chrome/src/provider.ts'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
@@ -1480,6 +1489,40 @@ export function apply(ctx: Context, config: Config): void {
   const bootApiKeyEnv = process.env.DEEPSEEK_API_KEY
   const bootBaseUrlEnv = process.env.DEEPSEEK_BASE_URL
 
+  // Lightweight app users: named profiles sharing the one login token, each
+  // with their own chats, groups, and Chrome-profile preference. A missing or
+  // corrupt file falls back to one default user; the first run claims every
+  // existing chat for that user so the sidebar looks unchanged.
+  const usersPath = dshHomePath('chat-users.json')
+  let usersRaw: string | undefined
+  try {
+    usersRaw = readFileSync(usersPath, 'utf8')
+  } catch {
+    // First run: no file yet, the default user stands.
+  }
+  const users = parseUsersFile(usersRaw)
+  const persistUsersFile = (): void => {
+    void persistUsers(usersPath, users).catch((error: unknown) => {
+      const reason = error instanceof Error ? error.message : String(error)
+      console.error(`chat-app: could not persist chat users because ${reason}`)
+    })
+  }
+  if (usersRaw === undefined) {
+    void (async () => {
+      try {
+        const records = await ctx.sessionQuery.listSessions()
+        const ids = records
+          .filter(record => record.header.origin !== 'subagent')
+          .map(record => String(record.header.id))
+        const fallback = users.users[0]
+        if (fallback !== undefined && assignUnownedSessions(users, ids, fallback.id)) persistUsersFile()
+      } catch (error: unknown) {
+        const reason = error instanceof Error ? error.message : String(error)
+        console.error(`chat-app: could not migrate existing chats to the default user because ${reason}`)
+      }
+    })()
+  }
+
   // Last-activity ledger for the sidebar's recency order. The harness
   // exposes no per-session lastPromptAt, and title snapshots only move when
   // a title changes, so the surface keeps its own stamp per conversation —
@@ -1996,6 +2039,15 @@ export function apply(ctx: Context, config: Config): void {
       sendJson(res, 403, { error: 'session cookie required' })
       return
     }
+    // Every route below acts on behalf of one user profile: the `x-dsh-user`
+    // header names it, absent = the default. An unknown id — a profile this
+    // store no longer knows, still held in some tab's localStorage — is
+    // refused so the client refetches the roster and self-heals.
+    const activeUser = activeUserFromHeader(req.headers['x-dsh-user'], users.users)
+    if (activeUser === undefined) {
+      sendJson(res, 403, { error: 'unknown user — reload the page' })
+      return
+    }
 
     if (parts.length === 1 && parts[0] === 'config') {
       if (req.method === 'GET') {
@@ -2029,6 +2081,32 @@ export function apply(ctx: Context, config: Config): void {
         return
       }
       sendJson(res, 405, { allow: 'GET, PUT' })
+      return
+    }
+
+    // Lightweight user profiles: list, create, and edit. Switching is pure
+    // client state (the header names the acting profile), so there is no
+    // switch route to call.
+    if (parts.length === 1 && parts[0] === 'users') {
+      if (req.method === 'GET') {
+        sendJson(res, 200, usersJson(users.users))
+        return
+      }
+      if (req.method === 'POST') {
+        const body = await readJsonBody(req)
+        const created = createUser(users, body)
+        persistUsersFile()
+        sendJson(res, 200, { ...usersJson(users.users), createdId: created.id })
+        return
+      }
+      sendJson(res, 405, { allow: 'GET, POST' })
+      return
+    }
+    if (req.method === 'PATCH' && parts.length === 2 && parts[0] === 'users' && parts[1] !== undefined) {
+      const body = await readJsonBody(req)
+      const updated = updateUser(users, parts[1], body)
+      persistUsersFile()
+      sendJson(res, 200, { ...usersJson(users.users), updatedId: updated.id })
       return
     }
 
