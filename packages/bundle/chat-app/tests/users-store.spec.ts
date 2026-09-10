@@ -145,6 +145,7 @@ describe('createUser / updateUser', () => {
   it('updates only the provided fields and unsets chromeProfile on blank', () => {
     const users = parseUsersFile(undefined)
     const first = users.users[0]
+    if (first === undefined) throw new Error('test setup: parse produced no default user')
     updateUser(users, first.id, { name: 'Renamed', avatar: 7, chromeProfile: 'work' })
     expect(first).toEqual({ id: first.id, name: 'Renamed', avatar: 7, chromeProfile: 'work', groups: [] })
     updateUser(users, first.id, { chromeProfile: '' })
