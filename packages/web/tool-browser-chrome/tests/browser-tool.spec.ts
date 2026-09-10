@@ -55,7 +55,7 @@ interface ToolDefinition {
   description: string
   timeoutMs: number
   isConcurrencySafe: () => boolean
-  execute: (args: Record<string, unknown>) => Promise<BrowserToolValue>
+  execute: (args: Record<string, unknown>, exec?: unknown) => Promise<BrowserToolValue>
   output: {
     render: (args: Record<string, unknown>, value: BrowserToolValue) => Array<{ type: string; text: string }>
     presentationMeta: (args: Record<string, unknown>, value: BrowserToolValue) => Record<string, unknown>
