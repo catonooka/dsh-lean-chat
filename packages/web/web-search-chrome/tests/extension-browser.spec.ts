@@ -22,6 +22,7 @@ interface WorkerExports {
   run: (job: Record<string, unknown>) => Promise<void>
   parseWebUrl: (candidate: string) => string
   reapIdleSessions: (now?: number) => Promise<void>
+  setActuationAllowed: (value: boolean) => void
 }
 
 interface SentCommand {
@@ -37,16 +38,17 @@ function loadWorker(chromeStub: unknown): WorkerExports {
   const serializerSource = readFileSync(join(directory, 'serializer.js'), 'utf8')
   const backgroundSource = readFileSync(join(directory, 'background.js'), 'utf8')
   const serializer = new Function(`${serializerSource}\nreturn { snapshotPage, extractText }`)() as Record<string, unknown>
-  const factory = new Function('chrome', 'snapshotPage', 'extractText', `${backgroundSource}\nreturn { run, parseWebUrl, reapIdleSessions }`)
+  const factory = new Function('chrome', 'snapshotPage', 'extractText', `${backgroundSource}\nreturn { run, parseWebUrl, reapIdleSessions, setActuationAllowed }`)
   return factory(chromeStub, serializer.snapshotPage, serializer.extractText) as WorkerExports
 }
 
 /** The chrome surface background.js touches, faked promise-style like MV3. */
-function fakeChrome(initialSessions: Record<string, unknown> = {}) {
+function fakeChrome(initialSessions: Record<string, unknown> = {}, options: { refCenter?: { x: number; y: number } | null } = {}) {
   const sent: SentCommand[] = []
   let nextTabId = 0
   const liveTabs = new Set<number>()
   const sessionStore: Record<string, unknown> = { browserSessions: initialSessions }
+  const refCenter = options.refCenter === undefined ? { x: 150, y: 40 } : options.refCenter
   const chromeStub = {
     storage: {
       // The boot callback is never invoked, so the poll loop never starts.
@@ -83,6 +85,12 @@ function fakeChrome(initialSessions: Record<string, unknown> = {}) {
           if (expression === 'document.readyState === "complete"') {
             return { result: { type: 'boolean', value: document.readyState === 'complete' } }
           }
+          // The page helpers background.js injects carry markers; answer them
+          // from the fake's configured state.
+          if (expression.startsWith('/*dsh-ref*/')) return { result: { type: 'object', value: refCenter } }
+          if (expression.startsWith('/*dsh-mod*/')) return { result: { type: 'number', value: 4 } }
+          if (expression.startsWith('/*dsh-viewport*/')) return { result: { type: 'object', value: { x: 400, y: 300 } } }
+          if (expression.startsWith('/*dsh-back*/')) return { result: { type: 'object', value: null } }
           // The serializer injections: run them against this jsdom document;
           // a page script error reports back the way real CDP does.
           try {
@@ -244,6 +252,92 @@ describe('extension browser jobs', () => {
     const remaining = sessionStore.browserSessions as Record<string, { tabId: number }>
     expect(remaining.stale).toBeUndefined()
     expect(remaining.fresh?.tabId).toBe(42)
+  })
+})
+
+describe('extension actuation jobs', () => {
+  it('clicks a snapshot ref with real mouse events and returns the new outline', async () => {
+    document.body.innerHTML = '<h1>After</h1><a href="/next">Next</a>'
+    const { chromeStub, sent } = fakeChrome()
+    const worker = loadWorker(chromeStub)
+    worker.setActuationAllowed(true)
+    await worker.run({ id: '1', type: 'browser', action: 'click', session: 'main', ref: '@e3' })
+    const settlement = posted[0]?.body
+    expect(settlement?.ok).toBe(true)
+    const observation = settlement?.browser as SerializedPage
+    expect(observation.snapshot).toContain('# After')
+    const inputs = sent.filter(command => command.method === 'Input.dispatchMouseEvent')
+    expect(inputs).toEqual([
+      { tabId: inputs[0]?.tabId, method: 'Input.dispatchMouseEvent', params: { type: 'mousePressed', x: 150, y: 40, button: 'left', clickCount: 1 } },
+      { tabId: inputs[0]?.tabId, method: 'Input.dispatchMouseEvent', params: { type: 'mouseReleased', x: 150, y: 40, button: 'left', clickCount: 1 } },
+    ])
+    const refLookup = sent.find(command => command.method === 'Runtime.evaluate' && String(command.params.expression).startsWith('/*dsh-ref*/'))
+    expect(String(refLookup?.params.expression)).toContain('"@e3"')
+  })
+
+  it('types by focusing with a click, selecting all through the chord, and inserting text', async () => {
+    document.body.innerHTML = '<input placeholder="Search">'
+    const { chromeStub, sent } = fakeChrome()
+    const worker = loadWorker(chromeStub)
+    worker.setActuationAllowed(true)
+    await worker.run({ id: '2', type: 'browser', action: 'type', session: 'main', ref: '@e1', text: 'hello world' })
+    const methods = sent.map(command => `${command.method}:${String(command.params.type ?? '')}`)
+    expect(methods).toContain('Input.dispatchMouseEvent:mousePressed')
+    expect(methods).toContain('Input.dispatchKeyEvent:rawKeyDown')
+    expect(methods).toContain('Input.dispatchKeyEvent:keyUp')
+    const insert = sent.find(command => command.method === 'Input.insertText')
+    expect(insert?.params).toEqual({ text: 'hello world' })
+    const chord = sent.find(command => command.method === 'Input.dispatchKeyEvent' && command.params.key === 'a')
+    expect(chord?.params.modifiers).toBe(4)
+    expect(posted[0]?.body.ok).toBe(true)
+  })
+
+  it('refuses actuation when the profile has not opted in', async () => {
+    const { chromeStub, sent } = fakeChrome()
+    const worker = loadWorker(chromeStub)
+    await worker.run({ id: '3', type: 'browser', action: 'click', session: 'main', ref: '@e1' })
+    expect(posted[0]?.body).toEqual({
+      id: '3', ok: false, error: 'actions are not enabled for this Chrome profile — turn them on in the extension options',
+    })
+    expect(sent.filter(command => command.method.startsWith('Input.'))).toHaveLength(0)
+  })
+
+  it('reports a stale ref instead of clicking blindly', async () => {
+    const { chromeStub, sent } = fakeChrome({}, { refCenter: null })
+    const worker = loadWorker(chromeStub)
+    worker.setActuationAllowed(true)
+    await worker.run({ id: '4', type: 'browser', action: 'click', session: 'main', ref: '@e9' })
+    expect(posted[0]?.body).toEqual({ id: '4', ok: false, error: 'ref @e9 is not on the page — take a fresh snapshot and use its refs' })
+    expect(sent.filter(command => command.method.startsWith('Input.'))).toHaveLength(0)
+  })
+
+  it('presses named keys and rejects unknown ones', async () => {
+    document.body.innerHTML = '<p>page</p>'
+    const { chromeStub, sent } = fakeChrome()
+    const worker = loadWorker(chromeStub)
+    worker.setActuationAllowed(true)
+    await worker.run({ id: '5', type: 'browser', action: 'press', session: 'main', key: 'Enter' })
+    const keyEvents = sent.filter(command => command.method === 'Input.dispatchKeyEvent')
+    expect(keyEvents.map(command => command.params.type)).toEqual(['keyDown', 'keyUp'])
+    expect(keyEvents[0]?.params).toMatchObject({ key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' })
+    expect(posted[0]?.body.ok).toBe(true)
+    await worker.run({ id: '6', type: 'browser', action: 'press', session: 'main', key: 'F13' })
+    expect(posted[1]?.body.ok).toBe(false)
+    expect(posted[1]?.body.error).toContain('unsupported key "F13"')
+  })
+
+  it('scrolls a direction and goes back', async () => {
+    document.body.innerHTML = '<p>page</p>'
+    const { chromeStub, sent } = fakeChrome()
+    const worker = loadWorker(chromeStub)
+    worker.setActuationAllowed(true)
+    await worker.run({ id: '7', type: 'browser', action: 'scroll', session: 'main', direction: 'down' })
+    const wheel = sent.find(command => command.method === 'Input.dispatchMouseEvent' && command.params.type === 'mouseWheel')
+    expect(wheel?.params).toMatchObject({ x: 400, y: 300, deltaX: 0, deltaY: 600 })
+    expect(posted[0]?.body.ok).toBe(true)
+    await worker.run({ id: '8', type: 'browser', action: 'back', session: 'main' })
+    expect(sent.some(command => command.method === 'Runtime.evaluate' && String(command.params.expression).startsWith('/*dsh-back*/'))).toBe(true)
+    expect(posted[1]?.body.ok).toBe(true)
   })
 })
 
