@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "dsh-lean-chat Chrome bridge",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Runs dsh-lean-chat's web searches and browser steps inside this browser, with your cookies — searches fetch silently, browser steps drive a real tab.",
   "minimum_chrome_version": "116",
   "permissions": ["cookies", "storage", "alarms", "debugger"],

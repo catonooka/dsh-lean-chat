@@ -10,6 +10,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { EXTENSION_PROTOCOL } from '../src/bridge.ts'
 
 interface SerializedPage {
   url: string
@@ -23,6 +24,7 @@ interface WorkerExports {
   parseWebUrl: (candidate: string) => string
   reapIdleSessions: (now?: number) => Promise<void>
   setActuationAllowed: (value: boolean) => void
+  clientQuery: () => string
 }
 
 interface SentCommand {
@@ -38,7 +40,7 @@ function loadWorker(chromeStub: unknown): WorkerExports {
   const serializerSource = readFileSync(join(directory, 'serializer.js'), 'utf8')
   const backgroundSource = readFileSync(join(directory, 'background.js'), 'utf8')
   const serializer = new Function(`${serializerSource}\nreturn { snapshotPage, extractText }`)() as Record<string, unknown>
-  const factory = new Function('chrome', 'snapshotPage', 'extractText', `${backgroundSource}\nreturn { run, parseWebUrl, reapIdleSessions, setActuationAllowed }`)
+  const factory = new Function('chrome', 'snapshotPage', 'extractText', `${backgroundSource}\nreturn { run, parseWebUrl, reapIdleSessions, setActuationAllowed, clientQuery }`)
   return factory(chromeStub, serializer.snapshotPage, serializer.extractText) as WorkerExports
 }
 
@@ -47,6 +49,8 @@ function fakeChrome(initialSessions: Record<string, unknown> = {}, options: {
   refCenter?: { x: number; y: number } | null
   pageScriptError?: string
   rawObservation?: unknown
+  /** Debugger commands matching one of these methods never resolve. */
+  hangMethods?: string[]
 } = {}) {
   const sent: SentCommand[] = []
   let nextTabId = 0
@@ -83,6 +87,7 @@ function fakeChrome(initialSessions: Record<string, unknown> = {}, options: {
       attach: async () => undefined,
       detach: async () => undefined,
       sendCommand: async (target: { tabId: number }, method: string, params: Record<string, unknown>) => {
+        if ((options.hangMethods ?? []).includes(method)) return await new Promise(() => {})
         sent.push({ tabId: target.tabId, method, params })
         if (method === 'Runtime.evaluate') {
           const expression = String(params.expression)
@@ -425,5 +430,73 @@ describe('extension parseWebUrl', () => {
     expect(() => worker.parseWebUrl('chrome://settings')).toThrow('only http(s)')
     expect(() => worker.parseWebUrl('file:///etc/passwd')).toThrow('only http(s)')
     expect(() => worker.parseWebUrl('javascript:alert(1)')).toThrow('only http(s)')
+  })
+})
+
+describe('extension protocol and dispatch guards', () => {
+  it('stamps the poll with the protocol the bridge gates browser jobs on', async () => {
+    const { chromeStub } = fakeChrome()
+    const worker = loadWorker(chromeStub)
+    const query = worker.clientQuery()
+    expect(query).toBe(`&v=${String(EXTENSION_PROTOCOL)}`)
+    // The bridge package and the extension literal must not drift apart.
+    const backgroundSource = readFileSync(join(process.cwd(), 'packages/web/web-search-chrome/extension/background.js'), 'utf8')
+    expect(backgroundSource).toMatch(new RegExp(`const PROTOCOL = ${String(EXTENSION_PROTOCOL)}\\b`))
+  })
+
+  it('settles an unknown job type as a loud refusal, never as a search', async () => {
+    const { chromeStub } = fakeChrome()
+    const worker = loadWorker(chromeStub)
+    await worker.run({ id: '5', type: 'telemetry', url: 'https://x.com/' })
+    expect(posted).toHaveLength(1)
+    expect(posted[0]?.body).toMatchObject({
+      id: '5',
+      ok: false,
+      error: 'this extension build cannot run job type "telemetry" — reload the extension in chrome://extensions',
+    })
+  })
+
+  it('fails a wedged step on the deadline instead of holding the settlement', async () => {
+    vi.useFakeTimers()
+    try {
+      // Page.navigate never resolves: the tab never settles.
+      const { chromeStub } = fakeChrome({}, { hangMethods: ['Page.navigate'] })
+      const worker = loadWorker(chromeStub)
+      const settled = worker.run({ id: '6', type: 'browser', action: 'open', session: 'main', url: 'https://x.com/hang' })
+      await vi.advanceTimersByTimeAsync(40_000)
+      await settled
+      expect(posted).toHaveLength(1)
+      expect(posted[0]?.body).toMatchObject({
+        id: '6',
+        ok: false,
+        error: expect.stringContaining('the browser step did not finish within 40s'),
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('releases the session lock after a deadline failure so the next step runs', async () => {
+    vi.useFakeTimers()
+    try {
+      const working = fakeChrome()
+      const hung = fakeChrome({}, { hangMethods: ['Page.navigate'] })
+      const worker = loadWorker(hung.chromeStub)
+      const wedged = worker.run({ id: '6', type: 'browser', action: 'open', session: 'main', url: 'https://x.com/hang' })
+      await vi.advanceTimersByTimeAsync(40_000)
+      await wedged
+      expect(posted[0]?.body).toMatchObject({ id: '6', ok: false })
+      // The healthy debugger takes over the same session tab; the lock the
+      // wedged open held must be free for the next step.
+      hung.chromeStub.debugger.sendCommand = working.chromeStub.debugger.sendCommand
+      document.title = 'recovered'
+      document.body.innerHTML = '<h1>Home</h1>'
+      await worker.run({ id: '7', type: 'browser', action: 'snapshot', session: 'main' })
+      expect(posted[1]?.body).toMatchObject({ id: '7', ok: true })
+      const observation = (posted[1]?.body as { browser?: { title?: string } }).browser
+      expect(observation?.title).toBe('recovered')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

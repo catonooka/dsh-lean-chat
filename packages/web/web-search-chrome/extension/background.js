@@ -12,6 +12,11 @@ if (typeof importScripts === 'function') importScripts('serializer.js')
 
 const DEFAULT_ORIGIN = 'http://127.0.0.1:3095'
 const POLL_WAIT_SECONDS = 25
+// The job vocabulary this build speaks. The app gates browser jobs on it:
+// a poller without the stamp is a pre-browser search-only build that would
+// misread browser steps as searches. Keep in sync with EXTENSION_PROTOCOL
+// in the bridge package.
+const PROTOCOL = 3
 const SEARCH_FETCH_TIMEOUT_MS = 8000
 // Failed-poll backoff: doubling up to half a minute. Past that the idle
 // service worker is allowed to die — the 30-second alarm wakes it to retry,
@@ -23,6 +28,12 @@ const BACKOFF_MAX_MS = 30000
 const MAX_CONCURRENT_JOBS = 3
 // Browser steps wait on real page loads, so they get their own patience.
 const PAGE_LOAD_TIMEOUT_MS = 20000
+// A hard ceiling on any one browser step: pages can wedge (a navigation
+// that never settles, an evaluate that never returns), and a step that
+// outlives the app-side timeout is silence. Settling late is worse than
+// failing on time, so every step races this deadline and the app's budget
+// always stays above it.
+const STEP_DEADLINE_MS = 40000
 const SNAPSHOT_MAX_LINES = 400
 const SNAPSHOT_MAX_CHARS = 12000
 const EXTRACT_MAX_CHARS = 8000
@@ -78,12 +89,13 @@ function startPolling() {
 
 // The profile label this extension runs under, as a query suffix. Unlabeled
 // extensions poll as the bridge's default client and serve any read job;
-// labeled ones also receive the jobs pinned to their label, and the act flag
-// says whether this profile's user allows actuation steps at all.
+// labeled ones also receive the jobs pinned to their label, the act flag
+// says whether this profile's user allows actuation steps at all, and the
+// v stamp says which job vocabulary this build speaks.
 function clientQuery() {
   const client = clientLabel === '' ? '' : `&client=${encodeURIComponent(clientLabel)}`
   const act = actuationAllowed ? '&act=1' : ''
-  return `${client}${act}`
+  return `${client}${act}&v=${String(PROTOCOL)}`
 }
 
 async function poll() {
@@ -118,13 +130,19 @@ async function run(job) {
   try {
     let result
     try {
+      // Explicit arms: a job this build does not know settles with a loud
+      // refusal instead of being misread as a search — silence or a
+      // wrong-shaped settlement is how a stale build wastes the app's
+      // whole budget per call.
       if (job.type === 'browser') {
         result = { id: job.id, ok: true, browser: await browserStep(job) }
-      } else {
+      } else if (job.type === undefined) {
         const sources = job.kind === 'x'
           ? await xSearch(job.query, job.maxResults)
           : await webSearch(job.url, job.maxResults)
         result = { id: job.id, ok: true, sources }
+      } else {
+        throw new Error(`this extension build cannot run job type "${String(job.type)}" — reload the extension in chrome://extensions`)
       }
     } catch (error) {
       result = { id: job.id, ok: false, error: messageOf(error) }
@@ -170,15 +188,32 @@ function touchSession(name) {
   if (entry !== undefined) entry.at = Date.now()
 }
 
-/** Browser steps on one session tab run one at a time, in arrival order. */
+/** Race one browser step against the hard deadline: a wedged navigation or
+ * evaluate must settle as a failure on time, not hold the session lock and
+ * queue-block every later step behind it. */
+function withStepDeadline(step) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`the browser step did not finish within ${String(Math.round(STEP_DEADLINE_MS / 1000))}s — the page never settled`))
+    }, STEP_DEADLINE_MS)
+    step.then(
+      (value) => { clearTimeout(timer); resolve(value) },
+      (error) => { clearTimeout(timer); reject(error) },
+    )
+  })
+}
+
+/** Browser steps on one session tab run one at a time, in arrival order. The
+ * deadline races INSIDE the lock: the stored tail settles even when the step
+ * itself wedges, so the next step always gets its turn. */
 const sessionLocks = new Map()
 
-async function withSessionLock(name, task) {
+function withSessionLock(name, task) {
   // The stored tail never rejects, so the next step always gets to run.
   const previous = sessionLocks.get(name) ?? Promise.resolve()
-  const gate = previous.then(task)
+  const gate = previous.then(() => withStepDeadline(task()))
   sessionLocks.set(name, gate.catch(() => {}))
-  return await gate
+  return gate
 }
 
 /** Only real web pages open; everything else (chrome://, file://, js:) stays out. */
