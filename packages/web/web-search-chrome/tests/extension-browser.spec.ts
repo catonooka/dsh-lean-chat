@@ -86,10 +86,19 @@ function fakeChrome(initialSessions: Record<string, unknown> = {}, options: {
     debugger: {
       attach: async () => undefined,
       detach: async () => undefined,
-      sendCommand: async (target: { tabId: number }, method: string, params: Record<string, unknown>) => {
-        if ((options.hangMethods ?? []).includes(method)) return await new Promise(() => {})
+      // The real extension reads the callback form (the promise form of
+      // Page.navigate never resolves in MV3 service workers); the fake
+      // honors both so either call style works.
+      sendCommand: (
+        target: { tabId: number },
+        method: string,
+        params: Record<string, unknown>,
+        callback?: (result: unknown) => void,
+      ) => {
+        if ((options.hangMethods ?? []).includes(method)) return new Promise(() => {})
         sent.push({ tabId: target.tabId, method, params })
-        if (method === 'Runtime.evaluate') {
+        const respond = (): unknown => {
+          if (method !== 'Runtime.evaluate') return {}
           const expression = String(params.expression)
           if (expression === 'document.readyState === "complete"') {
             return { result: { type: 'boolean', value: document.readyState === 'complete' } }
@@ -112,9 +121,12 @@ function fakeChrome(initialSessions: Record<string, unknown> = {}, options: {
             return { exceptionDetails: { text: message } }
           }
         }
-        return {}
+        const response = respond()
+        callback?.(response)
+        return Promise.resolve(response)
       },
     },
+    runtime: {},
   }
   return { chromeStub, sent, createdTabs: () => nextTabId, liveTabs, sessionStore }
 }

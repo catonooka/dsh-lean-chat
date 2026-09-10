@@ -14,9 +14,11 @@ const DEFAULT_ORIGIN = 'http://127.0.0.1:3095'
 const POLL_WAIT_SECONDS = 25
 // The job vocabulary this build speaks. The app gates browser jobs on it:
 // a poller without the stamp is a pre-browser search-only build that would
-// misread browser steps as searches. Keep in sync with EXTENSION_PROTOCOL
-// in the bridge package.
-const PROTOCOL = 3
+// misread browser steps as searches. v4: debugger commands ride the
+// callback form — the promise form never resolves Page.navigate in MV3
+// service workers, which left v3 builds unable to navigate. Keep in sync
+// with EXTENSION_PROTOCOL in the bridge package.
+const PROTOCOL = 4
 const SEARCH_FETCH_TIMEOUT_MS = 8000
 // Failed-poll backoff: doubling up to half a minute. Past that the idle
 // service worker is allowed to die — the 30-second alarm wakes it to retry,
@@ -270,8 +272,17 @@ async function ensureAttached(tabId) {
 }
 
 async function sendCommand(tabId, method, params) {
-  const response = await chrome.debugger.sendCommand({ tabId }, method, params ?? {})
-  return response
+  // The promise form of chrome.debugger.sendCommand never resolves for some
+  // commands — Page.navigate among them — inside MV3 service workers, a
+  // long-standing Chromium quirk; the tab just stays where it was. The
+  // callback form is the reliable path, so every command goes through it.
+  return await new Promise((resolve, reject) => {
+    chrome.debugger.sendCommand({ tabId }, method, params ?? {}, (result) => {
+      const failure = chrome.runtime.lastError
+      if (failure !== undefined) reject(new Error(failure.message))
+      else resolve(result)
+    })
+  })
 }
 
 async function evaluate(tabId, expression) {

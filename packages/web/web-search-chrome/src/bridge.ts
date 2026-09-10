@@ -17,8 +17,11 @@ export const DEFAULT_BRIDGE_CLIENT = 'default'
  * The job vocabulary this app speaks. The extension stamps its polls with the
  * protocol it was built for; a poller without the stamp is a pre-browser
  * search-only build, and browser jobs must neither wait on it nor run on it.
+ * v4: the extension sends debugger commands through the callback form (the
+ * promise form never resolves Page.navigate in MV3 service workers, so v3
+ * builds cannot navigate).
  */
-export const EXTENSION_PROTOCOL = 3
+export const EXTENSION_PROTOCOL = 4
 
 /** The settlement error for an extension that answered a job in the wrong
  * vocabulary — the loaded build predates the job type it was handed. */
