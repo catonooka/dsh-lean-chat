@@ -15,6 +15,12 @@ while it runs. If the app listens on a port other than the default
 `3095`, open the extension's **Details → Extension options** and set the
 origin there.
 
+**After pulling app updates that touch the browser tool, reload the
+extension once** (`chrome://extensions` → Reload ↻ here). Chrome never
+reloads unpacked extensions on its own, and an older build answers browser
+steps with search data — the app detects the stale build, but only a
+reload fixes it.
+
 Running the extension in several Chrome profiles? Give each one a **profile
 label** in its options page (e.g. `personal`, `work`). The app can then pick
 which profile a browser step runs in — the right logins, the right accounts.
@@ -70,6 +76,9 @@ other source.
 - **Settings shows "not connected"** — check `chrome://extensions` says this
   extension is on, and that its options point at the origin the app printed
   (`http://127.0.0.1:3095` by default).
+- **Browser steps say "older build — reload it in chrome://extensions"** —
+  the loaded extension predates the app's current job vocabulary; hit
+  Reload ↻ in `chrome://extensions`.
 - **X searches report "not logged in"** — sign in to x.com once in this
   profile; the cookies live in the profile, not the extension.
 - **Browser steps report the debugger failed** — the debugger permission must

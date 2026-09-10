@@ -245,6 +245,21 @@ stay cheap:
 Every step's result renders in the chat as a chip (globe icon, action +
 URL, excerpt behind the toggle; actuation steps read Acting/Acted), and the
 untrusted-content guard the search tool uses prefixes every observation.
+A failed step keeps its face — "Browsed · extract x.com · failed" in the
+error color — both live and on history replay, because the agent loop
+stamps results the tool could not describe with the call's own identity.
+
+**Version handshake.** Chrome never reloads an unpacked extension on its
+own, so a browser-tool upgrade needs one manual step: `chrome://extensions`
+→ Reload ↻ on the bridge extension. The extension stamps every poll with
+the protocol its build speaks; the app refuses browser steps on older
+builds up front ("the connected Chrome extension is an older build —
+reload it in chrome://extensions"), `status` names stale profiles, a
+settlement in the wrong vocabulary fails its job immediately instead of
+timing out, and the extension itself settles unknown job types and wedged
+steps (40-second deadline, raced inside the session lock) rather than
+going silent. Browser steps get a 45-second budget — cold SPA loads like
+x.com need it — while searches keep their tight one.
 
 ### Settings panel
 
