@@ -19,9 +19,11 @@ const POLL_WAIT_SECONDS = 25
 // service workers, which left v3 builds unable to navigate. v5: scroll runs
 // as page script — the debugger's mouse-wheel command hangs on current
 // Chrome builds. v6: click and the type step's focus ride page script too —
-// Input.dispatchMouseEvent cannot be trusted there. Keep in sync with
-// EXTENSION_PROTOCOL in the bridge package.
-const PROTOCOL = 6
+// Input.dispatchMouseEvent cannot be trusted there. v7: the scroll descent
+// picks the scrollable with the MOST content — v6 builds could scroll a
+// sidebar instead of the feed timeline. Keep in sync with EXTENSION_PROTOCOL
+// in the bridge package.
+const PROTOCOL = 7
 const SEARCH_FETCH_TIMEOUT_MS = 8000
 // Failed-poll backoff: doubling up to half a minute. Past that the idle
 // service worker is allowed to die — the 30-second alarm wakes it to retry,
@@ -470,18 +472,24 @@ async function scrollPage(tabId, direction) {
   if (amount === undefined) throw new Error('the scroll action needs a direction: up, down, left, or right')
   const vertical = direction === undefined || direction === 'up' || direction === 'down'
   const moved = await evaluate(tabId, `/*dsh-scroll*/ (() => {
+    if (location.href === 'about:blank') return 'blank'
     const delta = ${String(amount)}
     const vertical = ${String(vertical)}
     const before = vertical ? window.scrollY : window.scrollX
     window.scrollBy(vertical ? 0 : delta, vertical ? delta : 0)
     if ((vertical ? window.scrollY : window.scrollX) !== before) return true
-    // The window did not move: descend the tallest scrollable chain from the
-    // body and scroll that container instead.
+    // The window did not move: descend into the scrollable container with
+    // the MOST content — feed pages have several (sidebars, menus), and the
+    // timeline is the tall one — and scroll that.
     let node = document.body
     for (;;) {
       let next = null
+      let best = -1
       for (const child of node.children) {
-        if (child.scrollHeight > child.clientHeight + 8 && child.clientHeight > 100) next = child
+        if (child.scrollHeight > child.clientHeight + 8 && child.clientHeight > 100 && child.scrollHeight > best) {
+          best = child.scrollHeight
+          next = child
+        }
       }
       if (next === null) break
       node = next
@@ -493,6 +501,7 @@ async function scrollPage(tabId, direction) {
     }
     return false
   })()`)
+  if (moved === 'blank') throw new Error('the session tab is still blank — open a url before scrolling')
   if (moved !== true) throw new Error('the page has nowhere to scroll')
 }
 

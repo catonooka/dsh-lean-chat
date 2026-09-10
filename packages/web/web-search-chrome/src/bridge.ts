@@ -22,9 +22,11 @@ export const DEFAULT_BRIDGE_CLIENT = 'default'
  * builds cannot navigate). v5: scroll runs as page script (the debugger's
  * mouse-wheel command hangs on current Chrome builds, so v4 builds cannot
  * scroll). v6: click and the type step's focus ride page script as well —
- * Input.dispatchMouseEvent cannot be trusted there.
+ * Input.dispatchMouseEvent cannot be trusted there. v7: the scroll descent
+ * picks the scrollable with the most content (v6 builds could scroll a
+ * sidebar instead of the feed timeline).
  */
-export const EXTENSION_PROTOCOL = 6
+export const EXTENSION_PROTOCOL = 7
 
 /** The settlement error for an extension that answered a job in the wrong
  * vocabulary — the loaded build predates the job type it was handed. */

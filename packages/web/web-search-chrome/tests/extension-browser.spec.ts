@@ -49,8 +49,8 @@ function fakeChrome(initialSessions: Record<string, unknown> = {}, options: {
   refCenter?: { x: number; y: number } | null
   pageScriptError?: string
   rawObservation?: unknown
-  /** Whether an injected scroll actually moved the page (jsdom cannot). */
-  scrollMoved?: boolean
+  /** What an injected scroll reports: moved, nowhere, or a blank tab. */
+  scrollMoved?: boolean | 'blank'
   /** Debugger commands matching one of these methods never resolve. */
   hangMethods?: string[]
 } = {}) {
@@ -111,7 +111,9 @@ function fakeChrome(initialSessions: Record<string, unknown> = {}, options: {
             return { result: { type: 'boolean', value: refCenter !== null } }
           }
           if (expression.startsWith('/*dsh-mod*/')) return { result: { type: 'number', value: 4 } }
-          if (expression.startsWith('/*dsh-scroll*/')) return { result: { type: 'boolean', value: options.scrollMoved !== false } }
+          if (expression.startsWith('/*dsh-scroll*/')) {
+            return { result: { type: typeof options.scrollMoved === 'string' ? 'string' : 'boolean', value: options.scrollMoved ?? true } }
+          }
           if (expression.startsWith('/*dsh-back*/')) return { result: { type: 'object', value: null } }
           if (options.pageScriptError !== undefined) return { exceptionDetails: { text: options.pageScriptError } }
           if (options.rawObservation !== undefined) return { result: { type: 'object', value: options.rawObservation } }
@@ -363,7 +365,12 @@ describe('extension actuation jobs', () => {
     // Scrolling rides injected script (the debugger's wheel command hangs on
     // current Chrome), never an Input.dispatchMouseEvent.
     const scrollEval = sent.find(command => command.method === 'Runtime.evaluate' && String(command.params.expression).startsWith('/*dsh-scroll*/'))
-    expect(String(scrollEval?.params.expression)).toContain('window.scrollBy')
+    const expression = String(scrollEval?.params.expression)
+    expect(expression).toContain('window.scrollBy')
+    // The descent must pick the scrollable with the MOST content — feeds
+    // also have scrollable sidebars, and the timeline is the tall one.
+    expect(expression).toContain('child.scrollHeight > best')
+    expect(expression).toContain("location.href === 'about:blank'")
     expect(sent.some(command => command.method === 'Input.dispatchMouseEvent' && command.params.type === 'mouseWheel')).toBe(false)
     expect(posted[0]?.body.ok).toBe(true)
     await worker.run({ id: '8', type: 'browser', action: 'back', session: 'main' })
@@ -375,6 +382,12 @@ describe('extension actuation jobs', () => {
     stuckWorker.setActuationAllowed(true)
     await stuckWorker.run({ id: '9', type: 'browser', action: 'scroll', session: 'main', direction: 'down' })
     expect(posted[2]?.body).toMatchObject({ id: '9', ok: false, error: 'the page has nowhere to scroll' })
+    // A blank session tab — nothing was opened yet — says to open first.
+    const blank = fakeChrome({}, { scrollMoved: 'blank' })
+    const blankWorker = loadWorker(blank.chromeStub)
+    blankWorker.setActuationAllowed(true)
+    await blankWorker.run({ id: '10', type: 'browser', action: 'scroll', session: 'main', direction: 'down' })
+    expect(posted[3]?.body).toMatchObject({ id: '10', ok: false, error: 'the session tab is still blank — open a url before scrolling' })
   })
 })
 
