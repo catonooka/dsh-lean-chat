@@ -560,6 +560,27 @@ describe('streaming turn', () => {
     fireEvent.click(screen.getByText('Browsed · extract https://x.com/me'))
     await screen.findByText('Post one.')
   })
+
+  it('labels actuation steps as acting, in stream and history', async () => {
+    localStorage.setItem('dsh-chat-active', 'sess-a')
+    await renderApp({
+      sessions: [{ id: 'sess-a', title: 'A', items: [{ role: 'tool', name: 'browser', action: 'click', url: 'https://form.example', excerpt: 'Submit' }] }],
+      streams: [delayedSseResponse([
+        { t: 'delta', text: 'Filling it in.' },
+        { t: 'tool-start', name: 'browser', action: 'type', url: 'https://form.example' },
+        { t: 'tool-end', name: 'browser', action: 'type', url: 'https://form.example', excerpt: 'Typed hello' },
+        { t: 'assistant', text: 'done' },
+        { t: 'turn-end', reason: 'completed' },
+      ], 30)],
+    })
+    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    fireEvent.change(composer, { target: { value: 'fill the form' } })
+    fireEvent.keyDown(composer, { key: 'Enter' })
+    await screen.findByText('Acting · type https://form.example', {}, { timeout: 3000 })
+    await screen.findByText('Acted · type https://form.example', {}, { timeout: 3000 })
+    // The history chip (preloaded items) reads the same way.
+    expect(await screen.findByText('Acted · click https://form.example', {}, { timeout: 3000 })).toBeTruthy()
+  })
 })
 
 describe('post-turn sidebar refresh', () => {

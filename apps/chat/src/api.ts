@@ -191,8 +191,8 @@ export function updateConfig(patch: SettingsPatch): Promise<AppConfig> {
 /** Whether each chrome engine answers right now. */
 export interface ChromeStatus {
   extension: boolean
-  /** Connected Chrome profile labels, freshest first. */
-  clients?: { client: string; lastSeenAt: number }[]
+  /** Connected Chrome profile labels, freshest first, with action opt-ins. */
+  clients?: { client: string; lastSeenAt: number; actuation?: boolean }[]
   cdp: boolean
   extensionPath?: string
 }

@@ -503,7 +503,7 @@ export function SettingsPanel({ config, theme, onTheme, avatar, onAvatar, onAppl
                     ? (
                       <span className="chrome-profiles">
                         {' · '}
-                        {chromeStatus.clients.map(entry => entry.client).join(', ')}
+                        {chromeStatus.clients.map(entry => entry.actuation === true ? `${entry.client} (actions)` : entry.client).join(', ')}
                       </span>
                     )
                     : undefined}

@@ -213,6 +213,9 @@ const AssistantText = memo(function AssistantText({ text, streaming }: { text: s
   )
 })
 
+/** Steps that act on the page rather than read it; their chips say Acting. */
+const ACTING_ACTIONS = new Set(['click', 'type', 'press', 'scroll', 'back'])
+
 const ToolChip = memo(function ToolChip({ item }: { item: ChatItem }): JSX.Element {
   const [open, setOpen] = useState(false)
   const count = item.sources?.length
@@ -220,6 +223,7 @@ const ToolChip = memo(function ToolChip({ item }: { item: ChatItem }): JSX.Eleme
   // a search question, and the page excerpt behind the toggle.
   if (item.action !== undefined || item.name === 'browser') {
     const label = [item.action, item.url ?? item.title ?? ''].filter(part => part !== '').join(' ')
+    const acting = item.action !== undefined && ACTING_ACTIONS.has(item.action)
     return (
       <div className="tool-chip-wrap">
         <button type="button" className="tool-chip" onClick={() => { setOpen(value => !value) }}>
@@ -229,7 +233,7 @@ const ToolChip = memo(function ToolChip({ item }: { item: ChatItem }): JSX.Eleme
             <line x1="1.5" y1="8" x2="14.5" y2="8" stroke="currentColor" strokeWidth="1.2" />
           </svg>
           <span className="tool-label">
-            {item.running === true ? 'Browsing' : 'Browsed'}
+            {item.running === true ? (acting ? 'Acting' : 'Browsing') : (acting ? 'Acted' : 'Browsed')}
             {label === '' ? '' : ` · ${label}`}
           </span>
         </button>
