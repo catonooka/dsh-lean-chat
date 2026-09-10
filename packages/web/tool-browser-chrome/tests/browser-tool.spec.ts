@@ -36,7 +36,7 @@ function stubBridge(state: Partial<BridgeState> = {}): BrowserBridge & { state: 
   const bridge: BrowserBridge = {
     seenWithin: () => full.seen,
     clientSeenWithin: (client: string) => full.clients.get(client) === true,
-    clientList: () => full.clientList.map(client => ({ client, lastSeenAt: 1 })),
+    clientList: () => full.clientList.map(client => ({ client, lastSeenAt: 1, actuation: false })),
     // The real enqueue is overloaded per job arm; the stub only serves the
     // browser arm and adopts the overloaded type wholesale.
     enqueue: (async (job: Omit<BrowserJob, 'id'>, timeoutMs: number) => {

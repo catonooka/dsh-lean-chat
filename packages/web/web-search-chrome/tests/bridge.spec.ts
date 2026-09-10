@@ -374,8 +374,8 @@ describe('per-client heartbeats', () => {
     created.markSeen(2_000, 'default')
     expect(created.seenWithin(15_000, 3_000)).toBe(true)
     expect(created.clientList(15_000, 3_000)).toEqual([
-      { client: 'default', lastSeenAt: 2_000 },
-      { client: 'work', lastSeenAt: 1_000 },
+      { client: 'default', lastSeenAt: 2_000, actuation: false },
+      { client: 'work', lastSeenAt: 1_000, actuation: false },
     ])
     // An unlabelled markSeen lands on the default label.
     created.markSeen(4_000)
@@ -388,7 +388,68 @@ describe('per-client heartbeats', () => {
     const created = bridge()
     created.markSeen(1_000, 'work')
     created.markSeen(20_000, 'default')
-    expect(created.clientList(15_000, 20_000)).toEqual([{ client: 'default', lastSeenAt: 20_000 }])
+    expect(created.clientList(15_000, 20_000)).toEqual([{ client: 'default', lastSeenAt: 20_000, actuation: false }])
     expect(created.seenWithin(15_000, 20_000)).toBe(true)
+  })
+
+  it('carries each profile\'s action opt-in through clientList', () => {
+    const created = bridge()
+    created.markSeen(1_000, 'main')
+    created.setClientActuation('main', true)
+    created.markSeen(2_000, 'guest')
+    expect(created.clientList(15_000, 2_000)).toEqual([
+      { client: 'guest', lastSeenAt: 2_000, actuation: false },
+      { client: 'main', lastSeenAt: 1_000, actuation: true },
+    ])
+    // A later poll can turn actions back off for the profile.
+    created.setClientActuation('main', false)
+    expect(created.clientList(15_000, 3_000).find(entry => entry.client === 'main')?.actuation).toBe(false)
+  })
+})
+
+describe('actuation routing', () => {
+  const clickJob = { type: 'browser' as const, action: 'click' as const, session: 'main', ref: '@e1' }
+
+  it('never hands an actuation job to a read-only poller', async () => {
+    const created = bridge()
+    const settlement = created.enqueue(clickJob, 15)
+    // The read-only default poller finds nothing — its wait lapses empty.
+    await expect(created.nextJob(5)).resolves.toBeNull()
+    await expect(settlement).resolves.toEqual({ ok: false, error: 'the extension did not answer within 15ms' })
+  })
+
+  it('hands an actuation job to an actions-enabled poller', async () => {
+    const created = bridge()
+    const settlement = created.enqueue(clickJob, 60)
+    const job = await created.nextJob(5, undefined, 'guest', true)
+    expect(job).toMatchObject({ type: 'browser', action: 'click', ref: '@e1' })
+    expect(created.settle({ id: job?.id, ok: true, browser: { url: 'https://a.example', title: 'a', truncated: false } })).toBe(true)
+    await expect(settlement).resolves.toMatchObject({ ok: true })
+  })
+
+  it('keeps a pinned actuation job away from its read-only label, read jobs flow normally', async () => {
+    const created = bridge()
+    const pinned = created.enqueue({ ...clickJob, client: 'work' }, 15)
+    // The work poller, actions off, cannot take its own pinned click.
+    await expect(created.nextJob(5, undefined, 'work')).resolves.toBeNull()
+    await expect(pinned).resolves.toMatchObject({ ok: false })
+    // A read-only job for the same label still flows.
+    const read = created.enqueue({ type: 'browser', action: 'snapshot', session: 'main', client: 'work' }, 60)
+    expect(await created.nextJob(5, undefined, 'work')).toMatchObject({ action: 'snapshot' })
+    created.dispose()
+    await read
+  })
+
+  it('skips actuation jobs ahead to an actions-enabled parked waiter', async () => {
+    const created = bridge()
+    const readOnlyParked = created.nextJob(10_000)
+    const actionsParked = created.nextJob(10_000, undefined, 'guest', true)
+    const click = created.enqueue({ ...clickJob, session: 'form' }, 60)
+    await expect(actionsParked).resolves.toMatchObject({ action: 'click', session: 'form' })
+    const read = created.enqueue({ type: 'browser', action: 'snapshot', session: 'main' }, 60)
+    await expect(readOnlyParked).resolves.toMatchObject({ action: 'snapshot' })
+    created.dispose()
+    await click
+    await read
   })
 })

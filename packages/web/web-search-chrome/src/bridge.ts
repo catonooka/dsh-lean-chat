@@ -31,22 +31,39 @@ export interface SearchJob {
   client?: string
 }
 
-/** One read-only browser step the extension runs in the user's own Chrome. */
+/** One browser step the extension runs in the user's own Chrome. */
 export interface BrowserJob {
   /** Bridge-assigned id, echoed back with the result. */
   id: string
   /** Discriminator: this job drives a real tab instead of a search fetch. */
   type: 'browser'
   /** The step to run against the session's tab. */
-  action: 'open' | 'snapshot' | 'extract' | 'close'
+  action: 'open' | 'snapshot' | 'extract' | 'close' | 'click' | 'type' | 'press' | 'scroll' | 'back'
   /** Which named tab the step addresses; the extension keeps one tab per name. */
   session: string
   /** The page to load for an `open`. */
   url?: string
   /** What the model wants pulled off the page for an `extract`. */
   goal?: string
+  /** The `@eN` ref from the latest snapshot that `click`/`type` targets. */
+  ref?: string
+  /** The text a `type` step enters into the ref'd field. */
+  text?: string
+  /** The key a `press` step sends (Enter, Tab, Escape, arrows, …). */
+  key?: string
+  /** The direction a `scroll` step rolls. */
+  direction?: 'up' | 'down' | 'left' | 'right'
   /** Only the extension running under this Chrome profile may take the job. */
   client?: string
+}
+
+/** Steps that act on the page instead of reading it; they only ever run in a
+ * Chrome profile whose user turned actions on for that profile. */
+export const ACTUATION_ACTIONS: ReadonlySet<string> = new Set(['click', 'type', 'press', 'scroll', 'back'])
+
+/** Whether one queued job needs an actions-enabled profile to run it. */
+export function isActuationJob(job: ExtensionJob): boolean {
+  return 'type' in job && job.type === 'browser' && ACTUATION_ACTIONS.has(job.action)
 }
 
 /** Any job the bridge hands to an extension long-poll. */
@@ -91,9 +108,11 @@ interface PendingSlot {
   timer: ReturnType<typeof setTimeout>
 }
 
-/** A parked long-poll, remembered with the profile label it polls for. */
+/** A parked long-poll, remembered with the profile label it polls for and
+ * whether that profile's user allows actions (not just reading). */
 interface ParkedPoll {
   client: string
+  actuation: boolean
   resolve: (job: ExtensionJob | null) => void
   timer: ReturnType<typeof setTimeout>
 }
@@ -103,7 +122,8 @@ interface ParkedPoll {
  * `nextJob` serves the extension's long-polls, `enqueue` holds a job until
  * the extension settles it or the timeout lapses, and every request from the
  * extension refreshes the heartbeats that `seenWithin` answers from — one for
- * the bridge overall, one per Chrome profile label.
+ * the bridge overall, one per Chrome profile label, each carrying whether that
+ * profile's user allows actions.
  */
 export class ExtensionBridge {
   private nextJobId = 1
@@ -112,6 +132,7 @@ export class ExtensionBridge {
   private readonly pending = new Map<string, PendingSlot>()
   private readonly waiters: ParkedPoll[] = []
   private readonly clientSeenAt = new Map<string, number>()
+  private readonly clientActuation = new Map<string, boolean>()
 
   /**
    * Record that an extension just made a bridge request.
@@ -121,6 +142,11 @@ export class ExtensionBridge {
   markSeen(now: number = Date.now(), client: string = DEFAULT_BRIDGE_CLIENT): void {
     this.lastSeenAt = now
     this.clientSeenAt.set(client, now)
+  }
+
+  /** Record whether one profile's user allows actions in that profile. */
+  setClientActuation(client: string, allowed: boolean): void {
+    this.clientActuation.set(client, allowed)
   }
 
   /** Whether any profile's extension made a request within the window. */
@@ -134,12 +160,20 @@ export class ExtensionBridge {
     return at !== undefined && at > 0 && now - at <= ttlMs
   }
 
-  /** The profile labels seen within the window, freshest first. */
-  clientList(ttlMs: number, now: number = Date.now()): { client: string; lastSeenAt: number }[] {
+  /** The profile labels seen within the window, freshest first, with whether
+   * each allows actions. */
+  clientList(ttlMs: number, now: number = Date.now()): { client: string; lastSeenAt: number; actuation: boolean }[] {
     return [...this.clientSeenAt.entries()]
       .filter(([, at]) => at > 0 && now - at <= ttlMs)
-      .map(([client, lastSeenAt]) => ({ client, lastSeenAt }))
+      .map(([client, lastSeenAt]) => ({ client, lastSeenAt, actuation: this.clientActuation.get(client) === true }))
       .sort((a, b) => b.lastSeenAt - a.lastSeenAt)
+  }
+
+  /** Whether one poller may run one job: label pin plus, for actuation
+   * steps, the profile's own opt-in. */
+  private mayTake(job: ExtensionJob, client: string, actuation: boolean): boolean {
+    if (isActuationJob(job) && !actuation) return false
+    return job.client === undefined || job.client === client
   }
 
   /**
@@ -149,18 +183,19 @@ export class ExtensionBridge {
    * extension) stops holding a waiter that a fresh job would be handed to and
    * lost. A poller takes the jobs pinned to its own profile label first, then
    * the unpinned jobs any profile may run; jobs pinned to another label never
-   * move.
+   * move, and actuation steps move only to profiles whose user allows them.
    */
-  nextJob(waitMs: number, signal?: AbortSignal, client: string = DEFAULT_BRIDGE_CLIENT): Promise<ExtensionJob | null> {
-    const pinned = this.queue.findIndex(job => job.client === client)
+  nextJob(waitMs: number, signal?: AbortSignal, client: string = DEFAULT_BRIDGE_CLIENT, actuation = false): Promise<ExtensionJob | null> {
+    const pinned = this.queue.findIndex(job => job.client === client && (!isActuationJob(job) || actuation))
     const pinnedJob = pinned !== -1 ? this.queue.splice(pinned, 1)[0] : undefined
     if (pinnedJob !== undefined) return Promise.resolve(pinnedJob)
-    const shared = this.queue.findIndex(job => job.client === undefined)
+    const shared = this.queue.findIndex(job => job.client === undefined && (!isActuationJob(job) || actuation))
     const sharedJob = shared !== -1 ? this.queue.splice(shared, 1)[0] : undefined
     if (sharedJob !== undefined) return Promise.resolve(sharedJob)
     return new Promise((resolve) => {
       const waiter: ParkedPoll = {
         client,
+        actuation,
         resolve,
         timer: setTimeout(() => {
           const index = this.waiters.indexOf(waiter)
@@ -217,10 +252,12 @@ export class ExtensionBridge {
       }
       this.pending.set(full.id, entry)
       // A pinned job goes to a poller of the same label; an unpinned one
-      // prefers the unlabeled poller and falls back to any parked one.
+      // prefers the unlabeled poller and falls back to any parked one; an
+      // actuation step only ever rides a profile that allows actions.
       const waiter = full.client === undefined
-        ? this.waiters.find(parked => parked.client === DEFAULT_BRIDGE_CLIENT) ?? this.waiters[0]
-        : this.waiters.find(parked => parked.client === full.client)
+        ? this.waiters.find(parked => parked.client === DEFAULT_BRIDGE_CLIENT && this.mayTake(full, parked.client, parked.actuation))
+          ?? this.waiters.find(parked => this.mayTake(full, parked.client, parked.actuation))
+        : this.waiters.find(parked => this.mayTake(full, parked.client, parked.actuation))
       if (waiter !== undefined) {
         const index = this.waiters.indexOf(waiter)
         this.waiters.splice(index, 1)
