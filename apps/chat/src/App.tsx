@@ -402,13 +402,16 @@ const AssistantRow = memo(function AssistantRow(
 
 /** The sidebar's list body — conversations or search hits. Memoized so
  * composer typing and streaming batches never re-render the loaded rows. */
-const SessionListBody = memo(function SessionListBody({ searchActive, hits, sessions, activeId, searching, loadingMore, onSelect }: {
+const SessionListBody = memo(function SessionListBody({
+  searchActive, hits, sessions, activeId, searching, loadingMore, runningIds, onSelect,
+}: {
   searchActive: boolean
   hits: readonly SearchHit[]
   sessions: readonly SessionSummary[]
   activeId: string
   searching: boolean
   loadingMore: boolean
+  runningIds: readonly string[]
   onSelect: (id: string) => void
 }): JSX.Element {
   return (
@@ -447,6 +450,7 @@ const SessionListBody = memo(function SessionListBody({ searchActive, hits, sess
                 data-id={session.id}
               >
                 <span className="session-title">{session.title}</span>
+                {runningIds.includes(session.id) ? <span className="session-live" aria-label="generating" /> : undefined}
                 <span className="session-date">{relativeDate(session.updatedAt)}</span>
               </button>
             ))
@@ -483,7 +487,25 @@ export default function App(): JSX.Element {
     return stored ?? newSessionId()
   })
   const [items, setItems] = useState<ChatItem[]>([])
-  const [streaming, setStreaming] = useState(false)
+  // Sessions with a turn in flight; the composer only guards the ACTIVE one,
+  // so conversations run in parallel and each keeps its own stream.
+  const [runningIds, setRunningIds] = useState<string[]>([])
+  const streaming = runningIds.includes(activeId)
+  const activeIdRef = useRef(activeId)
+  useEffect(() => { activeIdRef.current = activeId }, [activeId])
+  // One registry of live turns: the feed keeps receiving deltas while its
+  // session is out of view, and the entry's item list replays exactly when
+  // the user switches back. Finished turns hand the session back to the
+  // normal fetch flow — the server's history is the authority once a turn
+  // has fully persisted.
+  interface TurnEntry {
+    feed: StreamFeed
+    items: ChatItem[]
+    sawAssistant: boolean
+    sawCompaction: boolean
+  }
+  const turnsRef = useRef<Map<string, TurnEntry>>(new Map())
+  const [feed, setFeed] = useState<StreamFeed | undefined>(undefined)
   const [draft, setDraft] = useState('')
   const [config, setConfig] = useState<AppConfig | undefined>(undefined)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -594,11 +616,19 @@ export default function App(): JSX.Element {
     else void loadMoreSessions()
   }, [loadMoreHits, loadMoreSessions, searchActive])
 
-  /** Switching conversations is blocked mid-stream; the callback stays
-   * identity-stable so the memoized sidebar rows skip re-renders. */
+  /** Switching conversations never blocks: a turn in flight keeps streaming
+   * in the background, and switching back restores its live feed and rows. */
   const selectSession = useCallback((id: string): void => {
-    if (!streaming) setActiveId(id)
-  }, [streaming])
+    if (id === activeIdRef.current) return
+    setActiveId(id)
+    const entry = turnsRef.current.get(id)
+    if (entry !== undefined) {
+      setItems(entry.items)
+      setFeed(entry.feed)
+      return
+    }
+    setFeed(undefined)
+  }, [])
 
   useEffect(() => {
     localStorage.setItem(ACTIVE_KEY, activeId)
@@ -615,15 +645,22 @@ export default function App(): JSX.Element {
 
   // A persisted session's history loads once the session list (or a search
   // hit) confirms the id; a draft (never-sent) session shows an empty thread
-  // until its first message makes it known. The cancelled flag keeps rapid
-  // switches from racing an older fetch over a newer one.
+  // until its first message makes it known. A session whose turn is still
+  // live was restored by the switch itself — fetching would race it away.
+  // The cancelled flag keeps rapid switches from racing an older fetch over
+  // a newer one.
   const knownSession = sessions.some(session => session.id === activeId)
     || hits.some(hit => hit.id === activeId)
   useEffect(() => {
+    if (turnsRef.current.get(activeId) !== undefined) return undefined
     if (knownSession) {
       let cancelled = false
       fetchMessages(activeId)
-        .then((items) => { if (!cancelled) setItems(items) })
+        .then((items) => {
+          // A fetch that started before a turn began must not clobber the
+          // turn's rows when it lands mid-stream: the entry owns the view.
+          if (!cancelled && turnsRef.current.get(activeId) === undefined) setItems(items)
+        })
         .catch((err: unknown) => {
           if (!cancelled) setError(err instanceof Error ? err.message : String(err))
         })
@@ -635,7 +672,6 @@ export default function App(): JSX.Element {
 
   // The streaming turn's text lives in the feed (outside React state): only
   // the subscribed streaming row re-renders as deltas land, never the app.
-  const [feed, setFeed] = useState<StreamFeed | undefined>(undefined)
 
   // The conversation whose history has already been landed on the bottom.
   const anchoredSessionRef = useRef('')
@@ -809,40 +845,54 @@ export default function App(): JSX.Element {
   }
 
   const startNewChat = useCallback(() => {
-    if (streaming) return
+    // Never blocked: any running conversation keeps streaming in the
+    // background while this fresh draft takes the composer.
     setActiveId(newSessionId())
     setItems([])
+    setFeed(undefined)
     textareaRef.current?.focus()
-  }, [streaming])
+  }, [])
 
   /**
    * Drive one model turn and stream it into the view. Both sends and retries
    * share this: `drive` performs the fetch and pumps SSE events back. Deltas
    * land in the feed at a coarse cadence — only the streaming row hears
-   * them; order-critical events flush first.
+   * them; order-critical events flush first. The turn belongs to one session:
+   * its entry tracks the rows it produced, so it can finish out of view and
+   * replay exactly when the user returns. `base` is the session's full row
+   * list at turn start (including the just-appended user bubble for sends).
    */
-  const runTurn = useCallback(async (drive: (onEvent: (event: StreamEvent) => void) => Promise<void>): Promise<void> => {
-    setStreaming(true)
-    let sawAssistant = false
-    let sawCompaction = false
+  const runTurn = useCallback(async (
+    drive: (onEvent: (event: StreamEvent) => void) => Promise<void>,
+    sessionId: string,
+    base: ChatItem[],
+  ): Promise<void> => {
     const feed = new StreamFeed()
-    setFeed(feed)
+    const entry: TurnEntry = { feed, items: base, sawAssistant: false, sawCompaction: false }
+    turnsRef.current.set(sessionId, entry)
+    setRunningIds(previous => [...previous, sessionId])
+    if (activeIdRef.current === sessionId) setFeed(feed)
+    /** Row changes land in the entry always, and in the view when watched. */
+    const apply = (next: ChatItem[]): void => {
+      entry.items = next
+      if (activeIdRef.current === sessionId) setItems(next)
+    }
     const onEvent = (event: StreamEvent): void => {
       switch (event.t) {
         case 'user':
           break
         case 'delta':
-          sawAssistant = true
+          entry.sawAssistant = true
           feed.push(event.text)
           break
         case 'assistant':
           feed.flushNow()
-          sawAssistant = true
+          entry.sawAssistant = true
           feed.setFull(event.text)
           break
         case 'tool-start':
           feed.flushNow()
-          setItems(previous => [...previous, {
+          apply([...entry.items, {
             role: 'tool',
             name: event.name,
             ...event.query !== undefined ? { query: event.query } : {},
@@ -853,8 +903,8 @@ export default function App(): JSX.Element {
           break
         case 'tool-end':
           feed.flushNow()
-          setItems((previous) => {
-            const next = [...previous]
+          {
+            const next = [...entry.items]
             for (let index = next.length - 1; index >= 0; index--) {
               const candidate = next[index]
               if (candidate !== undefined && candidate.role === 'tool' && candidate.running === true) {
@@ -874,15 +924,15 @@ export default function App(): JSX.Element {
                 break
               }
             }
-            return next
-          })
+            apply(next)
+          }
           break
         case 'status':
           break
         case 'compaction':
-          // Old turns were replaced by a checkpoint mid-turn; the history
+          // Old turns were replaced by a checkpoint mid-turn; the post-turn
           // refetch below lands the compacted view once the stream ends.
-          sawCompaction = true
+          entry.sawCompaction = true
           break
         case 'error':
           setError(event.message)
@@ -896,21 +946,25 @@ export default function App(): JSX.Element {
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
-      // Commit the streamed text into the item list, then clear the feed.
+      // Commit the streamed text into the row list, then retire the turn.
       const finalText = feed.reset()
-      if (sawAssistant && finalText !== '') {
-        setItems(previous => [...previous, { role: 'assistant', text: finalText }])
+      if (entry.sawAssistant && finalText !== '') {
+        apply([...entry.items, { role: 'assistant', text: finalText }])
       }
-      setStreaming(false)
-      setFeed(undefined)
+      const wasActive = activeIdRef.current === sessionId
+      setRunningIds(previous => previous.filter(id => id !== sessionId))
+      turnsRef.current.delete(sessionId)
+      if (wasActive) setFeed(undefined)
       refreshSessions()
-      if (sawCompaction) {
-        fetchMessages(activeId)
-          .then(setItems)
-          .catch(() => { /* the history stays as rendered */ })
+      if (entry.sawCompaction && wasActive) {
+        fetchMessages(sessionId)
+          .then((fetched) => {
+            if (activeIdRef.current === sessionId && turnsRef.current.get(sessionId) === undefined) setItems(fetched)
+          })
+          .catch(() => { /* the committed rows stay as rendered */ })
       }
     }
-  }, [activeId, refreshSessions])
+  }, [refreshSessions])
 
   const send = useCallback(async (): Promise<void> => {
     const text = draft.trim()
@@ -935,8 +989,8 @@ export default function App(): JSX.Element {
     if (node !== null) node.style.height = 'auto'
     setAttachment(undefined)
     setReplyTarget(undefined)
-    setItems(previous => [...previous, {
-      role: 'user' as const,
+    const userItem: ChatItem = {
+      role: 'user',
       ...text !== '' ? { text } : {},
       ...reply !== undefined ? { replyTo: reply } : {},
       ...outgoing !== undefined
@@ -949,9 +1003,11 @@ export default function App(): JSX.Element {
           }],
         }
         : {},
-    }])
-    await runTurn(onEvent => sendMessage(activeId, text, uploaded, reply, onEvent))
-  }, [activeId, attachment, draft, replyTarget, runTurn, streaming])
+    }
+    const base = [...items, userItem]
+    setItems(base)
+    await runTurn(onEvent => sendMessage(activeId, text, uploaded, reply, onEvent), activeId, base)
+  }, [activeId, attachment, draft, items, replyTarget, runTurn, streaming])
 
   /** Drop the pending attachment, releasing its preview URL. */
   const removeAttachment = useCallback((): void => {
@@ -965,13 +1021,12 @@ export default function App(): JSX.Element {
   const retry = useCallback(async (): Promise<void> => {
     if (streaming || items.length === 0) return
     // Drop the stale answer rows: everything after the last user row goes.
-    setItems((previous) => {
-      let cut = previous.length
-      while (cut > 0 && previous[cut - 1]?.role !== 'user') cut--
-      return cut === previous.length ? previous : previous.slice(0, cut)
-    })
-    await runTurn(onEvent => retrySession(activeId, onEvent))
-  }, [activeId, items.length, runTurn, streaming])
+    let cut = items.length
+    while (cut > 0 && items[cut - 1]?.role !== 'user') cut--
+    const base = cut === items.length ? items : items.slice(0, cut)
+    if (base !== items) setItems(base)
+    await runTurn(onEvent => retrySession(activeId, onEvent), activeId, base)
+  }, [activeId, items, runTurn, streaming])
 
   /** Make one message the reply target: the composer answers it with a
    * context chip, instead of pasting its text into the draft. */
@@ -1068,6 +1123,7 @@ export default function App(): JSX.Element {
             activeId={activeId}
             searching={searching}
             loadingMore={loadingMore}
+            runningIds={runningIds}
             onSelect={selectSession}
           />
         </nav>

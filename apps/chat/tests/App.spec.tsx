@@ -130,6 +130,9 @@ async function renderApp(options: {
     return Promise.resolve(jsonResponse({}))
   }))
   render(<App />)
+  // Let the mount-time loads (sessions, config, history) settle before the
+  // test drives the composer — real users cannot type faster than that.
+  await new Promise((resolve) => { setTimeout(resolve, 0) })
   return { posts, historyFetches, uploads, attachmentFetches, sessionListFetches }
 }
 
@@ -470,6 +473,29 @@ const delayedSseResponse = (events: readonly unknown[], delayMs: number): Respon
   } as unknown as Response
 }
 
+/** Like delayedSseResponse, but each frame carries its own delay — the
+ * parallel-conversation tests need precise control over when a stream is
+ * still mid-flight. */
+const timedSseResponse = (frames: ReadonlyArray<readonly [unknown, number]>): Response => {
+  const chunks = frames.map(([event]) => `data: ${JSON.stringify(event)}\n\n`)
+  const delays = frames.map(([, delay]) => delay)
+  let index = 0
+  return {
+    ok: true,
+    status: 200,
+    statusText: 'OK',
+    body: {
+      getReader: () => ({
+        read: async () => {
+          if (index >= chunks.length) return { done: true as const, value: undefined }
+          await new Promise((resolve) => { setTimeout(resolve, delays[index] ?? 0) })
+          return { done: false as const, value: new TextEncoder().encode(chunks[index++] as string) }
+        },
+      }),
+    },
+  } as unknown as Response
+}
+
 describe('streaming turn', () => {
   it('shows the thinking and streamed states, then commits the final row', async () => {
     localStorage.setItem('dsh-chat-active', 'sess-a')
@@ -580,6 +606,133 @@ describe('streaming turn', () => {
     await screen.findByText('Acted · type https://form.example', {}, { timeout: 3000 })
     // The history chip (preloaded items) reads the same way.
     expect(await screen.findByText('Acted · click https://form.example', {}, { timeout: 3000 })).toBeTruthy()
+  })
+})
+
+describe('parallel conversations', () => {
+  it('keeps a turn streaming when the user switches away and back', async () => {
+    localStorage.setItem('dsh-chat-active', 'sess-a')
+    await renderApp({
+      sessions: [
+        { id: 'sess-a', title: 'Alpha', items: [] },
+        { id: 'sess-b', title: 'Beta', items: [{ role: 'assistant', text: 'beta stands ready' }] },
+      ],
+      streams: [timedSseResponse([
+        [{ t: 'delta', text: 'The old chat keeps ' }, 40],
+        [{ t: 'delta', text: 'generating in the background.' }, 900],
+        [{ t: 'assistant', text: 'The old chat keeps generating in the background.' }, 40],
+        [{ t: 'turn-end', reason: 'completed' }, 20],
+      ])],
+    })
+    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    fireEvent.change(composer, { target: { value: 'from alpha' } })
+    fireEvent.keyDown(composer, { key: 'Enter' })
+    await screen.findByText(/The old chat keeps/, {}, { timeout: 3000 })
+    // Switching away mid-stream is allowed and takes the view to Beta.
+    fireEvent.click(screen.getByTitle('Beta'))
+    await screen.findByText('beta stands ready')
+    expect(screen.queryByText(/The old chat keeps/)).toBeNull()
+    // Switching back restores the SAME live turn with its text intact.
+    fireEvent.click(screen.getByTitle('Alpha'))
+    await screen.findByText(/The old chat keeps/, {}, { timeout: 3000 })
+    expect(document.querySelector('.caret')).not.toBeNull()
+    // The turn finishes where the user is watching.
+    await screen.findByText('The old chat keeps generating in the background.', {}, { timeout: 3000 })
+    await waitFor(() => { expect(document.querySelector('.caret')).toBeNull() })
+  })
+
+  it('starts a new chat while a turn streams; the old one still completes', async () => {
+    localStorage.setItem('dsh-chat-active', 'sess-a')
+    await renderApp({
+      sessions: [
+        { id: 'sess-a', title: 'Alpha', items: [] },
+      ],
+      streams: [timedSseResponse([
+        [{ t: 'delta', text: 'alpha is still working' }, 40],
+        [{ t: 'assistant', text: 'alpha is still working' }, 700],
+        [{ t: 'turn-end', reason: 'completed' }, 20],
+      ])],
+    })
+    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    fireEvent.change(composer, { target: { value: 'hello alpha' } })
+    fireEvent.keyDown(composer, { key: 'Enter' })
+    await screen.findByText(/alpha is still working/, {}, { timeout: 3000 })
+    // New chat mid-stream: never blocked, fresh empty thread takes over.
+    fireEvent.click(screen.getByText('New chat'))
+    expect((screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…') as HTMLTextAreaElement).value).toBe('')
+    expect(document.querySelector('.caret')).toBeNull()
+    expect(screen.queryByText(/alpha is still working/)).toBeNull()
+    // The old conversation keeps its stream and finishes in the background.
+    fireEvent.click(screen.getByTitle('Alpha'))
+    await screen.findByText(/alpha is still working/, {}, { timeout: 3000 })
+    await waitFor(() => {
+      expect(document.querySelectorAll('.session-live').length).toBe(0)
+    }, { timeout: 3000 })
+  })
+
+  it('runs two sessions at once, each with a live dot, and both complete', async () => {
+    localStorage.setItem('dsh-chat-active', 'sess-a')
+    await renderApp({
+      sessions: [
+        { id: 'sess-a', title: 'Alpha', items: [] },
+        { id: 'sess-b', title: 'Beta', items: [] },
+      ],
+      streams: [
+        timedSseResponse([
+          [{ t: 'delta', text: 'alpha answer' }, 40],
+          [{ t: 'assistant', text: 'alpha answer' }, 800],
+          [{ t: 'turn-end', reason: 'completed' }, 20],
+        ]),
+        timedSseResponse([
+          [{ t: 'delta', text: 'beta answer' }, 40],
+          [{ t: 'assistant', text: 'beta answer' }, 500],
+          [{ t: 'turn-end', reason: 'completed' }, 20],
+        ]),
+      ],
+    })
+    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    fireEvent.change(composer, { target: { value: 'to alpha' } })
+    fireEvent.keyDown(composer, { key: 'Enter' })
+    await screen.findByText(/alpha answer/, {}, { timeout: 3000 })
+    // Switch to Beta and send there while Alpha is still generating.
+    fireEvent.click(screen.getByTitle('Beta'))
+    const betaComposer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    fireEvent.change(betaComposer, { target: { value: 'to beta' } })
+    fireEvent.keyDown(betaComposer, { key: 'Enter' })
+    await screen.findByText(/beta answer/, {}, { timeout: 3000 })
+    await waitFor(() => {
+      expect(document.querySelectorAll('.session-live').length).toBe(2)
+    }, { timeout: 3000 })
+    // Beta finishes while watched; Alpha is still live in the background.
+    await screen.findByText('beta answer', {}, { timeout: 3000 })
+    await waitFor(() => {
+      expect(document.querySelectorAll('.session-live').length).toBe(1)
+    }, { timeout: 3000 })
+    fireEvent.click(screen.getByTitle('Alpha'))
+    await screen.findByText('alpha answer', {}, { timeout: 3000 })
+    await waitFor(() => {
+      expect(document.querySelectorAll('.session-live').length).toBe(0)
+    }, { timeout: 3000 })
+  })
+
+  it('still refuses a second send in the same session while it streams', async () => {
+    localStorage.setItem('dsh-chat-active', 'sess-a')
+    const harness = await renderApp({
+      sessions: [{ id: 'sess-a', title: 'Alpha', items: [] }],
+      streams: [timedSseResponse([
+        [{ t: 'delta', text: 'working' }, 40],
+        [{ t: 'assistant', text: 'working' }, 400],
+        [{ t: 'turn-end', reason: 'completed' }, 20],
+      ])],
+    })
+    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    fireEvent.change(composer, { target: { value: 'first' } })
+    fireEvent.keyDown(composer, { key: 'Enter' })
+    await screen.findByText(/working/, {}, { timeout: 3000 })
+    fireEvent.change(composer, { target: { value: 'second while streaming' } })
+    fireEvent.keyDown(composer, { key: 'Enter' })
+    expect(harness.posts).toHaveLength(1)
+    await waitFor(() => { expect(document.querySelector('.caret')).toBeNull() })
   })
 })
 
