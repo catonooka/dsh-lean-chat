@@ -51,7 +51,7 @@ function snapshotPage(maxLines, maxChars) {
       if (type === 'radio') return 'radio'
       return 'textbox'
     }
-    if (el.isContentEditable) return 'textbox'
+    if (el.isContentEditable === true || el.getAttribute('contenteditable') === 'true') return 'textbox'
     return null
   }
 
@@ -67,6 +67,13 @@ function snapshotPage(maxLines, maxChars) {
     var label = el.getAttribute('aria-label')
     if (label !== null && label.trim() !== '') return clip(label, 80)
     if (el.placeholder !== undefined && el.placeholder !== '') return clip(el.placeholder, 80)
+    // A submit-style input's value is its whole label.
+    if (el.tagName.toLowerCase() === 'input') {
+      var inputType = (el.getAttribute('type') || 'text').toLowerCase()
+      if ((inputType === 'submit' || inputType === 'button' || inputType === 'reset') && el.value !== undefined && String(el.value) !== '') {
+        return clip(String(el.value), 80)
+      }
+    }
     var id = el.id !== undefined ? String(el.id) : ''
     if (id !== '') {
       try {

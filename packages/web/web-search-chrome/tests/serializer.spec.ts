@@ -89,6 +89,62 @@ describe('serializer snapshotPage', () => {
     ].join('\n'))
   })
 
+  it('names through aria-labelledby ids, keeping content over tooltips', () => {
+    document.body.innerHTML = [
+      '<span id="first">Guide</span> <span id="second">book</span>',
+      '<button aria-labelledby="first second">open</button>',
+      '<a href="https://a.example/t" title="Tooltip name">body text</a>',
+      '<a href="https://a.example/empty" title="Only the tooltip"></a>',
+    ].join('')
+    const page = snapshotPage()
+    expect(page.snapshot).toBe([
+      '- Guide',
+      '- book',
+      '[@e1 button "Guide book"]',
+      '[@e2 link "body text"] https://a.example/t',
+      '[@e3 link "Only the tooltip"] https://a.example/empty',
+    ].join('\n'))
+  })
+
+  it('roles selects as comboboxes and checkboxes and radios as themselves', () => {
+    document.body.innerHTML = [
+      '<select aria-label="Engine"><option>google</option></select>',
+      '<input type="checkbox" aria-label="Remember me">',
+      '<input type="radio" aria-label="Always">',
+      '<input type="submit" value="Send it">',
+    ].join('')
+    const page = snapshotPage()
+    expect(page.snapshot).toBe([
+      '[@e1 combobox "Engine"]',
+      '[@e2 checkbox "Remember me"]',
+      '[@e3 radio "Always"]',
+      '[@e4 button "Send it"]',
+    ].join('\n'))
+  })
+
+  it('treats a contenteditable span as a textbox and honors explicit roles', () => {
+    document.body.innerHTML = [
+      '<span contenteditable="true">write here</span>',
+      '<div role="switch" aria-label="Auto-compact" tabindex="0"></div>',
+    ].join('')
+    const page = snapshotPage()
+    expect(page.snapshot).toBe([
+      '[@e1 textbox "write here"]',
+      '[@e2 switch "Auto-compact"]',
+    ].join('\n'))
+  })
+
+  it('marks heading depth with repeated hashes', () => {
+    document.body.innerHTML = '<h1>Top</h1><h3>Middle</h3><h4>Deep</h4><p>body</p>'
+    const page = snapshotPage()
+    expect(page.snapshot).toBe([
+      '# Top',
+      '### Middle',
+      '#### Deep',
+      '- body',
+    ].join('\n'))
+  })
+
   it('emits text blocks and clips them, skipping hidden and non-visual nodes', () => {
     document.body.innerHTML = [
       '<p>First paragraph.</p>',
