@@ -38,7 +38,7 @@ function stubBridge(state: Partial<BridgeState> = {}): BrowserBridge & { state: 
   const bridge: BrowserBridge = {
     seenWithin: () => full.seen,
     clientSeenWithin: (client: string) => full.clients.get(client) === true,
-    clientList: () => full.clientList.map(entry => ({ ...entry, version: entry.version ?? 0, lastSeenAt: 1 })),
+    clientList: () => full.clientList.map(entry => ({ ...entry, version: entry.version ?? EXTENSION_PROTOCOL, lastSeenAt: 1 })),
     // The real enqueue is overloaded per job arm; the stub only serves the
     // browser arm and adopts the overloaded type wholesale.
     enqueue: (async (job: Omit<BrowserJob, 'id'>, timeoutMs: number) => {
@@ -145,6 +145,49 @@ describe('browser tool failures', () => {
   it('surfaces an extension-reported failure as the step error', async () => {
     const created = tool(stubBridge({ respond: () => ({ ok: false, error: 'the debugger was refused' }) }))
     await expect(created.execute({ action: 'open', url: 'https://x.com/me' })).rejects.toThrow('the browser step failed: the debugger was refused')
+  })
+})
+
+describe('browser tool stale-build gate', () => {
+  it('refuses steps at once when every connected build predates the browser vocabulary', async () => {
+    const bridge = stubBridge({ clientList: [{ client: 'default', actuation: false, version: 0 }] })
+    const created = tool(bridge)
+    await expect(created.execute({ action: 'extract', url: 'https://x.com' }))
+      .rejects.toThrow('the connected Chrome extension is an older build — reload it in chrome://extensions')
+    // The refusal is up front: nothing was enqueued to time out later.
+    expect(bridge.state.jobs).toHaveLength(0)
+  })
+
+  it('names the profile when the requested one is stale but another is current', async () => {
+    const bridge = stubBridge({
+      clients: new Map([['default', true], ['work', true]]),
+      clientList: [
+        { client: 'default', actuation: false, version: EXTENSION_PROTOCOL },
+        { client: 'work', actuation: false, version: 0 },
+      ],
+    })
+    const created = tool(bridge)
+    await expect(created.execute({ action: 'snapshot', profile: 'work' }))
+      .rejects.toThrow('the "work" profile runs an older extension build')
+    // The current profile still works.
+    await created.execute({ action: 'snapshot', profile: 'default' })
+    expect(bridge.state.jobs).toHaveLength(1)
+  })
+
+  it('flags a stale build in the status answer and its render', async () => {
+    const bridge = stubBridge({ clientList: [{ client: 'default', actuation: false, version: 0 }] })
+    const created = tool(bridge)
+    const value = await created.execute({ action: 'status' })
+    expect(value.profiles).toEqual([{ profile: 'default', version: 0 }])
+    const rendered = created.output.render({ action: 'status' }, value)
+    expect(rendered[0]?.text).toContain('default (older build — reload the extension)')
+  })
+
+  it('keeps the timeout ladder above the extension step deadline', () => {
+    // The extension settles or fails every step within 40s; the job budget
+    // must outlive that, and the tool budget the job.
+    expect(DEFAULT_JOB_TIMEOUT_MS).toBeGreaterThan(40_000)
+    expect(DEFAULT_TOOL_TIMEOUT_MS).toBeGreaterThan(DEFAULT_JOB_TIMEOUT_MS)
   })
 })
 

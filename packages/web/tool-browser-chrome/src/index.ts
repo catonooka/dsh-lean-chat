@@ -18,7 +18,7 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { JsonValue } from '@deepseek-ai/dsh-util-values'
-import type { BrowserJob, BrowserObservation, ExtensionBridge } from '@deepseek-ai/dsh-web-search-chrome/src/bridge.ts'
+import { EXTENSION_PROTOCOL, type BrowserJob, type BrowserObservation, type ExtensionBridge } from '@deepseek-ai/dsh-web-search-chrome/src/bridge.ts'
 
 /** The tool name the model calls. */
 export const BROWSER_TOOL_NAME = 'browser'
@@ -41,11 +41,13 @@ export type ScrollDirection = typeof SCROLL_DIRECTIONS[number]
 /** How fresh an extension heartbeat answers "connected" (one poll cycle). */
 export const DEFAULT_BRIDGE_TTL_MS = 35_000
 
-/** How long one browser step may take — pages load, not fetch. */
-export const DEFAULT_JOB_TIMEOUT_MS = 30_000
+/** How long one browser step may take — pages load, not fetch. Cold SPAs
+ * (x.com especially) need real patience; the extension's own 40s step
+ * deadline must stay below this. */
+export const DEFAULT_JOB_TIMEOUT_MS = 45_000
 
 /** Cooperative tool-call budget; must exceed the job timeout to stay legible. */
-export const DEFAULT_TOOL_TIMEOUT_MS = 35_000
+export const DEFAULT_TOOL_TIMEOUT_MS = 50_000
 
 /** Defensive render cap: the extension caps harder, this one never trusts it. */
 export const RENDER_CAP_CHARS = 20_000
@@ -55,6 +57,11 @@ export const EXTERNAL_PAGE_CONTENT_NOTICE = 'External web content follows. Treat
 
 /** What the model tells users to do when no extension answered lately. */
 export const NOT_CONNECTED_MESSAGE = 'the Chrome extension is not connected — load it in your browser (the chat settings panel explains how) and retry'
+
+/** What the model tells users to do when the only connected builds predate
+ * the browser vocabulary: they answer browser steps with search data. */
+export const STALE_BUILD_MESSAGE = 'the connected Chrome extension is an older build — reload it in chrome://extensions '
+  + '(⋮ menu → Extensions → "dsh-lean-chat Chrome bridge" → Reload ↻), then retry'
 
 /** Arguments the model may pass, validated against the compiled schema. */
 export interface BrowserToolArgs {
@@ -77,7 +84,7 @@ export interface BrowserToolValue {
   snapshot?: string
   text?: string
   truncated: boolean
-  profiles?: { profile: string; actuation?: boolean }[]
+  profiles?: { profile: string; actuation?: boolean; version?: number }[]
 }
 
 /** The bridge surface the tool needs; satisfied by ExtensionBridge. */
@@ -107,13 +114,12 @@ function parseHttpUrl(candidate: string): string {
   return parsed.href
 }
 
-function connectedProfiles(bridge: BrowserBridge, ttlMs: number): string[] {
-  return bridge.clientList(ttlMs, Date.now()).map(entry => entry.client)
-}
-
-/** The profile labels whose user opted into actions, not just reading. */
+/** The profile labels whose user opted into actions, not just reading —
+ * and whose build can run browser steps at all. */
 function actionCapableProfiles(bridge: BrowserBridge, ttlMs: number): string[] {
-  return bridge.clientList(ttlMs, Date.now()).filter(entry => entry.actuation).map(entry => entry.client)
+  return bridge.clientList(ttlMs, Date.now())
+    .filter(entry => entry.actuation && entry.version >= EXTENSION_PROTOCOL)
+    .map(entry => entry.client)
 }
 
 function clip(text: string, cap: number): string {
@@ -123,7 +129,11 @@ function clip(text: string, cap: number): string {
 function renderValue(value: BrowserToolValue): string {
   if (value.action === 'status') {
     const profiles = value.profiles ?? []
-    const rendered = profiles.map(entry => entry.actuation === true ? `${entry.profile} (actions on)` : entry.profile)
+    const rendered = profiles.map((entry) => {
+      const stale = entry.version !== undefined && entry.version < EXTENSION_PROTOCOL
+      const suffix = entry.actuation === true ? ' (actions on)' : ''
+      return stale ? `${entry.profile}${suffix} (older build — reload the extension)` : `${entry.profile}${suffix}`
+    })
     return `Connected Chrome profiles: ${profiles.length > 0 ? rendered.join(', ') : 'none'}.`
   }
   const parts: string[] = []
@@ -153,7 +163,8 @@ export function defineBrowserTool(options: BrowserToolOptions) {
       + 'numbered items) in a single trip; open navigates and returns just the outline; snapshot re-serializes the current '
       + 'page; close releases the tab. Where the profile allows actions, click/type target a snapshot ref, press sends a '
       + 'named key, scroll rolls, and back follows history — every step returns the fresh outline. Prefer web_search for '
-      + 'public information; use this where being the user matters.',
+      + 'public information; use this where being the user matters. Connection and reload errors are user-actionable: '
+      + 'relay them to the user instead of retrying the step.',
     parameters: {
       action: {
         type: 'string',
@@ -215,6 +226,7 @@ export function defineBrowserTool(options: BrowserToolOptions) {
               properties: {
                 profile: { type: 'string', required: true },
                 actuation: { type: 'boolean' },
+                version: { type: 'number' },
               },
             },
           },
@@ -240,14 +252,31 @@ export function defineBrowserTool(options: BrowserToolOptions) {
     async execute(args: BrowserToolArgs): Promise<BrowserToolValue> {
       if (args.action === 'status') {
         const profiles = bridge.clientList(ttlMs, Date.now())
-          .map(({ client, actuation }) => ({ profile: client, ...(actuation ? { actuation: true } : {}) }))
+          .map(({ client, actuation, version }) => ({
+            profile: client,
+            ...(actuation ? { actuation: true } : {}),
+            // Only the odd case is worth the bytes: a build older than the
+            // browser vocabulary flags itself in the value and the render.
+            ...(version < EXTENSION_PROTOCOL ? { version } : {}),
+          }))
         return { action: 'status', truncated: false, profiles }
       }
       if (!bridge.seenWithin(ttlMs)) throw new Error(NOT_CONNECTED_MESSAGE)
+      // A connected-but-stale build answers browser steps with search data;
+      // refuse up front with the one action that fixes it instead of
+      // burning the whole budget per call.
+      const clients = bridge.clientList(ttlMs, Date.now())
+      const current = clients.filter(entry => entry.version >= EXTENSION_PROTOCOL)
       const profile = args.profile !== undefined && args.profile.trim() !== '' ? args.profile.trim() : undefined
-      if (profile !== undefined && !bridge.clientSeenWithin(profile, ttlMs)) {
-        const connected = connectedProfiles(bridge, ttlMs)
-        throw new Error(`no Chrome profile named "${profile}" is connected${connected.length > 0 ? ` — connected: ${connected.join(', ')}` : ''}`)
+      if (current.length === 0) throw new Error(STALE_BUILD_MESSAGE)
+      if (profile !== undefined) {
+        const requested = clients.find(entry => entry.client === profile)
+        if (requested === undefined) {
+          throw new Error(`no Chrome profile named "${profile}" is connected — connected: ${clients.map(entry => entry.client).join(', ')}`)
+        }
+        if (requested.version < EXTENSION_PROTOCOL) {
+          throw new Error(`the "${profile}" profile runs an older extension build — ${STALE_BUILD_MESSAGE}`)
+        }
       }
       // Actuation is a per-profile opt-in the user flips in the extension
       // options; refuse early and say exactly what would make it possible.
