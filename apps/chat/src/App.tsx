@@ -224,9 +224,10 @@ const ToolChip = memo(function ToolChip({ item }: { item: ChatItem }): JSX.Eleme
   if (item.action !== undefined || item.name === 'browser') {
     const label = [item.action, item.url ?? item.title ?? ''].filter(part => part !== '').join(' ')
     const acting = item.action !== undefined && ACTING_ACTIONS.has(item.action)
+    const failed = item.error === true && item.running !== true
     return (
       <div className="tool-chip-wrap">
-        <button type="button" className="tool-chip" onClick={() => { setOpen(value => !value) }}>
+        <button type="button" className={`tool-chip${failed ? ' failed' : ''}`} onClick={() => { setOpen(value => !value) }}>
           <svg className="tool-icon" viewBox="0 0 16 16" aria-hidden="true">
             <circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
             <ellipse cx="8" cy="8" rx="3" ry="6.5" fill="none" stroke="currentColor" strokeWidth="1.2" />
@@ -235,6 +236,7 @@ const ToolChip = memo(function ToolChip({ item }: { item: ChatItem }): JSX.Eleme
           <span className="tool-label">
             {item.running === true ? (acting ? 'Acting' : 'Browsing') : (acting ? 'Acted' : 'Browsed')}
             {label === '' ? '' : ` · ${label}`}
+            {failed ? ' · failed' : ''}
           </span>
         </button>
         {open && item.excerpt !== undefined
@@ -253,7 +255,11 @@ const ToolChip = memo(function ToolChip({ item }: { item: ChatItem }): JSX.Eleme
   const label = item.searchQuestion ?? item.query ?? item.text ?? 'web search'
   return (
     <div className="tool-chip-wrap">
-      <button type="button" className="tool-chip" onClick={() => { setOpen(value => !value) }}>
+      <button
+        type="button"
+        className={`tool-chip${item.error === true && item.running !== true ? ' failed' : ''}`}
+        onClick={() => { setOpen(value => !value) }}
+      >
         <svg className="tool-icon" viewBox="0 0 16 16" aria-hidden="true">
           <circle cx="6.5" cy="6.5" r="5" fill="none" stroke="currentColor" strokeWidth="1.5" />
           <line x1="10.5" y1="10.5" x2="14" y2="14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
@@ -262,6 +268,7 @@ const ToolChip = memo(function ToolChip({ item }: { item: ChatItem }): JSX.Eleme
           {item.running === true ? 'Searching' : 'Searched'}
           {' · '}
           {label}
+          {item.error === true && item.running !== true ? ' · failed' : ''}
         </span>
         {count !== undefined ? <span className="tool-count">{String(count)} results</span> : undefined}
         {item.searchedAt !== undefined ? <span className="tool-time">{clockFormatter.format(new Date(item.searchedAt))}</span> : undefined}
@@ -920,6 +927,7 @@ export default function App(): JSX.Element {
                   ...event.title !== undefined ? { title: event.title } : {},
                   ...event.excerpt !== undefined ? { excerpt: event.excerpt } : {},
                   ...event.text !== undefined ? { text: event.text } : {},
+                  ...event.isError === true ? { error: true } : {},
                 }
                 break
               }

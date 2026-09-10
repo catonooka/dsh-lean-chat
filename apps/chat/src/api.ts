@@ -35,6 +35,8 @@ export interface ChatItem {
   url?: string
   title?: string
   excerpt?: string
+  /** The tool call settled as a failure; chips say so instead of looking done. */
+  error?: boolean
   running?: boolean
 }
 

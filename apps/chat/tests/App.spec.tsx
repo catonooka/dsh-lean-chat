@@ -587,6 +587,27 @@ describe('streaming turn', () => {
     await screen.findByText('Post one.')
   })
 
+  it('marks a failed browser step as failed instead of a blank search chip', async () => {
+    localStorage.setItem('dsh-chat-active', 'sess-a')
+    await renderApp({
+      sessions: [{ id: 'sess-a', title: 'A', items: [] }],
+      streams: [delayedSseResponse([
+        { t: 'delta', text: 'The extension needs a reload.' },
+        { t: 'tool-start', name: 'browser', action: 'extract', url: 'https://x.com' },
+        { t: 'tool-end', name: 'browser', action: 'extract', url: 'https://x.com', text: 'Error: the browser step failed: the extension did not answer within 45000ms', isError: true },
+        { t: 'assistant', text: 'please reload the extension' },
+        { t: 'turn-end', reason: 'completed' },
+      ], 30)],
+    })
+    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    fireEvent.change(composer, { target: { value: 'read my posts' } })
+    fireEvent.keyDown(composer, { key: 'Enter' })
+    await screen.findByText('Browsed · extract https://x.com · failed', {}, { timeout: 3000 })
+    // The failed chip carries the error styling.
+    await waitFor(() => { expect(document.querySelector('.tool-chip.failed')).not.toBeNull() })
+    await screen.findByText('please reload the extension', {}, { timeout: 3000 })
+  })
+
   it('labels actuation steps as acting, in stream and history', async () => {
     localStorage.setItem('dsh-chat-active', 'sess-a')
     await renderApp({
