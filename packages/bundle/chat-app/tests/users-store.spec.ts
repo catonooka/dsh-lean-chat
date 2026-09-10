@@ -6,10 +6,15 @@
 import { describe, expect, it } from 'vitest'
 import {
   activeUserFromHeader,
+  applyUserGroups,
   assignUnownedSessions,
   createUser,
   defaultUser,
   ensureSessionOwner,
+  pruneSessionGroups,
+  removeSessionMeta,
+  setSessionArchived,
+  setSessionGroup,
   normalizeAvatar,
   normalizeChromeProfile,
   normalizeGroupName,
@@ -177,6 +182,80 @@ describe('ensureSessionOwner', () => {
     expect(users.sessions['sess-1']).toEqual({ owner: 'u_alice' })
     expect(ensureSessionOwner(users, 'sess-1', 'u_bob')).toBe(false)
     expect(users.sessions['sess-1']).toEqual({ owner: 'u_alice' })
+  })
+})
+
+describe('applyUserGroups / pruneSessionGroups', () => {
+  it('replaces groups wholesale, keeping ids and minting fresh ones', () => {
+    const users = storeOf(['alice'])
+    const first = users.users[0]
+    if (first === undefined) throw new Error('test setup: no user')
+    first.groups = [{ id: 'g1', name: 'Old' }]
+    const updated = applyUserGroups(users, 'u_alice', [
+      { id: 'g1', name: 'Renamed' },
+      { name: 'New group' },
+    ])
+    expect(updated.groups).toHaveLength(2)
+    expect(updated.groups[0]).toEqual({ id: 'g1', name: 'Renamed' })
+    expect(updated.groups[1]?.id).toMatch(/^g_/)
+    expect(updated.groups[1]?.name).toBe('New group')
+  })
+
+  it('refuses junk rosters', () => {
+    const users = storeOf(['alice'])
+    expect(() => applyUserGroups(users, 'u_alice', 'nope')).toThrow(/array/)
+    expect(() => applyUserGroups(users, 'u_alice', [{ name: '' }])).toThrow(/group names/)
+    expect(() => applyUserGroups(users, 'u_ghost', [])).toThrow(/unknown user/)
+    expect(() => applyUserGroups(users, 'u_alice', Array.from({ length: 21 }, () => ({ name: 'g' }))))
+      .toThrow(/at most/)
+  })
+
+  it('drops session group references that no longer resolve', () => {
+    const users = storeOf(['alice'], {
+      'sess-1': { owner: 'u_alice' },
+      'sess-2': { owner: 'u_bob' },
+    })
+    users.sessions['sess-1'].groupId = 'g1'
+    users.sessions['sess-2'].groupId = 'g1'
+    applyUserGroups(users, 'u_alice', [{ name: 'Only' }])
+    // Alice's chats with the deleted group fall back to ungrouped; another
+    // user's chats (even sharing the id string) keep their bookkeeping.
+    expect(pruneSessionGroups(users, 'u_alice')).toBe(true)
+    expect(users.sessions['sess-1'].groupId).toBeUndefined()
+    expect(users.sessions['sess-2'].groupId).toBe('g1')
+    expect(pruneSessionGroups(users, 'u_alice')).toBe(false)
+  })
+})
+
+describe('session meta mutations', () => {
+  it('archives and unarchives, keeping the original stamp', () => {
+    const users = storeOf(['alice'], { 'sess-1': { owner: 'u_alice' } })
+    expect(setSessionArchived(users, 'sess-1', true, 100)).toBe(true)
+    expect(users.sessions['sess-1'].archivedAt).toBe(100)
+    expect(setSessionArchived(users, 'sess-1', true, 999)).toBe(false)
+    expect(users.sessions['sess-1'].archivedAt).toBe(100)
+    expect(setSessionArchived(users, 'sess-1', false, 0)).toBe(true)
+    expect(users.sessions['sess-1'].archivedAt).toBeUndefined()
+    // Unknown sessions answer unchanged rather than inventing bookkeeping.
+    expect(setSessionArchived(users, 'sess-x', true, 100)).toBe(false)
+  })
+
+  it('groups, regroups, and ungroups', () => {
+    const users = storeOf(['alice'], { 'sess-1': { owner: 'u_alice' } })
+    expect(setSessionGroup(users, 'sess-1', 'g1')).toBe(true)
+    expect(users.sessions['sess-1'].groupId).toBe('g1')
+    expect(setSessionGroup(users, 'sess-1', 'g1')).toBe(false)
+    expect(setSessionGroup(users, 'sess-1', 'g2')).toBe(true)
+    expect(setSessionGroup(users, 'sess-1', null)).toBe(true)
+    expect(users.sessions['sess-1'].groupId).toBeUndefined()
+    expect(setSessionGroup(users, 'sess-1', null)).toBe(false)
+  })
+
+  it('forgets a deleted chat completely', () => {
+    const users = storeOf(['alice'], { 'sess-1': { owner: 'u_alice', archivedAt: 5, groupId: 'g1' } })
+    expect(removeSessionMeta(users, 'sess-1')).toBe(true)
+    expect(users.sessions['sess-1']).toBeUndefined()
+    expect(removeSessionMeta(users, 'sess-1')).toBe(false)
   })
 })
 

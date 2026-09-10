@@ -23,20 +23,27 @@
 import { randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { existsSync, readFileSync } from 'node:fs'
-import { chmod, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, extname, join, resolve, sep } from 'node:path'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { TinyMetasearchProvider } from '@deepseek-ai/dsh-web-search-tiny/src/provider.ts'
 import { DEFAULT_BRIDGE_CLIENT, ExtensionBridge } from '@deepseek-ai/dsh-web-search-chrome/src/bridge.ts'
 import { defineBrowserTool } from '@deepseek-ai/dsh-tool-browser-chrome/src/index.ts'
+import { sessionDir } from '@deepseek-ai/dsh-session-persistence-jsonl/src/format.ts'
+import { SessionTitleInvalidError } from '@deepseek-ai/dsh-session-title'
 import { probeModelAbilities, type ModelAbilities } from './capabilities.ts'
 import {
   activeUserFromHeader,
+  applyUserGroups,
   assignUnownedSessions,
   createUser,
   ensureSessionOwner,
   parseUsersFile,
   persistUsers,
+  pruneSessionGroups,
+  removeSessionMeta,
+  setSessionArchived,
+  setSessionGroup,
   updateUser,
   usersJson,
   type SessionUserMeta,
@@ -2137,6 +2144,11 @@ export function apply(ctx: Context, config: Config): void {
     if (req.method === 'PATCH' && parts.length === 2 && parts[0] === 'users' && parts[1] !== undefined) {
       const body = await readJsonBody(req)
       const updated = updateUser(users, parts[1], body)
+      if (body.groups !== undefined) {
+        applyUserGroups(users, parts[1], body.groups)
+        // A deleted group's chats fall back to ungrouped.
+        pruneSessionGroups(users, parts[1])
+      }
       persistUsersFile()
       sendJson(res, 200, { ...usersJson(users.users), updatedId: updated.id })
       return
@@ -2293,6 +2305,130 @@ export function apply(ctx: Context, config: Config): void {
         }),
         ...nextCursor !== undefined ? { nextCursor: String(nextCursor) } : {},
       })
+      return
+    }
+
+    // Rename, archive, and group one chat — the sidebar's context-menu
+    // actions. The rename pins the title against automatic regeneration
+    // (it needs a live session, so the agent resumes for it); the archive
+    // stamp and group pointer are bookkeeping on the users store.
+    if (req.method === 'PATCH' && parts.length === 2 && parts[0] === 'sessions' && parts[1] !== undefined) {
+      const sessionId = parts[1]
+      if (!/^[a-zA-Z0-9-]{1,64}$/.test(sessionId)) {
+        sendJson(res, 400, { error: 'invalid session id' })
+        return
+      }
+      if (refuseForeignSession(sessionId)) return
+      if (users.sessions[sessionId] === undefined && !knownSessionIds.has(sessionId) && !handles.has(sessionId)) {
+        sendJson(res, 404, { error: 'session not found' })
+        return
+      }
+      const body = await readJsonBody(req)
+      if (ensureSessionOwner(users, sessionId, activeUser.id)) persistUsersFile()
+      let title: string | undefined
+      if (body.title !== undefined) {
+        if (typeof body.title !== 'string') {
+          sendJson(res, 400, { error: 'title must be a string' })
+          return
+        }
+        const titles = ctx.get('sessionTitle')
+        if (titles === undefined) {
+          sendJson(res, 503, { error: 'renaming is not available in this composition' })
+          return
+        }
+        const handle = await getOrCreateAgent(sessionId)
+        try {
+          title = titles.rename(handle.agent.session, body.title).title
+        } catch (error: unknown) {
+          if (error instanceof SessionTitleInvalidError) {
+            sendJson(res, 400, { error: error.message })
+            return
+          }
+          throw error
+        }
+        titleCache.delete(sessionId)
+      }
+      if (body.archived !== undefined) {
+        if (typeof body.archived !== 'boolean') {
+          sendJson(res, 400, { error: 'archived must be a boolean' })
+          return
+        }
+        if (setSessionArchived(users, sessionId, body.archived, Date.now())) persistUsersFile()
+      }
+      if (body.groupId !== undefined) {
+        let groupId: string | null
+        if (body.groupId === null || body.groupId === '') groupId = null
+        else if (typeof body.groupId === 'string') {
+          if (!activeUser.groups.some(group => group.id === body.groupId)) {
+            sendJson(res, 400, { error: 'unknown group' })
+            return
+          }
+          groupId = body.groupId
+        } else {
+          sendJson(res, 400, { error: 'groupId must be a string or null' })
+          return
+        }
+        if (setSessionGroup(users, sessionId, groupId)) persistUsersFile()
+      }
+      const meta = users.sessions[sessionId]
+      sendJson(res, 200, {
+        sessionId,
+        ...title !== undefined ? { title } : {},
+        archived: meta?.archivedAt !== undefined,
+        groupId: meta?.groupId ?? null,
+      })
+      return
+    }
+
+    // Delete one chat for good: stop its turn, retire its agent, close its
+    // streams, remove its log directory (the query index self-heals off the
+    // file watcher), and drop every piece of bookkeeping that names it.
+    if (req.method === 'DELETE' && parts.length === 2 && parts[0] === 'sessions' && parts[1] !== undefined) {
+      const sessionId = parts[1]
+      if (!/^[a-zA-Z0-9-]{1,64}$/.test(sessionId)) {
+        sendJson(res, 400, { error: 'invalid session id' })
+        return
+      }
+      if (refuseForeignSession(sessionId)) return
+      if (users.sessions[sessionId] === undefined && !knownSessionIds.has(sessionId) && !handles.has(sessionId)) {
+        sendJson(res, 404, { error: 'session not found' })
+        return
+      }
+      const entry = handles.get(sessionId)
+      if (entry !== undefined) {
+        try {
+          entry.handle.agent.cancel({ kind: 'user' })
+        } catch {
+          // Already stopped or never started; the dispose below still retires it.
+        }
+        await entry.handle.dispose().catch((error: unknown) => {
+          const reason = error instanceof Error ? error.message : String(error)
+          console.error(`chat-app: disposing the deleted session's agent failed: ${reason}`)
+        })
+        handles.delete(sessionId)
+      }
+      const open = streams.get(sessionId)
+      if (open !== undefined) {
+        for (const streamRes of [...open]) streamRes.end()
+        streams.delete(sessionId)
+      }
+      // The directory's parent slug comes from the session's own cwd (a
+      // foreign-workspace session lives under its own slug), falling back to
+      // this process's cwd like every chat-native session.
+      const records = await listSessionRecords()
+      const record = records.find(candidate => String(candidate.header.id) === sessionId)
+      await rm(
+        sessionDir(dshHomePath('sessions'), record?.header.cwd, SessionId(sessionId)),
+        { recursive: true, force: true },
+      )
+      activity.delete(sessionId)
+      activityDirty = true
+      void persistActivity()
+      knownSessionIds.delete(sessionId)
+      listingCache.clear()
+      titleCache.delete(sessionId)
+      if (removeSessionMeta(users, sessionId)) persistUsersFile()
+      sendJson(res, 200, { deleted: true })
       return
     }
 

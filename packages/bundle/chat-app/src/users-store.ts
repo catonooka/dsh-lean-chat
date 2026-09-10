@@ -328,6 +328,119 @@ export function ensureSessionOwner(users: ChatUsers, sessionId: string, userId: 
   return true
 }
 
+/**
+ * Replace one user's groups wholesale: entries keep their id when they carry
+ * one (a rename) and get a fresh id when they do not (a new group).
+ * @param users - the store to mutate.
+ * @param userId - the user whose groups are being replaced.
+ * @param raw - the raw panel value (an array of `{id?, name}`).
+ * @returns the updated user.
+ * @throws when the user is unknown, the value is not an array, or a name is
+ * unusable or the roster of groups exceeds its cap.
+ */
+export function applyUserGroups(users: ChatUsers, userId: string, raw: unknown): ChatUser {
+  const user = users.users.find(entry => entry.id === userId)
+  if (user === undefined) throw new Error(`unknown user "${userId}"`)
+  if (!Array.isArray(raw)) throw new Error('groups must be an array of {id?, name}')
+  if (raw.length > MAX_GROUPS_PER_USER) {
+    throw new Error(`at most ${String(MAX_GROUPS_PER_USER)} groups are supported per user`)
+  }
+  const groups: ChatGroup[] = []
+  const seen = new Set<string>()
+  for (const entry of raw) {
+    if (typeof entry !== 'object' || entry === null) throw new Error('groups must be an array of {id?, name}')
+    const record = entry as Record<string, unknown>
+    const name = normalizeGroupName(record.name)
+    if (name === undefined) {
+      throw new Error(`group names must be 1-${String(MAX_GROUP_NAME_LENGTH)} visible characters`)
+    }
+    const id = typeof record.id === 'string' && record.id.length > 0 && !seen.has(record.id)
+      ? record.id
+      : newGroupId()
+    seen.add(id)
+    groups.push({ id, name })
+  }
+  user.groups = groups
+  return user
+}
+
+/**
+ * Drop group references that no longer resolve after a group edit — a
+ * deleted group's chats simply fall back to ungrouped.
+ * @param users - the store to mutate.
+ * @param userId - the user whose sessions are being pruned.
+ * @returns whether anything changed (the caller persists when it did).
+ */
+export function pruneSessionGroups(users: ChatUsers, userId: string): boolean {
+  const user = users.users.find(entry => entry.id === userId)
+  if (user === undefined) return false
+  const valid = new Set(user.groups.map(group => group.id))
+  let changed = false
+  for (const meta of Object.values(users.sessions)) {
+    if (meta.owner !== userId || meta.groupId === undefined) continue
+    if (valid.has(meta.groupId)) continue
+    delete meta.groupId
+    changed = true
+  }
+  return changed
+}
+
+/**
+ * Stamp or clear one chat's archive mark. Archiving again keeps the original
+ * stamp (the shelf sorts by it).
+ * @returns whether the store changed (the caller persists when it did).
+ */
+export function setSessionArchived(
+  users: ChatUsers,
+  sessionId: string,
+  archived: boolean,
+  now: number,
+): boolean {
+  const meta = users.sessions[sessionId]
+  if (meta === undefined) return false
+  if (archived) {
+    if (meta.archivedAt !== undefined) return false
+    meta.archivedAt = now
+    return true
+  }
+  if (meta.archivedAt === undefined) return false
+  delete meta.archivedAt
+  return true
+}
+
+/**
+ * Point one chat at a group, or ungroup it with `null`.
+ * @returns whether the store changed (the caller persists when it did).
+ */
+export function setSessionGroup(users: ChatUsers, sessionId: string, groupId: string | null): boolean {
+  const meta = users.sessions[sessionId]
+  if (meta === undefined) return false
+  if (groupId === null) {
+    if (meta.groupId === undefined) return false
+    delete meta.groupId
+    return true
+  }
+  if (meta.groupId === groupId) return false
+  meta.groupId = groupId
+  return true
+}
+
+/**
+ * Forget one chat's bookkeeping after the chat itself is deleted.
+ * @returns whether anything was there to drop.
+ */
+export function removeSessionMeta(users: ChatUsers, sessionId: string): boolean {
+  if (users.sessions[sessionId] === undefined) return false
+  // Rebuild rather than a dynamic delete: chat deletions are rare, and the
+  // store's JSON shape stays a plain record either way.
+  const next: Record<string, SessionUserMeta> = {}
+  for (const [id, meta] of Object.entries(users.sessions)) {
+    if (id !== sessionId) next[id] = meta
+  }
+  users.sessions = next
+  return true
+}
+
 /** Persist the users file; failures log but never break the request. */
 export async function persistUsers(path: string, users: ChatUsers): Promise<void> {
   const body = `${JSON.stringify({
