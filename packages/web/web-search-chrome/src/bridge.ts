@@ -144,6 +144,19 @@ interface ParkedPoll {
  * the bridge overall, one per Chrome profile label, each carrying whether that
  * profile's user allows actions.
  */
+export interface ExtensionBridgeOptions {
+  /**
+   * How long a browser session's tab survives its last step before the
+   * bridge closes it on its own. A tab then lives exactly as long as the
+   * task using it, instead of lingering until the extension's reaper.
+   * 0 disables the behavior (the extension's own reaper remains).
+   */
+  sessionIdleCloseMs?: number
+}
+
+/** The default idle window before a browser session's tab auto-closes. */
+export const DEFAULT_SESSION_IDLE_CLOSE_MS = 120_000
+
 export class ExtensionBridge {
   private nextJobId = 1
   private lastSeenAt = 0
@@ -153,6 +166,13 @@ export class ExtensionBridge {
   private readonly clientSeenAt = new Map<string, number>()
   private readonly clientActuation = new Map<string, boolean>()
   private readonly clientVersions = new Map<string, number>()
+  private readonly idleCloseTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private readonly sessionIdleCloseMs: number
+
+  constructor(options: ExtensionBridgeOptions = {}) {
+    const idle = options.sessionIdleCloseMs ?? DEFAULT_SESSION_IDLE_CLOSE_MS
+    this.sessionIdleCloseMs = Number.isFinite(idle) && idle > 0 ? Math.floor(idle) : 0
+  }
 
   /**
    * Record that an extension just made a bridge request.
@@ -279,6 +299,14 @@ export class ExtensionBridge {
   enqueue(job: Omit<ExtensionJob, 'id'>, timeoutMs: number): Promise<ExtensionSettlement> {
     const full = { id: String(this.nextJobId++), ...job } as ExtensionJob
     const arm: 'search' | 'browser' = isBrowserArm(full) ? 'browser' : 'search'
+    if (arm === 'browser') {
+      const browser = full as BrowserJob
+      // The tab's lease on life: every step renews it, an explicit close
+      // ends it, and lapsing it hands the extension a close job so tabs
+      // never outlive the task that opened them.
+      if (browser.action === 'close') this.cancelIdleClose(browser.session)
+      else this.scheduleIdleClose(browser.session)
+    }
     return new Promise((resolve) => {
       const entry: PendingSlot = {
         arm,
@@ -367,7 +395,28 @@ export class ExtensionBridge {
     entry.resolve({ ok: false, error })
   }
 
-  /** Drop everything: open long-polls resolve empty, pending jobs fail. */
+  /** Renew one session's idle-close lease (each step pushes the close out). */
+  private scheduleIdleClose(session: string): void {
+    if (this.sessionIdleCloseMs <= 0) return
+    this.cancelIdleClose(session)
+    this.idleCloseTimers.set(session, setTimeout(() => {
+      this.idleCloseTimers.delete(session)
+      // Fire-and-forget by design: nobody awaits a janitor job, and the
+      // promise never rejects — a missing extension simply times it out.
+      void this.enqueue({ type: 'browser', action: 'close', session }, 10_000)
+    }, this.sessionIdleCloseMs))
+  }
+
+  private cancelIdleClose(session: string): void {
+    const timer = this.idleCloseTimers.get(session)
+    if (timer !== undefined) {
+      clearTimeout(timer)
+      this.idleCloseTimers.delete(session)
+    }
+  }
+
+  /** Drop everything: open long-polls resolve empty, pending jobs fail,
+   * idle-close leases cancel. */
   dispose(): void {
     this.queue.length = 0
     for (const waiter of this.waiters.splice(0)) {
@@ -379,5 +428,7 @@ export class ExtensionBridge {
       this.pending.delete(id)
       entry.resolve({ ok: false, error: 'the bridge closed before the extension answered' })
     }
+    for (const [, timer] of [...this.idleCloseTimers]) clearTimeout(timer)
+    this.idleCloseTimers.clear()
   }
 }

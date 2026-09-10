@@ -186,7 +186,7 @@ export function defineBrowserTool(options: BrowserToolOptions) {
       },
       session: {
         type: 'string',
-        description: 'Named browser tab to drive; defaults to "main". Use distinct names to hold parallel pages open.',
+        description: 'Named browser tab to drive; defaults to "main". Use distinct names to hold parallel pages open. Tabs close themselves after ~2 minutes idle — close releases one early.',
       },
       ref: {
         type: 'string',

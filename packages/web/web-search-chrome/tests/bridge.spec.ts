@@ -4,16 +4,22 @@
  * answer "connected".
  */
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  ACTUATION_ACTIONS, DEFAULT_BRIDGE_CLIENT, ExtensionBridge, EXTENSION_PROTOCOL, isActuationJob, type ExtensionJob,
+  ACTUATION_ACTIONS,
+  DEFAULT_BRIDGE_CLIENT,
+  DEFAULT_SESSION_IDLE_CLOSE_MS,
+  ExtensionBridge,
+  EXTENSION_PROTOCOL,
+  isActuationJob,
+  type ExtensionJob,
 } from '../src/bridge.ts'
 
 /** Jobs settle on real timers; every test disposes to clear them. */
 const bridges: ExtensionBridge[] = []
 
-function bridge(): ExtensionBridge {
-  const created = new ExtensionBridge()
+function bridge(options: ConstructorParameters<typeof ExtensionBridge>[0] = {}): ExtensionBridge {
+  const created = new ExtensionBridge(options)
   bridges.push(created)
   return created
 }
@@ -539,5 +545,119 @@ describe('protocol versions', () => {
     expect(job).toMatchObject({ query: 'dsh chat' })
     expect(created.settle({ id: job?.id, ok: true, sources: [] })).toBe(true)
     await expect(settlement).resolves.toEqual({ ok: true, sources: [] })
+  })
+})
+
+describe('idle session auto-close', () => {
+  /** Run one snapshot step to completion (it also arms the idle lease). */
+  async function stepOnce(created: ExtensionBridge): Promise<void> {
+    const settlement = created.enqueue({ type: 'browser', action: 'snapshot', session: 'main' }, 60)
+    const job = await created.nextJob(5, undefined, DEFAULT_BRIDGE_CLIENT, false, EXTENSION_PROTOCOL)
+    created.settle({ id: job?.id, ok: true, browser: { url: 'https://a.example', title: 'a', truncated: false } })
+    await settlement
+  }
+
+  /** Under fake timers a parked poll needs the clock moved to answer. */
+  async function pollNothing(created: ExtensionBridge): Promise<ExtensionJob | null> {
+    const parked = created.nextJob(1, undefined, DEFAULT_BRIDGE_CLIENT, false, EXTENSION_PROTOCOL)
+    vi.advanceTimersByTime(1)
+    return await parked
+  }
+
+  it('hands the extension a close job once a session idles out', async () => {
+    vi.useFakeTimers()
+    try {
+      const created = bridge({ sessionIdleCloseMs: 50 })
+      await stepOnce(created)
+      // Not before the window lapses (the poll's own 1ms tick included).
+      vi.advanceTimersByTime(48)
+      expect(await pollNothing(created)).toBeNull()
+      vi.advanceTimersByTime(1)
+      const closer = await created.nextJob(5, undefined, DEFAULT_BRIDGE_CLIENT, false, EXTENSION_PROTOCOL)
+      expect(closer).toMatchObject({ type: 'browser', action: 'close', session: 'main' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('renews the lease on every step, so an active task keeps its tab', async () => {
+    vi.useFakeTimers()
+    try {
+      const created = bridge({ sessionIdleCloseMs: 50 })
+      await stepOnce(created)
+      vi.advanceTimersByTime(30)
+      // A second step halfway through restarts the window.
+      await stepOnce(created)
+      vi.advanceTimersByTime(31)
+      expect(await pollNothing(created)).toBeNull()
+      vi.advanceTimersByTime(19)
+      const closer = await created.nextJob(5, undefined, DEFAULT_BRIDGE_CLIENT, false, EXTENSION_PROTOCOL)
+      expect(closer).toMatchObject({ action: 'close', session: 'main' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('an explicit close cancels the pending janitor job', async () => {
+    vi.useFakeTimers()
+    try {
+      const created = bridge({ sessionIdleCloseMs: 50 })
+      await stepOnce(created)
+      const close = created.enqueue({ type: 'browser', action: 'close', session: 'main' }, 60)
+      const taken = await created.nextJob(5, undefined, DEFAULT_BRIDGE_CLIENT, false, EXTENSION_PROTOCOL)
+      expect(taken).toMatchObject({ action: 'close' })
+      created.settle({ id: taken?.id, ok: true, browser: { url: '', title: '', truncated: false } })
+      await close
+      vi.advanceTimersByTime(200)
+      // The janitor was cancelled: nothing else is ever delivered.
+      expect(await pollNothing(created)).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('searches never schedule a close', async () => {
+    vi.useFakeTimers()
+    try {
+      const created = bridge({ sessionIdleCloseMs: 50 })
+      const search = created.enqueue(webJob, 60)
+      const searchJob = await created.nextJob(5)
+      created.settle({ id: searchJob?.id, ok: true, sources: [] })
+      await search
+      vi.advanceTimersByTime(50)
+      // No browser session was ever stepped on: no close appears.
+      expect(await pollNothing(created)).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('sessionIdleCloseMs 0 keeps the old lease-forever behavior', async () => {
+    vi.useFakeTimers()
+    try {
+      const created = bridge({ sessionIdleCloseMs: 0 })
+      await stepOnce(created)
+      vi.advanceTimersByTime(600_000)
+      expect(await pollNothing(created)).toBeNull()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('dispose cancels idle-close leases', async () => {
+    vi.useFakeTimers()
+    try {
+      const created = bridge({ sessionIdleCloseMs: 50 })
+      await stepOnce(created)
+      created.dispose()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('the default lease is two minutes', () => {
+    expect(DEFAULT_SESSION_IDLE_CLOSE_MS).toBe(120_000)
   })
 })

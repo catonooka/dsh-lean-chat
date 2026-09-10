@@ -57,6 +57,9 @@ input events through the debugger; everywhere else the tab is read-only. The
 tab carries the name of the session the model asked for and is reused across
 steps. Chrome shows its usual "started debugging this tab" banner on such
 tabs — that is the debugger permission at work, and closing the tab ends it.
+Tabs do not pile up: the app closes a session's tab about two minutes after
+its last step (a lease every step renews), and this extension's own reaper
+closes any stragglers after ten idle minutes.
 
 Results are posted back to the app on loopback and cited in the chat like any
 other source.

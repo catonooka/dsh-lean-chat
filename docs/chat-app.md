@@ -231,6 +231,11 @@ stay cheap:
   characters, which answers "my first five posts" directly.
 - `snapshot` — re-serialize the current page (SPA content that changed).
 - `close` — release the session tab.
+- Tabs clean up after themselves: every step renews a two-minute lease on
+  its session's tab, and when the task goes quiet the bridge hands the
+  extension a close job — so a tab lives exactly as long as the work using
+  it instead of lingering in the tab strip. (`close` ends one early; the
+  extension's own reaper remains as the backstop when the app is down.)
 - `click` / `type` / `press` / `scroll` / `back` — **actuation**, and only
   ever inside a Chrome profile whose user turned actions on for it (the
   extension options carry an off-by-default "allow actions in this profile"
