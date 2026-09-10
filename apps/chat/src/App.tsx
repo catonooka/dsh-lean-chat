@@ -5,10 +5,12 @@ import { randomUUID } from '@deepseek-ai/dsh-util-crypto'
 import {
   checkModelAbilities,
   createUser,
+  deleteSession,
   fetchConfig,
   fetchMessages,
   listSessions,
   listUsers,
+  patchSession,
   readStoredUserId,
   retrySession,
   searchSessions,
@@ -33,6 +35,8 @@ import { renderMarkdown } from './markdown.ts'
 import { SettingsPanel, applyTheme, readStoredTheme, storeTheme, type Theme } from './Settings.tsx'
 import { AvatarModal } from './AvatarModal.tsx'
 import { AddUserModal } from './AddUserModal.tsx'
+import { ConfirmDeleteDialog, MoveGroupDialog, NewGroupDialog } from './SessionDialogs.tsx'
+import { ContextMenu, type ContextMenuItem } from './ContextMenu.tsx'
 import { UserMenu } from './UserMenu.tsx'
 import { BOT_AVATAR_SRC, avatarSrc, readStoredAvatar, storeAvatar } from './avatar.ts'
 import { StreamFeed } from './delta.ts'
@@ -420,10 +424,12 @@ const AssistantRow = memo(function AssistantRow(
   )
 })
 
-/** The sidebar's list body — conversations or search hits. Memoized so
- * composer typing and streaming batches never re-render the loaded rows. */
+/** The sidebar's list body — conversations or search hits, grouped chats in
+ * their group sections. Memoized so composer typing and streaming batches
+ * never re-render the loaded rows. */
 const SessionListBody = memo(function SessionListBody({
   searchActive, hits, sessions, activeId, searching, loadingMore, runningIds, onSelect,
+  groups, renamingId, onRenameSubmit, onRenameCancel, onContext, grouped,
 }: {
   searchActive: boolean
   hits: readonly SearchHit[]
@@ -433,48 +439,101 @@ const SessionListBody = memo(function SessionListBody({
   loadingMore: boolean
   runningIds: readonly string[]
   onSelect: (id: string) => void
+  groups: readonly { id: string; name: string }[]
+  renamingId: string | undefined
+  onRenameSubmit: (id: string, title: string) => void
+  onRenameCancel: () => void
+  onContext: (id: string, clientX: number, clientY: number) => void
+  grouped: boolean
 }): JSX.Element {
-  return (
-    <>
-      {searchActive
+  const row = (session: SessionSummary): JSX.Element => (
+    <button
+      key={session.id}
+      type="button"
+      className={session.id === activeId ? 'session-item active' : 'session-item'}
+      onClick={() => { onSelect(session.id) }}
+      onContextMenu={(event) => {
+        event.preventDefault()
+        onContext(session.id, event.clientX, event.clientY)
+      }}
+      title={session.title}
+      data-id={session.id}
+    >
+      {renamingId === session.id
         ? (
-          hits.length === 0 && !searching
-            ? <div className="list-empty">No chats found</div>
-            : hits.map(hit => (
-              <button
-                key={hit.id}
-                type="button"
-                className={hit.id === activeId ? 'session-item active' : 'session-item'}
-                onClick={() => { onSelect(hit.id) }}
-                title={hit.title}
-                data-id={hit.id}
-              >
-                <span className="session-hit">
-                  <span className="session-title">{hit.title}</span>
-                  <span className="session-snippet">{hit.snippet}</span>
-                </span>
-                <span className="session-date">{relativeDate(hit.updatedAt)}</span>
-              </button>
-            ))
+          <input
+            className="session-rename"
+            aria-label="Rename chat"
+            defaultValue={session.title}
+            autoFocus
+            spellCheck={false}
+            onClick={(event) => { event.stopPropagation() }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                event.stopPropagation()
+                onRenameSubmit(session.id, event.currentTarget.value)
+              } else if (event.key === 'Escape') {
+                event.preventDefault()
+                event.stopPropagation()
+                onRenameCancel()
+              }
+            }}
+            onBlur={onRenameCancel}
+          />
         )
         : (
-          sessions.length === 0
-            ? <div className="list-empty">No conversations yet</div>
-            : sessions.map(session => (
-              <button
-                key={session.id}
-                type="button"
-                className={session.id === activeId ? 'session-item active' : 'session-item'}
-                onClick={() => { onSelect(session.id) }}
-                title={session.title}
-                data-id={session.id}
-              >
-                <span className="session-title">{session.title}</span>
-                {runningIds.includes(session.id) ? <span className="session-live" aria-label="generating" /> : undefined}
-                <span className="session-date">{relativeDate(session.updatedAt)}</span>
-              </button>
-            ))
+          <>
+            <span className="session-title">{session.title}</span>
+            {runningIds.includes(session.id) ? <span className="session-live" aria-label="generating" /> : undefined}
+            <span className="session-date">{relativeDate(session.updatedAt)}</span>
+          </>
         )}
+    </button>
+  )
+  const body = searchActive
+    ? (
+      hits.length === 0 && !searching
+        ? <div className="list-empty">No chats found</div>
+        : hits.map(hit => (
+          <button
+            key={hit.id}
+            type="button"
+            className={hit.id === activeId ? 'session-item active' : 'session-item'}
+            onClick={() => { onSelect(hit.id) }}
+            title={hit.title}
+            data-id={hit.id}
+          >
+            <span className="session-hit">
+              <span className="session-title">{hit.title}</span>
+              <span className="session-snippet">{hit.snippet}</span>
+            </span>
+            <span className="session-date">{relativeDate(hit.updatedAt)}</span>
+          </button>
+        ))
+    )
+    : grouped
+      ? (
+        <>
+          {groups.map(group => (
+            <div className="session-group" key={group.id}>
+              <div className="session-group-head">{group.name}</div>
+              {sessions.filter(session => session.groupId === group.id).map(row)}
+            </div>
+          ))}
+          {sessions.filter(session => session.groupId === null || session.groupId === undefined
+            || !groups.some(group => group.id === session.groupId)).map(row)}
+          {sessions.length === 0 ? <div className="list-empty">No conversations yet</div> : undefined}
+        </>
+      )
+      : (
+        sessions.length === 0
+          ? <div className="list-empty">No conversations yet</div>
+          : sessions.map(row)
+      )
+  return (
+    <>
+      {body}
       {loadingMore || (searchActive && searching) ? <div className="list-status">Loading…</div> : undefined}
     </>
   )
@@ -543,6 +602,15 @@ export default function App(): JSX.Element {
   const activeUserInfo = users?.find(user => user.id === activeUserId)
   // The avatar is a required pick per profile: null means the chooser is up.
   const avatar = activeUserInfo?.avatar ?? null
+  // Chat management: the right-click menu, its rename target, its dialogs,
+  // and the archived shelf view.
+  const [chatMenu, setChatMenu] = useState<{ id: string; x: number; y: number } | undefined>(undefined)
+  const [renamingId, setRenamingId] = useState<string | undefined>(undefined)
+  const [newGroupFor, setNewGroupFor] = useState<string | undefined>(undefined)
+  const [moveFor, setMoveFor] = useState<string | undefined>(undefined)
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | undefined>(undefined)
+  const [archivedView, setArchivedView] = useState(false)
+  const [archivedSessions, setArchivedSessions] = useState<SessionSummary[]>([])
   const [collapsed, setCollapsed] = useState<boolean>(() =>
     typeof localStorage !== 'undefined' && localStorage.getItem(COLLAPSED_KEY) === '1')
   const [error, setError] = useState<string | undefined>(undefined)
@@ -941,6 +1009,10 @@ export default function App(): JSX.Element {
     setSearchCursor(undefined)
     setQuery('')
     setDebouncedQuery('')
+    setArchivedView(false)
+    setArchivedSessions([])
+    setChatMenu(undefined)
+    setRenamingId(undefined)
     void listSessions({ limit: SESSION_PAGE_SIZE })
       .then((body) => {
         if (listOwnerRef.current !== id) return
@@ -971,6 +1043,93 @@ export default function App(): JSX.Element {
       })
       .catch((err: unknown) => { setError(err instanceof Error ? err.message : String(err)) })
   }, [switchUser])
+
+  // ── chat management (context-menu actions) ────────────────────────────────
+
+  const openArchived = useCallback((): void => {
+    setArchivedView(true)
+    listSessions({ limit: 50, archived: true })
+      .then((body) => { setArchivedSessions(body.sessions) })
+      .catch((err: unknown) => { setError(err instanceof Error ? err.message : String(err)) })
+  }, [])
+
+  const archiveChat = useCallback((id: string): void => {
+    void patchSession(id, { archived: true })
+      .then(() => {
+        setSessions(previous => previous.filter(session => session.id !== id))
+        setTotal(previous => Math.max(0, previous - 1))
+      })
+      .catch((err: unknown) => { setError(err instanceof Error ? err.message : String(err)) })
+  }, [])
+
+  const unarchiveChat = useCallback((id: string): void => {
+    void patchSession(id, { archived: false })
+      .then(() => { setArchivedSessions(previous => previous.filter(session => session.id !== id)) })
+      .catch((err: unknown) => { setError(err instanceof Error ? err.message : String(err)) })
+  }, [])
+
+  /** Rename through the inline row editor; the row updates optimistically. */
+  const renameChat = useCallback((id: string, title: string): void => {
+    setRenamingId(undefined)
+    const trimmed = title.trim()
+    if (trimmed === '') return
+    const apply = (list: SessionSummary[]): SessionSummary[] =>
+      list.map(session => session.id === id ? { ...session, title: trimmed } : session)
+    setSessions(apply)
+    setArchivedSessions(apply)
+    void patchSession(id, { title: trimmed })
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : String(err))
+        refreshSessions()
+      })
+  }, [refreshSessions])
+
+  const deleteChat = useCallback((id: string): void => {
+    setConfirmDeleteId(undefined)
+    void deleteSession(id)
+      .then(() => {
+        setSessions(previous => previous.filter(session => session.id !== id))
+        setTotal(previous => Math.max(0, previous - 1))
+        setArchivedSessions(previous => previous.filter(session => session.id !== id))
+        // The deleted chat's in-flight turn, if any, dies with its stream;
+        // retire its registry entry so nothing replays into the view.
+        turnsRef.current.delete(id)
+        setRunningIds(previous => previous.filter(one => one !== id))
+        if (activeIdRef.current === id) startNewChat()
+      })
+      .catch((err: unknown) => { setError(err instanceof Error ? err.message : String(err)) })
+  }, [startNewChat])
+
+  /** Create a group for the acting profile and move one chat into it. */
+  const createGroupAndMove = useCallback((sessionId: string, name: string): void => {
+    setNewGroupFor(undefined)
+    if (activeUserId === '') return
+    // The client mints the id so the follow-up move can name it.
+    const groupId = `g_${randomUUID().slice(0, 8)}`
+    void updateUser(activeUserId, { groups: [
+      ...(users?.find(user => user.id === activeUserId)?.groups ?? []),
+      { id: groupId, name },
+    ] })
+      .then(async (body) => {
+        setUsers(body.users)
+        await patchSession(sessionId, { groupId })
+        setSessions(previous => previous.map(session => session.id === sessionId ? { ...session, groupId } : session))
+      })
+      .catch((err: unknown) => { setError(err instanceof Error ? err.message : String(err)) })
+  }, [activeUserId, users])
+
+  const moveChat = useCallback((sessionId: string, groupId: string | null): void => {
+    setMoveFor(undefined)
+    void patchSession(sessionId, { groupId })
+      .then(() => {
+        setSessions(previous => previous.map(session => session.id === sessionId ? { ...session, groupId } : session))
+      })
+      .catch((err: unknown) => { setError(err instanceof Error ? err.message : String(err)) })
+  }, [])
+
+  const openChatMenu = useCallback((id: string, clientX: number, clientY: number): void => {
+    setChatMenu({ id, x: clientX, y: clientY })
+  }, [])
 
   /**
    * Drive one model turn and stream it into the view. Both sends and retries
@@ -1161,6 +1320,26 @@ export default function App(): JSX.Element {
     stopSession(activeId).catch(() => { /* the stream ends on its own */ })
   }, [activeId])
 
+  // The context menu for one chat row: which items show depends on the
+  // shelf (archived chats unarchive; grouping lives on the active shelf).
+  const menuSession = (archivedView ? archivedSessions : sessions)
+    .find(session => session.id === chatMenu?.id)
+  const chatMenuItems: ContextMenuItem[] = menuSession === undefined || chatMenu === undefined
+    ? []
+    : [
+      { label: 'Rename', onSelect: () => { setRenamingId(menuSession.id) } },
+      menuSession.archived === true || archivedView
+        ? { label: 'Unarchive', onSelect: () => { unarchiveChat(menuSession.id) } }
+        : { label: 'Archive', onSelect: () => { archiveChat(menuSession.id) } },
+      ...!archivedView && (activeUserInfo?.groups?.length ?? 0) > 0
+        ? [{ label: 'Move to group…', onSelect: () => { setMoveFor(menuSession.id) } } satisfies ContextMenuItem]
+        : [],
+      ...!archivedView
+        ? [{ label: 'New group…', onSelect: () => { setNewGroupFor(menuSession.id) } } satisfies ContextMenuItem]
+        : [],
+      { label: 'Delete', danger: true, onSelect: () => { setConfirmDeleteId(menuSession.id) } },
+    ]
+
   // Thread-shape flags and rows, derived once per structural change (items,
   // streaming) instead of per render pass: with the rows memoized, typing
   // and streaming no longer re-render the history.
@@ -1201,53 +1380,77 @@ export default function App(): JSX.Element {
             </svg>
           </button>
         </div>
-        <button type="button" className="new-chat" onClick={startNewChat}>
-          <svg viewBox="0 0 16 16" aria-hidden="true">
-            <line x1="8" y1="3" x2="8" y2="13" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-            <line x1="3" y1="8" x2="13" y2="8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-          </svg>
-          New chat
-        </button>
-        <div className="search-box">
-          <svg viewBox="0 0 16 16" aria-hidden="true">
-            <circle cx="6.5" cy="6.5" r="5" fill="none" stroke="currentColor" strokeWidth="1.5" />
-            <line x1="10.5" y1="10.5" x2="14" y2="14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-          </svg>
-          <input
-            type="text"
-            value={query}
-            placeholder="Search chats"
-            aria-label="Search chats"
-            spellCheck={false}
-            onChange={(event) => { setQuery(event.target.value) }}
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') setQuery('')
-            }}
-          />
-          {query !== ''
-            ? (
-              <button type="button" className="search-clear" aria-label="Clear search" onClick={() => { setQuery('') }}>
-                <svg viewBox="0 0 16 16" aria-hidden="true">
-                  <line x1="4" y1="4" x2="12" y2="12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-                  <line x1="12" y1="4" x2="4" y2="12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-                </svg>
-              </button>
-            )
-            : undefined}
-        </div>
+        {archivedView
+          ? (
+            <button type="button" className="new-chat" onClick={() => { setArchivedView(false) }}>
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M10 3.5L5.5 8l4.5 4.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              All chats
+            </button>
+          )
+          : (
+            <button type="button" className="new-chat" onClick={startNewChat}>
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <line x1="8" y1="3" x2="8" y2="13" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                <line x1="3" y1="8" x2="13" y2="8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+              </svg>
+              New chat
+            </button>
+          )}
+        {!archivedView
+          ? (
+            <div className="search-box">
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <circle cx="6.5" cy="6.5" r="5" fill="none" stroke="currentColor" strokeWidth="1.5" />
+                <line x1="10.5" y1="10.5" x2="14" y2="14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              </svg>
+              <input
+                type="text"
+                value={query}
+                placeholder="Search chats"
+                aria-label="Search chats"
+                spellCheck={false}
+                onChange={(event) => { setQuery(event.target.value) }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') setQuery('')
+                }}
+              />
+              {query !== ''
+                ? (
+                  <button type="button" className="search-clear" aria-label="Clear search" onClick={() => { setQuery('') }}>
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                      <line x1="4" y1="4" x2="12" y2="12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                      <line x1="12" y1="4" x2="4" y2="12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                    </svg>
+                  </button>
+                )
+                : undefined}
+            </div>
+          )
+          : undefined}
         <nav className="session-list" aria-label="Conversations" ref={listRef} onScroll={handleListScroll}>
           <SessionListBody
             searchActive={searchActive}
             hits={hits}
-            sessions={sessions}
+            sessions={archivedView ? archivedSessions : sessions}
             activeId={activeId}
             searching={searching}
             loadingMore={loadingMore}
             runningIds={runningIds}
             onSelect={selectSession}
+            groups={archivedView ? [] : (activeUserInfo?.groups ?? [])}
+            grouped={!searchActive && !archivedView}
+            renamingId={renamingId}
+            onRenameSubmit={renameChat}
+            onRenameCancel={() => { setRenamingId(undefined) }}
+            onContext={openChatMenu}
           />
         </nav>
         <div className="sidebar-footer">
+          {!archivedView
+            ? <button type="button" className="archived-toggle" onClick={openArchived}>Archived</button>
+            : undefined}
           <div className="user-row">
             <button
               type="button"
@@ -1492,6 +1695,44 @@ export default function App(): JSX.Element {
         : undefined}
       {addUserOpen
         ? <AddUserModal onCreate={addUser} onClose={() => { setAddUserOpen(false) }} />
+        : undefined}
+      {chatMenu !== undefined
+        ? (
+          <ContextMenu
+            x={chatMenu.x}
+            y={chatMenu.y}
+            items={chatMenuItems}
+            onClose={() => { setChatMenu(undefined) }}
+          />
+        )
+        : undefined}
+      {newGroupFor !== undefined
+        ? (
+          <NewGroupDialog
+            chatTitle={(archivedView ? archivedSessions : sessions).find(session => session.id === newGroupFor)?.title ?? 'This chat'}
+            onCreate={(name) => { createGroupAndMove(newGroupFor, name) }}
+            onClose={() => { setNewGroupFor(undefined) }}
+          />
+        )
+        : undefined}
+      {moveFor !== undefined
+        ? (
+          <MoveGroupDialog
+            groups={activeUserInfo?.groups ?? []}
+            current={sessions.find(session => session.id === moveFor)?.groupId ?? null}
+            onMove={(groupId) => { moveChat(moveFor, groupId) }}
+            onClose={() => { setMoveFor(undefined) }}
+          />
+        )
+        : undefined}
+      {confirmDeleteId !== undefined
+        ? (
+          <ConfirmDeleteDialog
+            chatTitle={(archivedView ? archivedSessions : sessions).find(session => session.id === confirmDeleteId)?.title ?? 'This chat'}
+            onConfirm={() => { deleteChat(confirmDeleteId) }}
+            onClose={() => { setConfirmDeleteId(undefined) }}
+          />
+        )
         : undefined}
       {settingsOpen && config !== undefined
         ? (

@@ -312,6 +312,115 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 
 .user-menu-sep { height: 1px; margin: 6px 4px; background: var(--border); }
 
+/* ── chat context menu ────────────────────────────────────────────────────── */
+
+.context-menu {
+  position: fixed;
+  z-index: 90;
+  min-width: 180px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.16);
+}
+
+.context-menu-item {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  text-align: left;
+  color: var(--fg);
+  font-size: 13.5px;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+.context-menu-item:hover, .context-menu-item:focus-visible { background: var(--hover); }
+.context-menu-item.danger { color: var(--error-fg); }
+
+/* ── sidebar groups / rename / archived ──────────────────────────────────── */
+
+.session-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 6px;
+}
+
+.session-group-head {
+  padding: 2px 10px 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.session-rename {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 13.5px;
+  font-family: inherit;
+}
+
+.archived-toggle {
+  display: block;
+  width: 100%;
+  margin-bottom: 6px;
+  padding: 5px 10px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  text-align: left;
+  color: var(--fg-muted);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.archived-toggle:hover, .archived-toggle:focus-visible { background: var(--hover); color: var(--fg); }
+
+/* ── group-choice / delete dialogs ────────────────────────────────────────── */
+
+.session-dialog { max-width: 380px; }
+
+.group-choice-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.group-choice {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: none;
+  text-align: left;
+  color: var(--fg);
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.group-choice:hover, .group-choice:focus-visible { background: var(--hover); }
+.group-choice.active { border-color: var(--accent); }
+
+.btn.danger {
+  background: var(--error-fg);
+  color: #fff;
+}
+.btn.danger:hover { filter: brightness(1.08); }
+
 /* ── settings panel ───────────────────────────────────────────────────────── */
 
 .settings-overlay {

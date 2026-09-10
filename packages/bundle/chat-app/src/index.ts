@@ -2227,12 +2227,15 @@ export function apply(ctx: Context, config: Config): void {
       sendJson(res, 200, {
         sessions: page.map((record) => {
           const id = String(record.header.id)
+          const meta = users.sessions[id]
           return {
             id,
             title: titleOf.get(id)?.text ?? 'New chat',
             createdAt: record.header.createdAt,
             updatedAt: Math.max(activityOf.get(id) ?? 0, titleOf.get(id)?.updatedAt ?? 0),
             live: record.live,
+            archived: meta?.archivedAt !== undefined,
+            groupId: meta?.groupId ?? null,
           }
         }),
         total,

@@ -63,7 +63,7 @@ async function renderApp(options: {
   streams?: Response[]
   abilities?: { image: 'yes' | 'no' | 'unknown'; video: 'yes' | 'no' | 'unknown' }
   users?: { id: string; name: string; avatar?: number; groups?: { id: string; name: string }[] }[]
-  listSessionsFor?: (userId: string | undefined) => { sessions: unknown[]; total: number }
+  listSessionsFor?: (userId: string | undefined, archived: boolean) => { sessions: unknown[]; total: number }
 } = {}): Promise<{
   posts: { url: string; body: Record<string, unknown> }[]
   historyFetches: string[]
@@ -73,6 +73,8 @@ async function renderApp(options: {
   userPatches: { id: string; body: Record<string, unknown> }[]
   userCreates: Record<string, unknown>[]
   listHeaders: (string | undefined)[]
+  sessionPatches: { id: string; body: Record<string, unknown> }[]
+  sessionDeletes: string[]
 }> {
   const sessions = options.sessions ?? []
   const users = options.users ?? [{ id: 'u_main', name: 'catonooka', avatar: 1 }]
@@ -84,6 +86,8 @@ async function renderApp(options: {
   const userPatches: { id: string; body: Record<string, unknown> }[] = []
   const userCreates: Record<string, unknown>[] = []
   const listHeaders: (string | undefined)[] = []
+  const sessionPatches: { id: string; body: Record<string, unknown> }[] = []
+  const sessionDeletes: string[] = []
   const historyFetchCount = new Map<string, number>()
   const streams = [...options.streams ?? []]
   const summaries = sessions.map(session => ({
@@ -93,6 +97,9 @@ async function renderApp(options: {
     updatedAt: 2,
     live: true,
   }))
+  const archivedSummaries = [
+    { id: 'sess-z', title: 'Zed', createdAt: 1, updatedAt: 2, live: false, archived: true, groupId: null },
+  ]
   vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     const method = init?.method ?? 'GET'
@@ -105,17 +112,32 @@ async function renderApp(options: {
     }
     const userPatch = url.match(/^\/api\/users\/([^/]+)$/)
     if (userPatch !== null && method === 'PATCH') {
-      userPatches.push({ id: decodeURIComponent(userPatch[1] ?? ''), body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown> })
-      return Promise.resolve(jsonResponse({ users, defaultUserId: users[0]?.id ?? '', updatedId: userPatch[1] }))
+      const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
+      userPatches.push({ id: decodeURIComponent(userPatch[1] ?? ''), body })
+      // Echo the requested roster so group edits land in the client state.
+      const patched = users.map(user => user.id === userPatch[1] ? { ...user, ...body } : user)
+      return Promise.resolve(jsonResponse({ users: patched, defaultUserId: users[0]?.id ?? '', updatedId: userPatch[1] }))
     }
     if (url.startsWith('/api/sessions?')) {
       sessionListFetches.push(url)
       const header = init?.headers !== undefined ? new Headers(init.headers).get('x-dsh-user') : undefined
       listHeaders.push(header)
+      const archived = url.includes('archived=1')
       const listed = options.listSessionsFor !== undefined
-        ? options.listSessionsFor(header ?? undefined)
-        : { sessions: summaries, total: summaries.length }
+        ? options.listSessionsFor(header ?? undefined, archived)
+        : archived
+          ? { sessions: archivedSummaries, total: archivedSummaries.length }
+          : { sessions: summaries, total: summaries.length }
       return Promise.resolve(jsonResponse(listed))
+    }
+    const sessionPatch = url.match(/^\/api\/sessions\/([^/]+)$/)
+    if (sessionPatch !== null && method === 'PATCH') {
+      sessionPatches.push({ id: sessionPatch[1] ?? '', body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown> })
+      return Promise.resolve(jsonResponse({ sessionId: sessionPatch[1], archived: false, groupId: null }))
+    }
+    if (sessionPatch !== null && method === 'DELETE') {
+      sessionDeletes.push(sessionPatch[1] ?? '')
+      return Promise.resolve(jsonResponse({ deleted: true }))
     }
     if (url === '/api/config') return Promise.resolve(jsonResponse({ provider: 'p', model: 'm', persona: 'x' }))
     if (url === '/api/capabilities') {
@@ -159,7 +181,10 @@ async function renderApp(options: {
   // Let the mount-time loads (users, sessions, config, history) settle before the
   // test drives the composer — real users cannot type faster than that.
   await new Promise((resolve) => { setTimeout(resolve, 0) })
-  return { posts, historyFetches, uploads, attachmentFetches, sessionListFetches, userPatches, userCreates, listHeaders }
+  return {
+    posts, historyFetches, uploads, attachmentFetches, sessionListFetches,
+    userPatches, userCreates, listHeaders, sessionPatches, sessionDeletes,
+  }
 }
 
 const userItem = (text: string): ChatItem => ({ role: 'user', text })
@@ -925,5 +950,103 @@ describe('user profiles', () => {
       users: [{ id: 'u_main', name: 'catonooka' }],
     })
     await waitFor(() => { expect(userPatches).toEqual([{ id: 'u_main', body: { avatar: 3 } }] ) })
+  })
+})
+
+describe('chat context menu', () => {
+  const openMenuOn = async (title: string): Promise<void> => {
+    fireEvent.contextMenu(screen.getByText(title), { clientX: 40, clientY: 40 })
+    await screen.findByRole('menu')
+  }
+
+  it('archives a chat from the right-click menu and drops it from the list', async () => {
+    localStorage.setItem('dsh-chat-active', 'sess-b')
+    const { sessionPatches } = await renderApp({
+      sessions: [{ id: 'sess-a', title: 'A', items: [] }, { id: 'sess-b', title: 'B', items: [] }],
+    })
+    await screen.findByText('A')
+    await openMenuOn('A')
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Archive' }))
+    await waitFor(() => {
+      expect(sessionPatches).toEqual([{ id: 'sess-a', body: { archived: true } }])
+    })
+    await waitFor(() => { expect(screen.queryByText('A')).toBeNull() })
+    expect(screen.getByText('B')).toBeTruthy()
+  })
+
+  it('renames inline: Enter saves through the PATCH, Escape cancels', async () => {
+    localStorage.setItem('dsh-chat-active', 'sess-a')
+    const { sessionPatches } = await renderApp({
+      sessions: [{ id: 'sess-a', title: 'A', items: [] }],
+    })
+    await screen.findByText('A')
+    await openMenuOn('A')
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Rename' }))
+    const input = screen.getByLabelText<HTMLInputElement>('Rename chat')
+    expect(input.value).toBe('A')
+    fireEvent.change(input, { target: { value: 'Renamed' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => {
+      expect(sessionPatches).toEqual([{ id: 'sess-a', body: { title: 'Renamed' } }])
+    })
+    await screen.findByText('Renamed')
+  })
+
+  it('deletes after a confirm, and a deleted active chat falls back to a fresh draft', async () => {
+    localStorage.setItem('dsh-chat-active', 'sess-a')
+    const { sessionDeletes } = await renderApp({
+      sessions: [{ id: 'sess-a', title: 'A', items: [] }],
+    })
+    await screen.findByText('A')
+    await openMenuOn('A')
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete' }))
+    await screen.findByText('Delete chat?')
+    fireEvent.click(screen.getByRole('button', { name: 'Delete', exact: true }))
+    await waitFor(() => { expect(sessionDeletes).toEqual(['sess-a']) })
+    await waitFor(() => { expect(screen.queryByText('A')).toBeNull() })
+    await screen.findByText('What can I help with?')
+  })
+
+  it('creates a group from a chat and shows the section in the sidebar', async () => {
+    localStorage.setItem('dsh-chat-active', 'sess-a')
+    const { userPatches, sessionPatches } = await renderApp({
+      sessions: [{ id: 'sess-a', title: 'A', items: [] }],
+    })
+    await screen.findByText('A')
+    await openMenuOn('A')
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'New group…' }))
+    fireEvent.change(screen.getByLabelText('Group name'), { target: { value: 'X research' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create group' }))
+    await waitFor(() => {
+      expect(userPatches).toEqual([{
+        id: 'u_main',
+        body: { groups: [{ id: expect.stringMatching(/^g_/) , name: 'X research' }] },
+      }])
+    })
+    await waitFor(() => {
+      expect(sessionPatches).toEqual([{ id: 'sess-a', body: { groupId: expect.stringMatching(/^g_/) } }])
+    })
+    await screen.findByText('X research')
+    expect(screen.getByText('A')).toBeTruthy()
+  })
+
+  it('opens the archived shelf, unarchives from its menu, and goes back', async () => {
+    localStorage.setItem('dsh-chat-active', 'sess-a')
+    const { sessionListFetches, sessionPatches } = await renderApp({
+      sessions: [{ id: 'sess-a', title: 'A', items: [] }],
+    })
+    await screen.findByText('A')
+    fireEvent.click(screen.getByRole('button', { name: 'Archived', exact: true }))
+    await screen.findByText('Zed')
+    expect(sessionListFetches.some(url => url.includes('archived=1'))).toBe(true)
+    expect(screen.queryByLabelText('Search chats')).toBeNull()
+    await openMenuOn('Zed')
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Unarchive' }))
+    await waitFor(() => {
+      expect(sessionPatches).toEqual([{ id: 'sess-z', body: { archived: false } }])
+    })
+    await waitFor(() => { expect(screen.queryByText('Zed')).toBeNull() })
+    fireEvent.click(screen.getByRole('button', { name: 'All chats' }))
+    await screen.findByText('A')
   })
 })

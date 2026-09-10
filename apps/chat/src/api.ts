@@ -46,6 +46,10 @@ export interface SessionSummary {
   createdAt: number
   updatedAt: number
   live: boolean
+  /** The chat sits on the archived shelf. */
+  archived?: boolean
+  /** The acting user's group the chat belongs to, or null when ungrouped. */
+  groupId?: string | null
 }
 
 export interface SearchHit {
@@ -214,12 +218,32 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
 /** Sidebar list page size; load-more requests the next offset. */
 export const SESSION_PAGE_SIZE = 20
 
-export function listSessions(params: { limit?: number; offset?: number } = {}): Promise<{ sessions: SessionSummary[]; total: number }> {
+export function listSessions(
+  params: { limit?: number; offset?: number; archived?: boolean } = {},
+): Promise<{ sessions: SessionSummary[]; total: number }> {
   const search = new URLSearchParams()
   if (params.limit !== undefined) search.set('limit', String(params.limit))
   if (params.offset !== undefined) search.set('offset', String(params.offset))
+  if (params.archived === true) search.set('archived', '1')
   const suffix = search.size > 0 ? `?${search.toString()}` : ''
   return fetchJson<{ sessions: SessionSummary[]; total: number }>(`/api/sessions${suffix}`)
+}
+
+/** Rename, archive/unarchive, or regroup one chat. */
+export function patchSession(
+  sessionId: string,
+  patch: { title?: string; archived?: boolean; groupId?: string | null },
+): Promise<{ sessionId: string; title?: string; archived: boolean; groupId: string | null }> {
+  return fetchJson(`/api/sessions/${sessionId}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(patch),
+  })
+}
+
+/** Delete one chat for good (its log directory goes with it). */
+export function deleteSession(sessionId: string): Promise<{ deleted: boolean }> {
+  return fetchJson<{ deleted: boolean }>(`/api/sessions/${sessionId}`, { method: 'DELETE' })
 }
 
 export function searchSessions(query: string, cursor?: string): Promise<{ hits: SearchHit[]; nextCursor?: string }> {
