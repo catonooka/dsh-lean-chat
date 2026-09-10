@@ -16,9 +16,10 @@ const POLL_WAIT_SECONDS = 25
 // a poller without the stamp is a pre-browser search-only build that would
 // misread browser steps as searches. v4: debugger commands ride the
 // callback form — the promise form never resolves Page.navigate in MV3
-// service workers, which left v3 builds unable to navigate. Keep in sync
-// with EXTENSION_PROTOCOL in the bridge package.
-const PROTOCOL = 4
+// service workers, which left v3 builds unable to navigate. v5: scroll runs
+// as page script — the debugger's mouse-wheel command hangs on current
+// Chrome builds. Keep in sync with EXTENSION_PROTOCOL in the bridge package.
+const PROTOCOL = 5
 const SEARCH_FETCH_TIMEOUT_MS = 8000
 // Failed-poll backoff: doubling up to half a minute. Past that the idle
 // service worker is allowed to die — the 30-second alarm wakes it to retry,
@@ -459,17 +460,41 @@ async function pressKey(tabId, key) {
 }
 
 async function scrollPage(tabId, direction) {
-  const center = await evaluate(tabId, '/*dsh-viewport*/ ({ x: Math.round(innerWidth / 2), y: Math.round(innerHeight / 2) })')
+  // Scrolling runs as page script instead of Input.dispatchMouseEvent: the
+  // debugger's mouse-wheel command hangs on current Chrome builds even with
+  // complete params (key events work; wheel events never answer), and script
+  // scrolling also reaches nested scrollers — feed timelines park their
+  // overflow in an inner container, not the window.
   const distance = 600
-  const deltas = {
-    up: { deltaX: 0, deltaY: -distance },
-    down: { deltaX: 0, deltaY: distance },
-    left: { deltaX: -distance, deltaY: 0 },
-    right: { deltaX: distance, deltaY: 0 },
-  }
-  const delta = deltas[String(direction ?? 'down')]
-  if (delta === undefined) throw new Error('the scroll action needs a direction: up, down, left, or right')
-  await sendCommand(tabId, 'Input.dispatchMouseEvent', { type: 'mouseWheel', x: center.x, y: center.y, ...delta })
+  const deltas = { up: -distance, down: distance, left: -distance, right: distance }
+  const amount = deltas[String(direction ?? 'down')]
+  if (amount === undefined) throw new Error('the scroll action needs a direction: up, down, left, or right')
+  const vertical = direction === undefined || direction === 'up' || direction === 'down'
+  const moved = await evaluate(tabId, `/*dsh-scroll*/ (() => {
+    const delta = ${String(amount)}
+    const vertical = ${String(vertical)}
+    const before = vertical ? window.scrollY : window.scrollX
+    window.scrollBy(vertical ? 0 : delta, vertical ? delta : 0)
+    if ((vertical ? window.scrollY : window.scrollX) !== before) return true
+    // The window did not move: descend the tallest scrollable chain from the
+    // body and scroll that container instead.
+    let node = document.body
+    for (;;) {
+      let next = null
+      for (const child of node.children) {
+        if (child.scrollHeight > child.clientHeight + 8 && child.clientHeight > 100) next = child
+      }
+      if (next === null) break
+      node = next
+    }
+    if (node !== null && node !== document.body) {
+      if (vertical) node.scrollTop += delta
+      else node.scrollLeft += delta
+      return true
+    }
+    return false
+  })()`)
+  if (moved !== true) throw new Error('the page has nowhere to scroll')
 }
 
 async function goBack(tabId) {

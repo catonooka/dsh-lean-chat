@@ -19,9 +19,11 @@ export const DEFAULT_BRIDGE_CLIENT = 'default'
  * search-only build, and browser jobs must neither wait on it nor run on it.
  * v4: the extension sends debugger commands through the callback form (the
  * promise form never resolves Page.navigate in MV3 service workers, so v3
- * builds cannot navigate).
+ * builds cannot navigate). v5: scroll runs as page script (the debugger's
+ * mouse-wheel command hangs on current Chrome builds, so v4 builds cannot
+ * scroll).
  */
-export const EXTENSION_PROTOCOL = 4
+export const EXTENSION_PROTOCOL = 5
 
 /** The settlement error for an extension that answered a job in the wrong
  * vocabulary — the loaded build predates the job type it was handed. */

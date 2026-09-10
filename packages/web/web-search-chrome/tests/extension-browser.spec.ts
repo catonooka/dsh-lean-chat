@@ -49,6 +49,8 @@ function fakeChrome(initialSessions: Record<string, unknown> = {}, options: {
   refCenter?: { x: number; y: number } | null
   pageScriptError?: string
   rawObservation?: unknown
+  /** Whether an injected scroll actually moved the page (jsdom cannot). */
+  scrollMoved?: boolean
   /** Debugger commands matching one of these methods never resolve. */
   hangMethods?: string[]
 } = {}) {
@@ -107,7 +109,7 @@ function fakeChrome(initialSessions: Record<string, unknown> = {}, options: {
           // from the fake's configured state.
           if (expression.startsWith('/*dsh-ref*/')) return { result: { type: 'object', value: refCenter } }
           if (expression.startsWith('/*dsh-mod*/')) return { result: { type: 'number', value: 4 } }
-          if (expression.startsWith('/*dsh-viewport*/')) return { result: { type: 'object', value: { x: 400, y: 300 } } }
+          if (expression.startsWith('/*dsh-scroll*/')) return { result: { type: 'boolean', value: options.scrollMoved !== false } }
           if (expression.startsWith('/*dsh-back*/')) return { result: { type: 'object', value: null } }
           if (options.pageScriptError !== undefined) return { exceptionDetails: { text: options.pageScriptError } }
           if (options.rawObservation !== undefined) return { result: { type: 'object', value: options.rawObservation } }
@@ -349,18 +351,27 @@ describe('extension actuation jobs', () => {
     expect(posted[1]?.body.error).toContain('unsupported key "F13"')
   })
 
-  it('scrolls a direction and goes back', async () => {
+  it('scrolls a direction through page script and goes back', async () => {
     document.body.innerHTML = '<p>page</p>'
     const { chromeStub, sent } = fakeChrome()
     const worker = loadWorker(chromeStub)
     worker.setActuationAllowed(true)
     await worker.run({ id: '7', type: 'browser', action: 'scroll', session: 'main', direction: 'down' })
-    const wheel = sent.find(command => command.method === 'Input.dispatchMouseEvent' && command.params.type === 'mouseWheel')
-    expect(wheel?.params).toMatchObject({ x: 400, y: 300, deltaX: 0, deltaY: 600 })
+    // Scrolling rides injected script (the debugger's wheel command hangs on
+    // current Chrome), never an Input.dispatchMouseEvent.
+    const scrollEval = sent.find(command => command.method === 'Runtime.evaluate' && String(command.params.expression).startsWith('/*dsh-scroll*/'))
+    expect(String(scrollEval?.params.expression)).toContain('window.scrollBy')
+    expect(sent.some(command => command.method === 'Input.dispatchMouseEvent' && command.params.type === 'mouseWheel')).toBe(false)
     expect(posted[0]?.body.ok).toBe(true)
     await worker.run({ id: '8', type: 'browser', action: 'back', session: 'main' })
     expect(sent.some(command => command.method === 'Runtime.evaluate' && String(command.params.expression).startsWith('/*dsh-back*/'))).toBe(true)
     expect(posted[1]?.body.ok).toBe(true)
+    // A nowhere-to-scroll page fails with the actionable message.
+    const stuck = fakeChrome({}, { scrollMoved: false })
+    const stuckWorker = loadWorker(stuck.chromeStub)
+    stuckWorker.setActuationAllowed(true)
+    await stuckWorker.run({ id: '9', type: 'browser', action: 'scroll', session: 'main', direction: 'down' })
+    expect(posted[2]?.body).toMatchObject({ id: '9', ok: false, error: 'the page has nowhere to scroll' })
   })
 })
 
