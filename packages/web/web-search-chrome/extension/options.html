@@ -7,6 +7,8 @@
     body { font: 14px/1.5 system-ui, sans-serif; max-width: 460px; margin: 40px auto; padding: 0 16px; color: #1f2328; }
     h1 { font-size: 18px; }
     label { display: block; margin: 16px 0 4px; font-weight: 600; }
+    label.check-row { display: flex; align-items: center; gap: 8px; }
+    label.check-row input { width: auto; }
     input { width: 100%; padding: 6px 8px; box-sizing: border-box; font: inherit; }
     button { margin-top: 12px; padding: 6px 16px; font: inherit; cursor: pointer; }
     #status { margin-top: 10px; min-height: 1em; color: #1a7f37; }
@@ -23,6 +25,13 @@
   <input id="client" type="text" spellcheck="false" placeholder="personal">
   <p class="hint">Optional. Load this extension in several Chrome profiles and give each a label —
     the model can then pick which profile to browse in (right logins, right accounts).</p>
+  <label class="check-row">
+    <input id="actuation" type="checkbox">
+    Allow actions in this profile (click, type, scroll)
+  </label>
+  <p class="hint">Off by default: the model can only <em>read</em> pages here. Turn this on only for a
+    profile whose logins you are comfortable letting the model act with — a guest or test profile
+    is a good first choice.</p>
   <button id="save">Save</button>
   <div id="status" role="status"></div>
   <script src="options.js"></script>

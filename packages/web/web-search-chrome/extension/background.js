@@ -31,12 +31,21 @@ const SESSION_IDLE_MS = 10 * 60 * 1000
 
 let origin = DEFAULT_ORIGIN
 let clientLabel = ''
+// Read-only until this profile's user opts in; the poll advertises the state
+// and the bridge only ever routes actuation jobs to opted-in profiles.
+let actuationAllowed = false
 let polling = false
 let runningJobs = 0
 
-chrome.storage.local.get({ appOrigin: DEFAULT_ORIGIN, clientLabel: '' }, (stored) => {
+/** Flip the actuation opt-in at runtime (settings change, tests). */
+function setActuationAllowed(value) {
+  actuationAllowed = value === true
+}
+
+chrome.storage.local.get({ appOrigin: DEFAULT_ORIGIN, clientLabel: '', actuationAllowed: false }, (stored) => {
   origin = stored.appOrigin
   clientLabel = stored.clientLabel || ''
+  actuationAllowed = stored.actuationAllowed === true
   startPolling()
 })
 
@@ -46,6 +55,9 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
   if (area === 'local' && changes.clientLabel !== undefined) {
     clientLabel = changes.clientLabel.newValue || ''
+  }
+  if (area === 'local' && changes.actuationAllowed !== undefined) {
+    setActuationAllowed(changes.actuationAllowed.newValue === true)
   }
 })
 
@@ -65,10 +77,13 @@ function startPolling() {
 }
 
 // The profile label this extension runs under, as a query suffix. Unlabeled
-// extensions poll as the bridge's default client and serve any job; labeled
-// ones also receive the jobs pinned to their label.
+// extensions poll as the bridge's default client and serve any read job;
+// labeled ones also receive the jobs pinned to their label, and the act flag
+// says whether this profile's user allows actuation steps at all.
 function clientQuery() {
-  return clientLabel === '' ? '' : `&client=${encodeURIComponent(clientLabel)}`
+  const client = clientLabel === '' ? '' : `&client=${encodeURIComponent(clientLabel)}`
+  const act = actuationAllowed ? '&act=1' : ''
+  return `${client}${act}`
 }
 
 async function poll() {
@@ -298,8 +313,115 @@ async function browserStep(job) {
       if (typeof job.url === 'string' && job.url !== '') await navigateTo(tabId, parseWebUrl(job.url))
       return await extract(tabId)
     }
-    throw new Error(`unsupported browser action: ${String(job.action)}`)
+    const tabId = await sessionTab(session)
+    await ensureAttached(tabId)
+    return await actuationStep(tabId, job)
   })
+}
+
+// --- Actuation: real input events through the debugger ---------------------
+
+const ACTUATION_STEP_ACTIONS = new Set(['click', 'type', 'press', 'scroll', 'back'])
+
+/** Named keys a press step may send; everything else fails loudly. */
+const PRESS_KEYS = {
+  enter: { key: 'Enter', code: 'Enter', keyCode: 13, text: '\r' },
+  tab: { key: 'Tab', code: 'Tab', keyCode: 9 },
+  escape: { key: 'Escape', code: 'Escape', keyCode: 27 },
+  backspace: { key: 'Backspace', code: 'Backspace', keyCode: 8 },
+  delete: { key: 'Delete', code: 'Delete', keyCode: 46 },
+  arrowup: { key: 'ArrowUp', code: 'ArrowUp', keyCode: 38 },
+  arrowdown: { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40 },
+  arrowleft: { key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 37 },
+  arrowright: { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39 },
+  pageup: { key: 'PageUp', code: 'PageUp', keyCode: 33 },
+  pagedown: { key: 'PageDown', code: 'PageDown', keyCode: 34 },
+  home: { key: 'Home', code: 'Home', keyCode: 36 },
+  end: { key: 'End', code: 'End', keyCode: 35 },
+}
+
+async function actuationStep(tabId, job) {
+  let acted
+  if (job.action === 'click') acted = () => clickRef(tabId, job.ref)
+  else if (job.action === 'type') acted = () => typeIntoRef(tabId, job.ref, job.text)
+  else if (job.action === 'press') acted = () => pressKey(tabId, job.key)
+  else if (job.action === 'scroll') acted = () => scrollPage(tabId, job.direction)
+  else if (job.action === 'back') acted = () => goBack(tabId)
+  else throw new Error(`unsupported browser action: ${String(job.action)}`)
+  if (!actuationAllowed) {
+    throw new Error('actions are not enabled for this Chrome profile — turn them on in the extension options')
+  }
+  await acted()
+  // Whatever the action changed, the model needs the resulting page state.
+  await sleep(400)
+  return await observe(tabId)
+}
+
+/** Where a snapshot ref currently sits, scrolled into view; null when stale. */
+async function refCenter(tabId, ref) {
+  if (typeof ref !== 'string' || ref === '') throw new Error('this action needs a ref from a snapshot')
+  const expression = `/*dsh-ref*/ (() => { const el = window.__dsh_refs && window.__dsh_refs.get(${JSON.stringify(ref)});`
+    + ' if (el === undefined || el === null || !el.isConnected) return null;'
+    + ' el.scrollIntoView({ block: \'center\' }); const r = el.getBoundingClientRect();'
+    + ' return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()'
+  const center = await evaluate(tabId, expression)
+  if (center === null || typeof center !== 'object') {
+    throw new Error(`ref ${ref} is not on the page — take a fresh snapshot and use its refs`)
+  }
+  return center
+}
+
+async function dispatchClick(tabId, x, y) {
+  const base = { x, y, button: 'left', clickCount: 1 }
+  await sendCommand(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed', ...base })
+  await sendCommand(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', ...base })
+}
+
+async function clickRef(tabId, ref) {
+  const { x, y } = await refCenter(tabId, ref)
+  await dispatchClick(tabId, x, y)
+}
+
+async function typeIntoRef(tabId, ref, text) {
+  if (typeof text !== 'string' || text === '') throw new Error('the type action needs text')
+  const { x, y } = await refCenter(tabId, ref)
+  // Focus the field with a real click, then replace its content wholesale:
+  // select-all through the platform chord, then insert the text in one go
+  // (Input.insertText rides the input events every framework listens to).
+  await dispatchClick(tabId, x, y)
+  const modifier = await evaluate(tabId, '/*dsh-mod*/ (navigator.platform || "").includes("Mac") ? 4 : 2') === 4 ? 4 : 2
+  await sendCommand(tabId, 'Input.dispatchKeyEvent', { type: 'rawKeyDown', modifiers: modifier, key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65 })
+  await sendCommand(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', modifiers: modifier, key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65 })
+  await sendCommand(tabId, 'Input.insertText', { text })
+}
+
+async function pressKey(tabId, key) {
+  const named = PRESS_KEYS[String(key ?? '').toLowerCase()]
+  if (named === undefined) throw new Error(`unsupported key "${String(key)}" — use one of: ${Object.keys(PRESS_KEYS).join(', ')}`)
+  await sendCommand(tabId, 'Input.dispatchKeyEvent', {
+    type: 'keyDown', key: named.key, code: named.code, windowsVirtualKeyCode: named.keyCode,
+    ...(named.text !== undefined ? { text: named.text } : {}),
+  })
+  await sendCommand(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', key: named.key, code: named.code, windowsVirtualKeyCode: named.keyCode })
+}
+
+async function scrollPage(tabId, direction) {
+  const center = await evaluate(tabId, '/*dsh-viewport*/ ({ x: Math.round(innerWidth / 2), y: Math.round(innerHeight / 2) })')
+  const distance = 600
+  const deltas = {
+    up: { deltaX: 0, deltaY: -distance },
+    down: { deltaX: 0, deltaY: distance },
+    left: { deltaX: -distance, deltaY: 0 },
+    right: { deltaX: distance, deltaY: 0 },
+  }
+  const delta = deltas[String(direction ?? 'down')]
+  if (delta === undefined) throw new Error('the scroll action needs a direction: up, down, left, or right')
+  await sendCommand(tabId, 'Input.dispatchMouseEvent', { type: 'mouseWheel', x: center.x, y: center.y, ...delta })
+}
+
+async function goBack(tabId) {
+  await evaluate(tabId, '/*dsh-back*/ history.back()')
+  await sleep(400)
 }
 
 function fetchWithTimeout(url, options) {
