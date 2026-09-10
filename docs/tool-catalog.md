@@ -40,6 +40,8 @@ This table connects model-visible tool names to the plugin package and service s
 | `@deepseek-ai/dsh-tool-todo` | `todo_write` | `ctx.tools`, `owning Agent session` | `tool/call`, `todo/write`, `tool/result` | - | todo_write is session-owned state; UIs render the latest todo/write event as a checklist. `allowParallelInProgress` is required with no default, so the catalog states its choice: `true`, whose description invites several `in_progress` items. A deployment choosing `false` receives the same tool with a description asking for exactly one active task. |
 | `@deepseek-ai/dsh-tool-workflow` | `workflow` | `ctx.tools`, `ctx.workflowEngine`, `ctx.systemPrompt`, `a calling Agent (exec.agent parents the script children)` | `tool/call`, `tool/result` | - | - |
 | `@deepseek-ai/dsh-tool-web` | `web_fetch`, `web_search` | `ctx.tools`, `ctx.web`, `ctx.systemPrompt` | `tool/call`, `tool/result` | - | web_search and web_fetch keep provider selection behind ctx.web so model-visible schemas stay stable across backend swaps. |
+| `@deepseek-ai/dsh-tool-browser-chrome` | `browser` | `ctx.tools`, `an ExtensionBridge owned by the composition (jobs are enqueued at execution time)` | `tool/call`, `tool/result` | - | browser drives the user's own Chrome through the local extension bridge; the chat composition registers it beside its search tool of choice. |
+| `@deepseek-ai/dsh-tool-web-search-tiny` | `web_search` | `ctx.tools`, `ctx.web (a registered search provider)`, `ctx.llm (the question generator)` | `tool/call`, `tool/result` | - | web_search with the tiny schema and the internal question generator; the chat app picks it (tiny-metasearch) or the user's Chrome via its searchTool setting. |
 
 <a id="deepseek-aidsh-tool-ask-user"></a>
 
@@ -2223,3 +2225,122 @@ Search the web for current information. Provide 1–4 queries in the required qu
 Source: [`packages/web/tool-web/src/index.ts`](../packages/web/tool-web/src/index.ts)
 
 web_search and web_fetch keep provider selection behind ctx.web so model-visible schemas stay stable across backend swaps.
+
+<a id="deepseek-aidsh-tool-browser-chrome"></a>
+
+## `@deepseek-ai/dsh-tool-browser-chrome`
+
+### `browser`
+
+Use the user's own Chrome — with their logins — for pages a search engine cannot see: their X timeline, GitHub, mail, internal dashboards. Actions: status lists connected Chrome profiles; extract is the one-step read — give it the url and it navigates, then answers with the page's main text AND its outline (feed pages come back as numbered items) in a single trip; open navigates and returns just the outline; snapshot re-serializes the current page; close releases the tab. Where the profile allows actions, click/type target a snapshot ref, press sends a named key, scroll rolls, and back follows history — every step returns the fresh outline. Prefer web_search for public information; use this where being the user matters. Connection and reload errors are user-actionable: relay them to the user instead of retrying the step.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string",
+      "description": "The step to run: status | open | snapshot | extract | close | click | type | press | scroll | back.",
+      "enum": [
+        "status",
+        "open",
+        "snapshot",
+        "extract",
+        "close",
+        "click",
+        "type",
+        "press",
+        "scroll",
+        "back"
+      ]
+    },
+    "url": {
+      "type": "string",
+      "description": "http(s) target. Required for open; optional for extract (navigate first, then read)."
+    },
+    "goal": {
+      "type": "string",
+      "description": "What you want from the page, in one short line; recorded with the result."
+    },
+    "profile": {
+      "type": "string",
+      "description": "Chrome profile label to run in (status lists them, with whether each allows actions); omit to run in any connected one."
+    },
+    "session": {
+      "type": "string",
+      "description": "Named browser tab to drive; defaults to \"main\". Use distinct names to hold parallel pages open."
+    },
+    "ref": {
+      "type": "string",
+      "description": "The @eN ref from the session's latest snapshot that click or type targets."
+    },
+    "text": {
+      "type": "string",
+      "description": "The text a type step enters into the ref's field."
+    },
+    "key": {
+      "type": "string",
+      "description": "The named key a press step sends.",
+      "enum": [
+        "enter",
+        "tab",
+        "escape",
+        "backspace",
+        "delete",
+        "arrowup",
+        "arrowdown",
+        "arrowleft",
+        "arrowright",
+        "pageup",
+        "pagedown",
+        "home",
+        "end"
+      ]
+    },
+    "direction": {
+      "type": "string",
+      "description": "The direction a scroll step rolls.",
+      "enum": [
+        "up",
+        "down",
+        "left",
+        "right"
+      ]
+    }
+  },
+  "required": [
+    "action"
+  ]
+}
+```
+
+Source: [`packages/web/tool-browser-chrome/src/index.ts`](../packages/web/tool-browser-chrome/src/index.ts)
+
+browser drives the user's own Chrome through the local extension bridge; the chat composition registers it beside its search tool of choice.
+
+<a id="deepseek-aidsh-tool-web-search-tiny"></a>
+
+## `@deepseek-ai/dsh-tool-web-search-tiny`
+
+### `web_search`
+
+Search the web for current information. Pass one concise, self-contained search query. When the search tool is the user's Chrome, prefix the query with `x:` to search the user's logged-in X.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "query": {
+      "type": "string",
+      "description": "A concise, self-contained search query."
+    }
+  },
+  "required": [
+    "query"
+  ]
+}
+```
+
+Source: [`packages/web/tool-web-search-tiny/src/index.ts`](../packages/web/tool-web-search-tiny/src/index.ts)
+
+web_search with the tiny schema and the internal question generator; the chat app picks it (tiny-metasearch) or the user's Chrome via its searchTool setting.

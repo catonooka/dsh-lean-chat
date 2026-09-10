@@ -64,6 +64,9 @@ import * as ToolTodo from '@deepseek-ai/dsh-tool-todo'
 import * as ToolSubagent from '@deepseek-ai/dsh-tool-subagent'
 import { registerListSubagentModels } from '../packages/subagent/tool-subagent/src/list-models.ts'
 import * as ToolWeb from '@deepseek-ai/dsh-tool-web'
+import * as ToolBrowserChrome from '@deepseek-ai/dsh-tool-browser-chrome'
+import { ExtensionBridge } from '@deepseek-ai/dsh-web-search-chrome/src/bridge.ts'
+import * as ToolWebSearchTiny from '@deepseek-ai/dsh-tool-web-search-tiny'
 import VmWorkflowEngine from '@deepseek-ai/dsh-workflow-worker-thread'
 import * as ToolRalph from '@deepseek-ai/dsh-tool-ralph'
 import * as ToolWorkflow from '@deepseek-ai/dsh-tool-workflow'
@@ -589,6 +592,35 @@ const TOOL_PACKAGES: ToolPackage[] = [
     },
     note:
       'web_search and web_fetch keep provider selection behind ctx.web so model-visible schemas stay stable across backend swaps.',
+  },
+  {
+    pkg: '@deepseek-ai/dsh-tool-browser-chrome',
+    dir: 'tool-browser-chrome',
+    source: 'packages/web/tool-browser-chrome/src/index.ts',
+    requires: ['ctx.tools', 'an ExtensionBridge owned by the composition (jobs are enqueued at execution time)'],
+    writes: ['tool/call', 'tool/result'],
+    async mount(ctx) {
+      // A factory, not a plugin: the composition that owns the bridge
+      // registers the definition itself. The schema does not depend on
+      // which bridge instance answers.
+      ctx.tools.register(ToolBrowserChrome.defineBrowserTool({ bridge: new ExtensionBridge() }))
+    },
+    note:
+      'browser drives the user\'s own Chrome through the local extension bridge; the chat composition registers it beside its search tool of choice.',
+  },
+  {
+    pkg: '@deepseek-ai/dsh-tool-web-search-tiny',
+    dir: 'tool-web-search-tiny',
+    source: 'packages/web/tool-web-search-tiny/src/index.ts',
+    requires: ['ctx.tools', 'ctx.web (a registered search provider)', 'ctx.llm (the question generator)'],
+    writes: ['tool/call', 'tool/result'],
+    async mount(ctx) {
+      await ctx.plugin(WebRuntime)
+      await ctx.plugin(LlmRuntime)
+      await ctx.plugin(ToolWebSearchTiny, { maxResults: 5, generateQuestion: true })
+    },
+    note:
+      'web_search with the tiny schema and the internal question generator; the chat app picks it (tiny-metasearch) or the user\'s Chrome via its searchTool setting.',
   },
 ]
 
