@@ -19,7 +19,7 @@ import type { BrowserJob, BrowserSettlement } from '@deepseek-ai/dsh-web-search-
 interface BridgeState {
   seen: boolean
   clients: Map<string, boolean>
-  clientList: string[]
+  clientList: Array<{ client: string; actuation: boolean }>
   jobs: Array<{ job: Omit<BrowserJob, 'id'>; timeoutMs: number }>
   respond: (job: Omit<BrowserJob, 'id'>) => BrowserSettlement
 }
@@ -28,7 +28,7 @@ function stubBridge(state: Partial<BridgeState> = {}): BrowserBridge & { state: 
   const full: BridgeState = {
     seen: true,
     clients: new Map([['default', true]]),
-    clientList: ['default'],
+    clientList: [{ client: 'default', actuation: false }],
     jobs: [],
     respond: () => ({ ok: true, browser: { url: 'https://x.com/me', title: 'me', snapshot: 'page "me"', truncated: false } }),
     ...state,
@@ -36,7 +36,7 @@ function stubBridge(state: Partial<BridgeState> = {}): BrowserBridge & { state: 
   const bridge: BrowserBridge = {
     seenWithin: () => full.seen,
     clientSeenWithin: (client: string) => full.clients.get(client) === true,
-    clientList: () => full.clientList.map(client => ({ client, lastSeenAt: 1, actuation: false })),
+    clientList: () => full.clientList.map(entry => ({ ...entry, lastSeenAt: 1 })),
     // The real enqueue is overloaded per job arm; the stub only serves the
     // browser arm and adopts the overloaded type wholesale.
     enqueue: (async (job: Omit<BrowserJob, 'id'>, timeoutMs: number) => {
@@ -72,7 +72,7 @@ describe('browser tool definition', () => {
   })
 
   it('answers status from the bridge heartbeat without a job', async () => {
-    const bridge = stubBridge({ clientList: ['work', 'default'] })
+    const bridge = stubBridge({ clientList: [{ client: 'work', actuation: false }, { client: 'default', actuation: false }] })
     const created = tool(bridge)
     const value = await created.execute({ action: 'status' })
     expect(value).toEqual({ action: 'status', truncated: false, profiles: [{ profile: 'work' }, { profile: 'default' }] })
@@ -126,7 +126,7 @@ describe('browser tool failures', () => {
   })
 
   it('lists connected profiles when the requested one is absent', async () => {
-    const created = tool(stubBridge({ clientList: ['work', 'default'] }))
+    const created = tool(stubBridge({ clientList: [{ client: 'work', actuation: false }, { client: 'default', actuation: false }] }))
     await expect(created.execute({ action: 'snapshot', profile: 'personal' }))
       .rejects.toThrow('no Chrome profile named "personal" is connected — connected: work, default')
   })
@@ -142,6 +142,67 @@ describe('browser tool failures', () => {
   it('surfaces an extension-reported failure as the step error', async () => {
     const created = tool(stubBridge({ respond: () => ({ ok: false, error: 'the debugger was refused' }) }))
     await expect(created.execute({ action: 'open', url: 'https://x.com/me' })).rejects.toThrow('the browser step failed: the debugger was refused')
+  })
+})
+
+describe('browser tool actuation', () => {
+  it('refuses every actuation step while no profile opted in', async () => {
+    const created = tool(stubBridge())
+    for (const action of ['click', 'type', 'press', 'scroll', 'back'] as const) {
+      await expect(created.execute({ action, ...(action === 'type' ? { ref: '@e1', text: 'x' } : {}) }))
+        .rejects.toThrow('no Chrome profile allows actions yet')
+    }
+  })
+
+  it('refuses a pinned actuation step against a read-only profile, naming the capable ones', async () => {
+    const created = tool(stubBridge({
+      clients: new Map([['guest', true], ['main', true]]),
+      clientList: [{ client: 'main', actuation: false }, { client: 'guest', actuation: true }],
+    }))
+    await expect(created.execute({ action: 'click', ref: '@e1', profile: 'main' }))
+      .rejects.toThrow('the "main" profile is read-only — profiles with actions: guest')
+  })
+
+  it('dispatches click and type jobs with their ref and text', async () => {
+    const bridge = stubBridge({ clients: new Map([['guest', true]]), clientList: [{ client: 'guest', actuation: true }] })
+    const created = tool(bridge)
+    await created.execute({ action: 'click', ref: ' @e3 ', profile: 'guest', session: 'form' })
+    await created.execute({ action: 'type', ref: '@e3', text: 'hello', profile: 'guest' })
+    expect(bridge.state.jobs.map(entry => entry.job)).toEqual([
+      { type: 'browser', action: 'click', session: 'form', client: 'guest', ref: '@e3' },
+      { type: 'browser', action: 'type', session: 'main', client: 'guest', ref: '@e3', text: 'hello' },
+    ])
+  })
+
+  it('validates what each actuation step requires', async () => {
+    const created = tool(stubBridge({ clientList: [{ client: 'guest', actuation: true }] }))
+    await expect(created.execute({ action: 'click' })).rejects.toThrow('the click action needs a ref from a snapshot')
+    await expect(created.execute({ action: 'type', ref: '@e1' })).rejects.toThrow('the type action needs text')
+    await expect(created.execute({ action: 'press' })).rejects.toThrow('the press action needs a key')
+  })
+
+  it('dispatches press and scroll with their key and direction', async () => {
+    const bridge = stubBridge({ clientList: [{ client: 'guest', actuation: true }] })
+    const created = tool(bridge)
+    await created.execute({ action: 'press', key: 'enter' })
+    await created.execute({ action: 'scroll', direction: 'up' })
+    await created.execute({ action: 'scroll' })
+    expect(bridge.state.jobs.map(entry => ({ action: entry.job.action, key: entry.job.key, direction: entry.job.direction }))).toEqual([
+      { action: 'press', key: 'enter', direction: undefined },
+      { action: 'scroll', key: undefined, direction: 'up' },
+      { action: 'scroll', key: undefined, direction: 'down' },
+    ])
+  })
+
+  it('marks action-capable profiles in the status answer and its render', async () => {
+    const bridge = stubBridge({
+      clientList: [{ client: 'guest', actuation: true }, { client: 'main', actuation: false }],
+    })
+    const created = tool(bridge)
+    const value = await created.execute({ action: 'status' })
+    expect(value.profiles).toEqual([{ profile: 'guest', actuation: true }, { profile: 'main' }])
+    expect(created.output.render({ action: 'status' }, value)[0]?.text)
+      .toContain('Connected Chrome profiles: guest (actions on), main.')
   })
 })
 

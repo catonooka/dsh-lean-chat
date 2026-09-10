@@ -23,9 +23,20 @@ import type { BrowserJob, BrowserObservation, ExtensionBridge } from '@deepseek-
 /** The tool name the model calls. */
 export const BROWSER_TOOL_NAME = 'browser'
 
-/** The read-only action set for this build; actuation lands later. */
-export const BROWSER_ACTIONS = ['status', 'open', 'snapshot', 'extract', 'close'] as const
+/** The full action set: reads, plus the actuation steps a profile can opt in to. */
+export const BROWSER_ACTIONS = ['status', 'open', 'snapshot', 'extract', 'close', 'click', 'type', 'press', 'scroll', 'back'] as const
 export type BrowserAction = typeof BROWSER_ACTIONS[number]
+
+/** Actions that act on the page; they need a Chrome profile that allows them. */
+export const ACTUATION_ACTIONS: readonly BrowserAction[] = ['click', 'type', 'press', 'scroll', 'back']
+
+/** The keys a press step accepts. */
+export const PRESS_KEYS = ['enter', 'tab', 'escape', 'backspace', 'delete', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'pageup', 'pagedown', 'home', 'end'] as const
+export type PressKey = typeof PRESS_KEYS[number]
+
+/** The directions a scroll step accepts. */
+export const SCROLL_DIRECTIONS = ['up', 'down', 'left', 'right'] as const
+export type ScrollDirection = typeof SCROLL_DIRECTIONS[number]
 
 /** How fresh an extension heartbeat answers "connected" (one poll cycle). */
 export const DEFAULT_BRIDGE_TTL_MS = 35_000
@@ -52,6 +63,10 @@ export interface BrowserToolArgs {
   goal?: string
   profile?: string
   session?: string
+  ref?: string
+  text?: string
+  key?: PressKey
+  direction?: ScrollDirection
 }
 
 /** The canonical tool value; every field the UI chips read rides on it. */
@@ -62,7 +77,7 @@ export interface BrowserToolValue {
   snapshot?: string
   text?: string
   truncated: boolean
-  profiles?: { profile: string }[]
+  profiles?: { profile: string; actuation?: boolean }[]
 }
 
 /** The bridge surface the tool needs; satisfied by ExtensionBridge. */
@@ -79,6 +94,11 @@ export interface BrowserToolOptions {
   timeoutMs?: number
 }
 
+/** Is this action one that acts on the page rather than reading it? */
+export function isActuationAction(action: BrowserAction): boolean {
+  return (ACTUATION_ACTIONS as readonly string[]).includes(action)
+}
+
 function parseHttpUrl(candidate: string): string {
   const parsed = new URL(candidate)
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
@@ -91,6 +111,11 @@ function connectedProfiles(bridge: BrowserBridge, ttlMs: number): string[] {
   return bridge.clientList(ttlMs, Date.now()).map(entry => entry.client)
 }
 
+/** The profile labels whose user opted into actions, not just reading. */
+function actionCapableProfiles(bridge: BrowserBridge, ttlMs: number): string[] {
+  return bridge.clientList(ttlMs, Date.now()).filter(entry => entry.actuation).map(entry => entry.client)
+}
+
 function clip(text: string, cap: number): string {
   return text.length > cap ? `${text.slice(0, cap - 1)}…` : text
 }
@@ -98,7 +123,8 @@ function clip(text: string, cap: number): string {
 function renderValue(value: BrowserToolValue): string {
   if (value.action === 'status') {
     const profiles = value.profiles ?? []
-    return `Connected Chrome profiles: ${profiles.length > 0 ? profiles.map(entry => entry.profile).join(', ') : 'none'}.`
+    const rendered = profiles.map(entry => entry.actuation === true ? `${entry.profile} (actions on)` : entry.profile)
+    return `Connected Chrome profiles: ${profiles.length > 0 ? rendered.join(', ') : 'none'}.`
   }
   const parts: string[] = []
   if (value.url !== undefined || value.title !== undefined) {
@@ -124,14 +150,15 @@ export function defineBrowserTool(options: BrowserToolOptions) {
     description: 'Use the user\'s own Chrome — with their logins — for pages a search engine cannot see: their X timeline, '
       + 'GitHub, mail, internal dashboards. Actions: status lists connected Chrome profiles; open navigates a session tab and '
       + 'returns the page outline (interactive elements carry @eN refs); extract reads the page\'s main text (navigates first '
-      + 'if given a url); snapshot re-serializes the current page; close releases the tab. Prefer web_search for public '
-      + 'information; use this where being the user matters.',
+      + 'if given a url); snapshot re-serializes the current page; close releases the tab. Where the profile allows actions, '
+      + 'click/type target a snapshot ref, press sends a named key, scroll rolls, and back follows history — every step '
+      + 'returns the fresh outline. Prefer web_search for public information; use this where being the user matters.',
     parameters: {
       action: {
         type: 'string',
         enum: BROWSER_ACTIONS,
         required: true,
-        description: 'The step to run: status | open | snapshot | extract | close.',
+        description: 'The step to run: status | open | snapshot | extract | close | click | type | press | scroll | back.',
       },
       url: {
         type: 'string',
@@ -143,11 +170,29 @@ export function defineBrowserTool(options: BrowserToolOptions) {
       },
       profile: {
         type: 'string',
-        description: 'Chrome profile label to run in (status lists them); omit to run in any connected one.',
+        description: 'Chrome profile label to run in (status lists them, with whether each allows actions); omit to run in any connected one.',
       },
       session: {
         type: 'string',
         description: 'Named browser tab to drive; defaults to "main". Use distinct names to hold parallel pages open.',
+      },
+      ref: {
+        type: 'string',
+        description: 'The @eN ref from the session\'s latest snapshot that click or type targets.',
+      },
+      text: {
+        type: 'string',
+        description: 'The text a type step enters into the ref\'s field.',
+      },
+      key: {
+        type: 'string',
+        enum: PRESS_KEYS,
+        description: 'The named key a press step sends.',
+      },
+      direction: {
+        type: 'string',
+        enum: SCROLL_DIRECTIONS,
+        description: 'The direction a scroll step rolls.',
       },
     },
     output: {
@@ -166,7 +211,10 @@ export function defineBrowserTool(options: BrowserToolOptions) {
             items: {
               type: 'object',
               additionalProperties: false,
-              properties: { profile: { type: 'string', required: true } },
+              properties: {
+                profile: { type: 'string', required: true },
+                actuation: { type: 'boolean' },
+              },
             },
           },
         },
@@ -190,13 +238,26 @@ export function defineBrowserTool(options: BrowserToolOptions) {
     isConcurrencySafe: () => false,
     async execute(args: BrowserToolArgs): Promise<BrowserToolValue> {
       if (args.action === 'status') {
-        return { action: 'status', truncated: false, profiles: connectedProfiles(bridge, ttlMs).map(profile => ({ profile })) }
+        const profiles = bridge.clientList(ttlMs, Date.now())
+          .map(({ client, actuation }) => ({ profile: client, ...(actuation ? { actuation: true } : {}) }))
+        return { action: 'status', truncated: false, profiles }
       }
       if (!bridge.seenWithin(ttlMs)) throw new Error(NOT_CONNECTED_MESSAGE)
       const profile = args.profile !== undefined && args.profile.trim() !== '' ? args.profile.trim() : undefined
       if (profile !== undefined && !bridge.clientSeenWithin(profile, ttlMs)) {
         const connected = connectedProfiles(bridge, ttlMs)
         throw new Error(`no Chrome profile named "${profile}" is connected${connected.length > 0 ? ` — connected: ${connected.join(', ')}` : ''}`)
+      }
+      // Actuation is a per-profile opt-in the user flips in the extension
+      // options; refuse early and say exactly what would make it possible.
+      if (isActuationAction(args.action)) {
+        const capable = actionCapableProfiles(bridge, ttlMs)
+        if (capable.length === 0) {
+          throw new Error('no Chrome profile allows actions yet — the user turns actions on per profile in the extension options')
+        }
+        if (profile !== undefined && !capable.includes(profile)) {
+          throw new Error(`the "${profile}" profile is read-only — profiles with actions: ${capable.join(', ')}`)
+        }
       }
       const session = args.session !== undefined && args.session.trim() !== '' ? args.session.trim() : 'main'
       const job: Omit<BrowserJob, 'id'> = {
@@ -212,6 +273,19 @@ export function defineBrowserTool(options: BrowserToolOptions) {
       if (args.action === 'extract' && args.url !== undefined && args.url.trim() !== '') {
         job.url = parseHttpUrl(args.url)
       }
+      if (args.action === 'click' || args.action === 'type') {
+        if (args.ref === undefined || args.ref.trim() === '') throw new Error(`the ${args.action} action needs a ref from a snapshot`)
+        job.ref = args.ref.trim()
+      }
+      if (args.action === 'type') {
+        if (args.text === undefined || args.text === '') throw new Error('the type action needs text')
+        job.text = args.text
+      }
+      if (args.action === 'press') {
+        if (args.key === undefined) throw new Error('the press action needs a key')
+        job.key = args.key
+      }
+      if (args.action === 'scroll') job.direction = args.direction ?? 'down'
       if (args.goal !== undefined && args.goal.trim() !== '') job.goal = args.goal.trim()
       const settlement = await bridge.enqueue(job, jobTimeoutMs)
       if (!settlement.ok) throw new Error(`the browser step failed: ${settlement.error}`)
