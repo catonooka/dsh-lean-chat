@@ -21,9 +21,10 @@ export const DEFAULT_BRIDGE_CLIENT = 'default'
  * promise form never resolves Page.navigate in MV3 service workers, so v3
  * builds cannot navigate). v5: scroll runs as page script (the debugger's
  * mouse-wheel command hangs on current Chrome builds, so v4 builds cannot
- * scroll).
+ * scroll). v6: click and the type step's focus ride page script as well —
+ * Input.dispatchMouseEvent cannot be trusted there.
  */
-export const EXTENSION_PROTOCOL = 5
+export const EXTENSION_PROTOCOL = 6
 
 /** The settlement error for an extension that answered a job in the wrong
  * vocabulary — the loaded build predates the job type it was handed. */

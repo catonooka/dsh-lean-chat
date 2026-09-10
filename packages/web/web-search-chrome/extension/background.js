@@ -18,8 +18,10 @@ const POLL_WAIT_SECONDS = 25
 // callback form — the promise form never resolves Page.navigate in MV3
 // service workers, which left v3 builds unable to navigate. v5: scroll runs
 // as page script — the debugger's mouse-wheel command hangs on current
-// Chrome builds. Keep in sync with EXTENSION_PROTOCOL in the bridge package.
-const PROTOCOL = 5
+// Chrome builds. v6: click and the type step's focus ride page script too —
+// Input.dispatchMouseEvent cannot be trusted there. Keep in sync with
+// EXTENSION_PROTOCOL in the bridge package.
+const PROTOCOL = 6
 const SEARCH_FETCH_TIMEOUT_MS = 8000
 // Failed-poll backoff: doubling up to half a minute. Past that the idle
 // service worker is allowed to die — the 30-second alarm wakes it to retry,
