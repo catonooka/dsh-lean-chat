@@ -16,12 +16,12 @@ import {
   type BrowserBridge,
   type BrowserToolValue,
 } from '../src/index.ts'
-import type { BrowserJob, BrowserSettlement } from '@deepseek-ai/dsh-web-search-chrome/src/bridge.ts'
+import { EXTENSION_PROTOCOL, type BrowserJob, type BrowserSettlement } from '@deepseek-ai/dsh-web-search-chrome/src/bridge.ts'
 
 interface BridgeState {
   seen: boolean
   clients: Map<string, boolean>
-  clientList: Array<{ client: string; actuation: boolean }>
+  clientList: Array<{ client: string; actuation: boolean; version?: number }>
   jobs: Array<{ job: Omit<BrowserJob, 'id'>; timeoutMs: number }>
   respond: (job: Omit<BrowserJob, 'id'>) => BrowserSettlement
 }
@@ -30,7 +30,7 @@ function stubBridge(state: Partial<BridgeState> = {}): BrowserBridge & { state: 
   const full: BridgeState = {
     seen: true,
     clients: new Map([['default', true]]),
-    clientList: [{ client: 'default', actuation: false }],
+    clientList: [{ client: 'default', actuation: false, version: EXTENSION_PROTOCOL }],
     jobs: [],
     respond: () => ({ ok: true, browser: { url: 'https://x.com/me', title: 'me', snapshot: 'page "me"', truncated: false } }),
     ...state,
@@ -38,7 +38,7 @@ function stubBridge(state: Partial<BridgeState> = {}): BrowserBridge & { state: 
   const bridge: BrowserBridge = {
     seenWithin: () => full.seen,
     clientSeenWithin: (client: string) => full.clients.get(client) === true,
-    clientList: () => full.clientList.map(entry => ({ ...entry, lastSeenAt: 1 })),
+    clientList: () => full.clientList.map(entry => ({ ...entry, version: entry.version ?? 0, lastSeenAt: 1 })),
     // The real enqueue is overloaded per job arm; the stub only serves the
     // browser arm and adopts the overloaded type wholesale.
     enqueue: (async (job: Omit<BrowserJob, 'id'>, timeoutMs: number) => {
