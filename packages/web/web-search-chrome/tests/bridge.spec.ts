@@ -5,7 +5,7 @@
  */
 
 import { afterEach, describe, expect, it } from 'vitest'
-import { ExtensionBridge, type ExtensionJob } from '../src/bridge.ts'
+import { ACTUATION_ACTIONS, ExtensionBridge, isActuationJob, type ExtensionJob } from '../src/bridge.ts'
 
 /** Jobs settle on real timers; every test disposes to clear them. */
 const bridges: ExtensionBridge[] = []
@@ -407,9 +407,24 @@ describe('per-client heartbeats', () => {
   })
 })
 
+describe('isActuationJob', () => {
+  it('flags exactly the five actuation actions', () => {
+    expect([...ACTUATION_ACTIONS].sort()).toEqual(['back', 'click', 'press', 'scroll', 'type'])
+    for (const action of ['click', 'type', 'press', 'scroll', 'back']) {
+      expect(isActuationJob({ id: '1', type: 'browser', action, session: 'main' } as ExtensionJob)).toBe(true)
+    }
+  })
+
+  it('leaves read steps and search jobs alone', () => {
+    for (const action of ['open', 'snapshot', 'extract', 'close']) {
+      expect(isActuationJob({ id: '1', type: 'browser', action, session: 'main' } as ExtensionJob)).toBe(false)
+    }
+    expect(isActuationJob({ id: '2', kind: 'web', query: 'q', url: 'https://a', engine: 'google', maxResults: 5 } as ExtensionJob)).toBe(false)
+  })
+})
+
 describe('actuation routing', () => {
   const clickJob = { type: 'browser' as const, action: 'click' as const, session: 'main', ref: '@e1' }
-
   it('never hands an actuation job to a read-only poller', async () => {
     const created = bridge()
     const settlement = created.enqueue(clickJob, 15)

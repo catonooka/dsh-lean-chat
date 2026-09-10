@@ -28,6 +28,8 @@ import {
   parseSettingsFile,
   projectSurfaceEvent,
   requestChunks,
+  bridgeClientOf,
+  isExtensionBridgePath,
   toolCallSummary,
   resolveProviderFallback,
   TitleSnapshotCache,
@@ -149,6 +151,39 @@ describe('toolCallSummary', () => {
     expect(toolCallSummary('not json')).toEqual({})
     expect(toolCallSummary('["array"]')).toEqual({})
     expect(toolCallSummary('{"action":7,"url":null,"query":42}')).toEqual({})
+  })
+})
+
+describe('bridgeClientOf', () => {
+  const urlOf = (query: string): URL => new URL(`http://127.0.0.1:3095/api/chrome/next?${query}`)
+
+  it('defaults an absent or blank label to the default client', () => {
+    expect(bridgeClientOf(urlOf('wait=25'))).toBe('default')
+    expect(bridgeClientOf(urlOf('wait=25&client='))).toBe('default')
+    expect(bridgeClientOf(urlOf('wait=25&client=%20%20'))).toBe('default')
+  })
+
+  it('takes the label as given, trimmed and capped', () => {
+    expect(bridgeClientOf(urlOf('wait=25&client=work'))).toBe('work')
+    expect(bridgeClientOf(urlOf('wait=25&client=%20guest%20'))).toBe('guest')
+    expect(bridgeClientOf(urlOf(`client=${'x'.repeat(80)}`))).toHaveLength(64)
+  })
+})
+
+describe('isExtensionBridgePath', () => {
+  it('admits exactly the long-poll and its result post, no other route or method', () => {
+    expect(isExtensionBridgePath('GET', ['chrome', 'next'])).toBe(true)
+    expect(isExtensionBridgePath('OPTIONS', ['chrome', 'next'])).toBe(true)
+    expect(isExtensionBridgePath('POST', ['chrome', 'next'])).toBe(false)
+    expect(isExtensionBridgePath('POST', ['chrome', 'result'])).toBe(true)
+    expect(isExtensionBridgePath('OPTIONS', ['chrome', 'result'])).toBe(true)
+    expect(isExtensionBridgePath('GET', ['chrome', 'result'])).toBe(false)
+    // A rogue extension may serve jobs but read and change nothing else.
+    expect(isExtensionBridgePath('GET', ['chrome', 'status'])).toBe(false)
+    expect(isExtensionBridgePath('POST', ['chrome', 'test'])).toBe(false)
+    expect(isExtensionBridgePath('GET', ['sessions'])).toBe(false)
+    expect(isExtensionBridgePath('GET', ['chrome'])).toBe(false)
+    expect(isExtensionBridgePath('GET', ['chrome', 'next', 'extra'])).toBe(false)
   })
 })
 
