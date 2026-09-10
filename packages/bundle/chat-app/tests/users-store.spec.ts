@@ -9,6 +9,7 @@ import {
   assignUnownedSessions,
   createUser,
   defaultUser,
+  ensureSessionOwner,
   normalizeAvatar,
   normalizeChromeProfile,
   normalizeGroupName,
@@ -166,6 +167,16 @@ describe('assignUnownedSessions', () => {
       'fresh-2': { owner: 'u_alice' },
     })
     expect(assignUnownedSessions(users, ['fresh-1'], 'u_alice')).toBe(false)
+  })
+})
+
+describe('ensureSessionOwner', () => {
+  it('claims on first message and never moves an existing owner', () => {
+    const users = storeOf(['alice', 'bob'])
+    expect(ensureSessionOwner(users, 'sess-1', 'u_alice')).toBe(true)
+    expect(users.sessions['sess-1']).toEqual({ owner: 'u_alice' })
+    expect(ensureSessionOwner(users, 'sess-1', 'u_bob')).toBe(false)
+    expect(users.sessions['sess-1']).toEqual({ owner: 'u_alice' })
   })
 })
 

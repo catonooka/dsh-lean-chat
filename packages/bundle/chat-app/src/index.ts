@@ -34,10 +34,12 @@ import {
   activeUserFromHeader,
   assignUnownedSessions,
   createUser,
+  ensureSessionOwner,
   parseUsersFile,
   persistUsers,
   updateUser,
   usersJson,
+  type SessionUserMeta,
 } from './users-store.ts'
 import { routeSearchTarget, toSources, UserChromeSearchProvider } from '@deepseek-ai/dsh-web-search-chrome/src/provider.ts'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -47,7 +49,7 @@ import { CONTEXT_WINDOW_EXCEEDED_CODE, createUserMessage, ReasoningEffortId, typ
 import { isCompactCheckpointSource, ManualCompactionError } from '@deepseek-ai/dsh-compaction'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
-import { SessionQueryError, SessionSearchCursor, type SessionRecord, type SessionSearchHit, type SessionSearchPage } from '@deepseek-ai/dsh-session-query'
+import { SessionQueryError, SessionSearchCursor, type SessionRecord, type SessionSearchHit } from '@deepseek-ai/dsh-session-query'
 import type { AgentHandle } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 
@@ -216,6 +218,25 @@ export function evictableSessionIds(
     if (!busy.has(id) && now - entry.lastUsed > idleMs) ids.push(id)
   }
   return ids
+}
+
+/**
+ * Whether one chat is visible on the acting user's list: only chats they
+ * own, and only the requested shelf — active by default, archived when the
+ * archived view asks. Unowned chats (foreign surfaces writing into the same
+ * corpus) stay invisible to every profile.
+ * @param meta - the chat's ownership bookkeeping, when it has any.
+ * @param userId - the acting user.
+ * @param archivedOnly - whether the archived shelf is being listed.
+ * @returns whether the chat belongs on that list.
+ */
+export function sessionVisibleToUser(
+  meta: SessionUserMeta | undefined,
+  userId: string,
+  archivedOnly: boolean,
+): boolean {
+  if (meta?.owner !== userId) return false
+  return (meta.archivedAt !== undefined) === archivedOnly
 }
 
 /**
@@ -925,6 +946,9 @@ const MAX_SESSION_PAGE = 100
 
 /** Search page size, mirroring the main surface's cap. */
 const SEARCH_PAGE_LIMIT = 20
+
+/** Most index pages one search walks while skipping other profiles' chats. */
+const SEARCH_WALK_LIMIT = 5
 
 /** Longest accepted search query. */
 const MAX_SEARCH_QUERY_CHARS = 500
@@ -2048,6 +2072,14 @@ export function apply(ctx: Context, config: Config): void {
       sendJson(res, 403, { error: 'unknown user — reload the page' })
       return
     }
+    // Chats belong to the user who first messaged them; another profile's
+    // chat answers as not-found so nothing about it leaks across profiles.
+    const refuseForeignSession = (sessionId: string): boolean => {
+      const meta = users.sessions[sessionId]
+      if (meta === undefined || meta.owner === activeUser.id) return false
+      sendJson(res, 404, { error: 'session not found' })
+      return true
+    }
 
     if (parts.length === 1 && parts[0] === 'config') {
       if (req.method === 'GET') {
@@ -2160,8 +2192,15 @@ export function apply(ctx: Context, config: Config): void {
       // own ledger (every user message) over creation, so it costs no
       // per-session file reads; title snapshots load for the returned page
       // alone (their refresh time refines the display stamp, not the order).
+      // Only the acting user's chats list, on the shelf asked for.
+      const archivedOnly = url.searchParams.get('archived') === '1'
       const records = (await listSessionRecords())
         .filter(record => record.header.origin !== 'subagent')
+        .filter(record => sessionVisibleToUser(
+          users.sessions[String(record.header.id)],
+          activeUser.id,
+          archivedOnly,
+        ))
       const activityOf = new Map<string, number>()
       for (const record of records) {
         const id = String(record.header.id)
@@ -2191,7 +2230,9 @@ export function apply(ctx: Context, config: Config): void {
 
     // Full-text search over message content: FTS pages by opaque cursor and
     // hits render as title + snippet rows. A stale cursor (rebuilt index)
-    // restarts from the first page once.
+    // restarts from the first page once. The index spans every profile's
+    // chats, so pages walk (bounded) until one page worth of the acting
+    // user's active chats has accumulated or the cursor runs out.
     if (req.method === 'GET' && parts.length === 2 && parts[0] === 'sessions' && parts[1] === 'search') {
       const query = normalizeSearchQuery(url.searchParams.get('q') ?? '')
       const cursorRaw = url.searchParams.get('cursor')
@@ -2206,22 +2247,41 @@ export function apply(ctx: Context, config: Config): void {
           limit: SEARCH_PAGE_LIMIT,
           ...pageCursor !== undefined ? { cursor: pageCursor } : {},
         })
-      let page: SessionSearchPage<SessionSearchHit>
-      try {
-        page = await requestPage(cursor)
-      } catch (error: unknown) {
-        if (cursor !== undefined
-          && error instanceof SessionQueryError
-          && error.code === 'SESSION_QUERY_STALE_CURSOR') {
-          page = await requestPage(undefined)
-        } else {
+      const fetchPage = async (pageCursor: SessionSearchCursor | undefined, allowRestart: boolean) => {
+        try {
+          return await requestPage(pageCursor)
+        } catch (error: unknown) {
+          if (allowRestart
+            && pageCursor !== undefined
+            && error instanceof SessionQueryError
+            && error.code === 'SESSION_QUERY_STALE_CURSOR') {
+            return await requestPage(undefined)
+          }
           throw error
         }
       }
-      const hits = page.items.filter(hit => hit.header.origin !== 'subagent')
-      const titleOf = await titleMapOf(hits)
+      const owned: SessionSearchHit[] = []
+      let nextCursor: SessionSearchCursor | undefined = cursor
+      let pagesLeft = SEARCH_WALK_LIMIT
+      let firstFetch = true
+      do {
+        pagesLeft -= 1
+        // Only the client-supplied cursor can be stale; walk cursors come
+        // from the same open index, so a mid-walk staleness throws and the
+        // client's retry starts over.
+        const page = await fetchPage(nextCursor, firstFetch && nextCursor !== undefined)
+        firstFetch = false
+        for (const hit of page.items) {
+          if (hit.header.origin === 'subagent') continue
+          if (!sessionVisibleToUser(users.sessions[String(hit.header.id)], activeUser.id, false)) continue
+          owned.push(hit)
+          if (owned.length >= SEARCH_PAGE_LIMIT) break
+        }
+        nextCursor = page.nextCursor
+      } while (pagesLeft > 0 && nextCursor !== undefined && owned.length < SEARCH_PAGE_LIMIT)
+      const titleOf = await titleMapOf(owned)
       sendJson(res, 200, {
-        hits: hits.map((hit) => {
+        hits: owned.map((hit) => {
           const id = String(hit.header.id)
           const title = titleOf.get(id)
           return {
@@ -2231,7 +2291,7 @@ export function apply(ctx: Context, config: Config): void {
             updatedAt: title?.updatedAt ?? hit.header.createdAt,
           }
         }),
-        ...page.nextCursor !== undefined ? { nextCursor: String(page.nextCursor) } : {},
+        ...nextCursor !== undefined ? { nextCursor: String(nextCursor) } : {},
       })
       return
     }
@@ -2242,6 +2302,7 @@ export function apply(ctx: Context, config: Config): void {
         sendJson(res, 400, { error: 'invalid session id' })
         return
       }
+      if (refuseForeignSession(sessionId)) return
       if (req.method === 'GET') {
         const surface = await ctx.sessionQuery.readSurface(SessionId(sessionId))
         const items: ChatItem[] = []
@@ -2330,6 +2391,8 @@ export function apply(ctx: Context, config: Config): void {
         }
         const trimmed = text.trim()
         if (trimmed !== '') content = [...content, { type: 'text', text: trimmed }]
+        // The first message claims the chat for the acting user.
+        if (ensureSessionOwner(users, sessionId, activeUser.id)) persistUsersFile()
         const handle = await getOrCreateAgent(sessionId)
         res.writeHead(200, {
           'content-type': 'text/event-stream',
@@ -2363,6 +2426,7 @@ export function apply(ctx: Context, config: Config): void {
 
     if (req.method === 'POST' && parts.length === 3 && parts[0] === 'sessions' && parts[2] === 'stop') {
       const sessionId = parts[1] as string
+      if (refuseForeignSession(sessionId)) return
       const entry = handles.get(sessionId)
       if (entry !== undefined) entry.handle.agent.cancel({ kind: 'user' })
       sendJson(res, 200, { stopped: entry !== undefined })
@@ -2380,6 +2444,7 @@ export function apply(ctx: Context, config: Config): void {
         sendJson(res, 400, { error: 'invalid session id' })
         return
       }
+      if (refuseForeignSession(sessionId)) return
       const open = streams.get(sessionId)
       if (open !== undefined && open.size > 0) {
         sendJson(res, 409, { error: 'this conversation is still streaming' })
@@ -2401,6 +2466,7 @@ export function apply(ctx: Context, config: Config): void {
         sendJson(res, 400, { error: 'nothing to retry' })
         return
       }
+      if (ensureSessionOwner(users, sessionId, activeUser.id)) persistUsersFile()
       const handle = await getOrCreateAgent(sessionId)
       res.writeHead(200, {
         'content-type': 'text/event-stream',
@@ -2438,6 +2504,7 @@ export function apply(ctx: Context, config: Config): void {
         sendJson(res, 400, { error: 'invalid session id' })
         return
       }
+      if (refuseForeignSession(sessionId)) return
       const open = streams.get(sessionId)
       if (open !== undefined && open.size > 0) {
         sendJson(res, 409, { error: 'this conversation is still streaming' })

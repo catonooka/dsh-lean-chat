@@ -314,6 +314,20 @@ export function assignUnownedSessions(
   return changed
 }
 
+/**
+ * Claim one chat for a user — the first message wins and ownership never
+ * moves, so a chat stays with the profile that started it across switches.
+ * @param users - the store to mutate.
+ * @param sessionId - the chat being claimed.
+ * @param userId - the user claiming it.
+ * @returns whether the store changed (the caller persists when it did).
+ */
+export function ensureSessionOwner(users: ChatUsers, sessionId: string, userId: string): boolean {
+  if (users.sessions[sessionId] !== undefined) return false
+  users.sessions[sessionId] = { owner: userId }
+  return true
+}
+
 /** Persist the users file; failures log but never break the request. */
 export async function persistUsers(path: string, users: ChatUsers): Promise<void> {
   const body = `${JSON.stringify({

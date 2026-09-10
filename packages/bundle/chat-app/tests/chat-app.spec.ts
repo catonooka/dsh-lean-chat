@@ -30,6 +30,7 @@ import {
   requestChunks,
   bridgeClientOf,
   isExtensionBridgePath,
+  sessionVisibleToUser,
   toolCallSummary,
   resolveProviderFallback,
   TitleSnapshotCache,
@@ -1295,5 +1296,20 @@ describe('parseAttachment — charset scan threshold', () => {
     const huge = `§${'A'.repeat(16 * 1024 * 1024)}`
     const parsed = parseAttachment({ kind: 'video', dataUrl: `data:video/mp4;base64,${huge}` })
     expect(parsed.kind).toBe('video')
+  })
+})
+
+describe('sessionVisibleToUser', () => {
+  it('shows only the acting user\'s chats, on the shelf asked for', () => {
+    const mine = { owner: 'u_me' }
+    const theirs = { owner: 'u_them' }
+    const archived = { owner: 'u_me', archivedAt: 123 }
+    expect(sessionVisibleToUser(mine, 'u_me', false)).toBe(true)
+    expect(sessionVisibleToUser(theirs, 'u_me', false)).toBe(false)
+    expect(sessionVisibleToUser(undefined, 'u_me', false)).toBe(false)
+    // Archived chats hide from the active list and fill the archived shelf.
+    expect(sessionVisibleToUser(archived, 'u_me', false)).toBe(false)
+    expect(sessionVisibleToUser(archived, 'u_me', true)).toBe(true)
+    expect(sessionVisibleToUser(mine, 'u_me', true)).toBe(false)
   })
 })
