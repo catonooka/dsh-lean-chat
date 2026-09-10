@@ -277,7 +277,14 @@ async function extract(tabId) {
   if (extracted === null || typeof extracted !== 'object') {
     throw new Error('the page did not answer with an extraction')
   }
-  return extracted
+  // The outline rides along: one trip answers "read this page" with both the
+  // content and the refs any follow-up action needs.
+  const observed = await observe(tabId)
+  return {
+    ...observed,
+    text: extracted.text,
+    truncated: observed.truncated === true || extracted.truncated === true,
+  }
 }
 
 async function navigateTo(tabId, url) {

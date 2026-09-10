@@ -347,6 +347,47 @@ describe('extension actuation jobs', () => {
   })
 })
 
+describe('one-trip reading', () => {
+  const timeline = [
+    '<nav>Home</nav>',
+    '<main>',
+    ...['shipped the browser tool', 'profiles land safely', 'actuation is opt-in', 'docs caught up', 'e2e went green']
+      .map((text, index) => `<article><div>me · Sep ${String(10 - index)}</div><p>post ${String(index + 1)}: ${text}</p></article>`),
+    '<a href="/compose">Compose</a>',
+    '</main>',
+  ].join('')
+
+  it('answers "read my five recent posts" in a single trip', async () => {
+    document.body.innerHTML = timeline
+    const { chromeStub, sent } = fakeChrome()
+    const worker = loadWorker(chromeStub)
+    await worker.run({ id: 'r1', type: 'browser', action: 'extract', session: 'main', url: 'https://x.com/me' })
+    const settlement = posted[0]?.body
+    expect(settlement?.ok).toBe(true)
+    const observation = settlement?.browser as SerializedPage & { text: string }
+    // The five posts come back as numbered items…
+    expect(observation.text).toContain('1. me · Sep 10post 1: shipped the browser tool')
+    expect(observation.text).toContain('5. me · Sep 6post 5: e2e went green')
+    // …and the outline rides along with refs for any follow-up action.
+    expect(observation.snapshot).toContain('[@e1 link "Compose"] http://localhost:3000/compose')
+    // Exactly one navigation — one trip end to end.
+    expect(sent.filter(command => command.method === 'Page.navigate')).toHaveLength(1)
+  })
+
+  it('merges truncation from the text half into the combined observation', async () => {
+    document.body.innerHTML = `<main>${Array.from({ length: 40 }, (_, index) => `<article><p>post ${String(index + 1)}</p></article>`).join('')}</main>`
+    const { chromeStub } = fakeChrome()
+    const worker = loadWorker(chromeStub)
+    await worker.run({ id: 'r2', type: 'browser', action: 'extract', session: 'main' })
+    const observation = posted[0]?.body.browser as { truncated: boolean; text: string; snapshot: string }
+    // Forty items cap at thirty: the text half flags truncation, the snapshot
+    // half does not, and the combined answer carries the flag.
+    expect(observation.truncated).toBe(true)
+    expect(observation.text.split('\n')).toHaveLength(30)
+    expect(observation.snapshot).toContain('- post 1')
+  })
+})
+
 describe('extension page-script failure guards', () => {
   it('surfaces a throwing page script as the step error', async () => {
     const { chromeStub } = fakeChrome({}, { pageScriptError: 'TypeError: Cannot read props of null' })

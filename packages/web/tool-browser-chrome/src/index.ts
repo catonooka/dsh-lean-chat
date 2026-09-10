@@ -130,8 +130,8 @@ function renderValue(value: BrowserToolValue): string {
   if (value.url !== undefined || value.title !== undefined) {
     parts.push(`Page: ${value.title !== undefined && value.title !== '' ? value.title : '(untitled)'}${value.url !== undefined ? ` — ${value.url}` : ''}`)
   }
-  if (value.snapshot !== undefined) parts.push(clip(value.snapshot, RENDER_CAP_CHARS))
-  if (value.text !== undefined) parts.push(clip(value.text, RENDER_CAP_CHARS))
+  if (value.snapshot !== undefined && value.snapshot !== '') parts.push(clip(value.snapshot, RENDER_CAP_CHARS))
+  if (value.text !== undefined && value.text !== '') parts.push(clip(value.text, RENDER_CAP_CHARS))
   if (value.truncated) parts.push('(page content was truncated)')
   return parts.length > 0 ? parts.join('\n\n') : '(the page returned nothing readable)'
 }
@@ -148,11 +148,12 @@ export function defineBrowserTool(options: BrowserToolOptions) {
   return defineTool({
     name: BROWSER_TOOL_NAME,
     description: 'Use the user\'s own Chrome — with their logins — for pages a search engine cannot see: their X timeline, '
-      + 'GitHub, mail, internal dashboards. Actions: status lists connected Chrome profiles; open navigates a session tab and '
-      + 'returns the page outline (interactive elements carry @eN refs); extract reads the page\'s main text (navigates first '
-      + 'if given a url); snapshot re-serializes the current page; close releases the tab. Where the profile allows actions, '
-      + 'click/type target a snapshot ref, press sends a named key, scroll rolls, and back follows history — every step '
-      + 'returns the fresh outline. Prefer web_search for public information; use this where being the user matters.',
+      + 'GitHub, mail, internal dashboards. Actions: status lists connected Chrome profiles; extract is the one-step read — '
+      + 'give it the url and it navigates, then answers with the page\'s main text AND its outline (feed pages come back as '
+      + 'numbered items) in a single trip; open navigates and returns just the outline; snapshot re-serializes the current '
+      + 'page; close releases the tab. Where the profile allows actions, click/type target a snapshot ref, press sends a '
+      + 'named key, scroll rolls, and back follows history — every step returns the fresh outline. Prefer web_search for '
+      + 'public information; use this where being the user matters.',
     parameters: {
       action: {
         type: 'string',
@@ -295,7 +296,7 @@ export function defineBrowserTool(options: BrowserToolOptions) {
         ...(observation.url !== '' ? { url: observation.url } : {}),
         ...(observation.title !== '' ? { title: observation.title } : {}),
         ...(observation.snapshot !== undefined ? { snapshot: observation.snapshot } : {}),
-        ...(observation.text !== undefined ? { text: observation.text } : {}),
+        ...(observation.text !== undefined && observation.text !== '' ? { text: observation.text } : {}),
         truncated: observation.truncated,
       }
     },

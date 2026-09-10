@@ -210,6 +210,46 @@ describe('serializer snapshotPage', () => {
 })
 
 describe('serializer extractText', () => {
+  it('reads repeated articles as numbered items — the timeline shape', () => {
+    document.title = 'me (@me) on X'
+    document.body.innerHTML = [
+      '<nav>Home Explore Notifications</nav>',
+      '<main>',
+      ...['shipped the browser tool', 'profiles land safely', 'actuation is opt-in', 'docs caught up', 'e2e went green'].map((text, index) => `<article><div>me · Sep ${String(10 - index)}</div><p>post ${String(index + 1)}: ${text}</p></article>`),
+      '</main>',
+      '<footer>© 2026</footer>',
+    ].join('')
+    const page = extractText()
+    expect(page.truncated).toBe(false)
+    expect(page.text).toBe([
+      '1. me · Sep 10post 1: shipped the browser tool',
+      '2. me · Sep 9post 2: profiles land safely',
+      '3. me · Sep 8post 3: actuation is opt-in',
+      '4. me · Sep 7post 4: docs caught up',
+      '5. me · Sep 6post 5: e2e went green',
+    ].join('\n'))
+    expect(page.text.includes('Notifications')).toBe(false)
+    expect(page.text.includes('© 2026')).toBe(false)
+  })
+
+  it('caps item mode at thirty items and marks truncation', () => {
+    document.body.innerHTML = `<main>${Array.from({ length: 40 }, (_, index) => `<article><p>post ${String(index + 1)}</p></article>`).join('')}</main>`
+    const page = extractText()
+    expect(page.truncated).toBe(true)
+    const lines = page.text.split('\n')
+    expect(lines).toHaveLength(30)
+    expect(lines[0]).toBe('1. post 1')
+    expect(lines[29]).toBe('30. post 30')
+  })
+
+  it('clips each item past 280 characters', () => {
+    document.body.innerHTML = `<main><article><p>${'x'.repeat(400)}</p></article><article><p>short</p></article></main>`
+    const page = extractText()
+    const lines = page.text.split('\n')
+    expect(lines[0]?.length).toBeLessThanOrEqual('1. '.length + 280)
+    expect(lines[1]).toBe('2. short')
+  })
+
   it('keeps the article content and drops the page chrome around it', () => {
     document.title = 'A post'
     document.body.innerHTML = [

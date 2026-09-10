@@ -52,6 +52,7 @@ function stubBridge(state: Partial<BridgeState> = {}): BrowserBridge & { state: 
 /** The definition exposes execute/render/presentationMeta directly. */
 interface ToolDefinition {
   name: string
+  description: string
   timeoutMs: number
   isConcurrencySafe: () => boolean
   execute: (args: Record<string, unknown>) => Promise<BrowserToolValue>
@@ -209,6 +210,26 @@ describe('browser tool actuation', () => {
 })
 
 describe('browser tool rendering', () => {
+  it('teaches the one-step read in the description', () => {
+    const created = tool(stubBridge())
+    expect(created.description).toContain('extract is the one-step read')
+    expect(created.description).toContain('numbered items')
+  })
+
+  it('renders a one-step extract with its text and outline together', () => {
+    const created = tool(stubBridge())
+    const text = created.output.render({ action: 'extract' }, {
+      action: 'extract', url: 'https://x.com/me', title: 'me (@me)',
+      snapshot: 'main:\n[@e1 link "Compose"] https://x.com/compose', text: '1. post one\n2. post two', truncated: false,
+    })[0]?.text ?? ''
+    expect(text).toBe([
+      EXTERNAL_PAGE_CONTENT_NOTICE,
+      'Page: me (@me) — https://x.com/me',
+      'main:\n[@e1 link "Compose"] https://x.com/compose',
+      '1. post one\n2. post two',
+    ].join('\n\n'))
+  })
+
   it('splits actions into reads and actuation exactly', () => {
     const reads = BROWSER_ACTIONS.filter(action => !isActuationAction(action))
     expect(reads).toEqual(['status', 'open', 'snapshot', 'extract', 'close'])

@@ -219,6 +219,28 @@ function extractText(maxChars) {
     return { url: doc.location ? doc.location.href : '', title: flat(doc.title || '').slice(0, 120), text: '', truncated: false }
   }
 
+  // Feed-shaped pages — timelines, boards, result lists — are many siblings
+  // of the same element. Readability prose buries each item; numbered items
+  // answer "my first five posts" directly. Two or more articles flips the
+  // extraction to item mode.
+  var text = ''
+  var truncated = false
+  var articles = best.querySelectorAll('article')
+  if (articles.length >= 2) {
+    var itemLines = []
+    for (var a = 0; a < articles.length; a += 1) {
+      if (itemLines.length >= 30) {
+        truncated = true
+        break
+      }
+      var post = flat(articles[a].textContent || '')
+      if (post === '') continue
+      itemLines.push(`${String(itemLines.length + 1)}. ${post.length > 280 ? `${post.slice(0, 279)}…` : post}`)
+    }
+    if (itemLines.length >= 2) text = itemLines.join('\n')
+  }
+
+  if (text === '') {
   var clone = best.cloneNode(true)
   var strip = clone.querySelectorAll('script, style, noscript, template, svg, iframe, canvas, nav, aside, footer, header, form, button')
   for (var s = 0; s < strip.length; s += 1) strip[s].remove()
@@ -254,8 +276,8 @@ function extractText(maxChars) {
   for (var d = 0; d < lines.length; d += 1) {
     if (deduped.length === 0 || deduped[deduped.length - 1] !== lines[d]) deduped.push(lines[d])
   }
-  var text = deduped.join('\n')
-  var truncated = false
+  text = deduped.join('\n')
+  }
   if (text.length > maxChars) {
     truncated = true
     var head = Math.floor(maxChars * 0.75)
