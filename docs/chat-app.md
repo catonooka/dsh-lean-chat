@@ -36,6 +36,10 @@ context**.
   720px thread with streaming, markdown, and expandable search-result chips;
   and a composer with Enter-to-send and a stop button. No visible scrollbars
   anywhere — every region still scrolls.
+- **Parallel conversations**: each turn belongs to its session, so switching
+  chats or starting a new one mid-stream never stops the old turn — it keeps
+  generating in the background (a live marker in the sidebar), and switching
+  back restores the same stream where it left off.
 - **A settings panel** on the sidebar's user row (bottom-left): model,
   thinking level, temperature, system prompt, theme, and the whole model
   route — base URL (any OpenAI-compatible gateway), API key (stored
@@ -218,9 +222,13 @@ stay cheap:
   outline: a bracket-format snapshot where interactive elements carry `@eN`
   refs (refs on interactive elements only measured 51–79% cheaper in tokens
   than YAML accessibility trees; snapshots cap at 400 lines / 12k chars).
-- `extract` — the page's main readable text (readability-lite: content
+- `extract` — the one-step read: with a `url` it navigates first, then
+  answers with the page's main text AND its outline together in a single
+  trip, refs included for any follow-up action (readability-lite: content
   container picked, page chrome stripped, middle elided past the 8k cap).
-  With a `url` it navigates first, so open-and-read costs one round trip.
+  Feed-shaped pages — two or more article siblings, so timelines and boards
+  — come back as numbered items capped at thirty, each clipped to 280
+  characters, which answers "my first five posts" directly.
 - `snapshot` — re-serialize the current page (SPA content that changed).
 - `close` — release the session tab.
 - `click` / `type` / `press` / `scroll` / `back` — **actuation**, and only

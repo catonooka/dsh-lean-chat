@@ -33,6 +33,10 @@ endpoint** — DeepSeek, an mLLM gateway, or a local Ollama/vLLM.
   copy/reply/try-again actions, full-text chat search, lazy-loaded
   history, streaming that re-renders only the growing row, avatars,
   light/dark theme.
+- **Parallel conversations** — turns belong to their session: start a new
+  chat or switch mid-stream and the old turn keeps generating in the
+  background, marked live in the sidebar; come back and it is still
+  streaming where it left off.
 - **Efficient conversations** — auto-compaction keeps long chats inside the
   model's context window: older turns become a model-readable summary while
   the recent tail stays verbatim (optional in Settings; the full ledger stays
