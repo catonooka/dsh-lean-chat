@@ -9,7 +9,7 @@
  */
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { SESSION_PAGE_SIZE } from '../src/api.ts'
+import { SESSION_PAGE_SIZE, setActingUser } from '../src/api.ts'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App, { mergeSessionPage } from '../src/App.tsx'
 import type { ChatItem } from '../src/api.ts'
@@ -62,19 +62,28 @@ async function renderApp(options: {
   activeId?: string
   streams?: Response[]
   abilities?: { image: 'yes' | 'no' | 'unknown'; video: 'yes' | 'no' | 'unknown' }
+  users?: { id: string; name: string; avatar?: number; groups?: { id: string; name: string }[] }[]
+  listSessionsFor?: (userId: string | undefined) => { sessions: unknown[]; total: number }
 } = {}): Promise<{
   posts: { url: string; body: Record<string, unknown> }[]
   historyFetches: string[]
   uploads: { url: string; body: unknown }[]
   attachmentFetches: string[]
   sessionListFetches: string[]
+  userPatches: { id: string; body: Record<string, unknown> }[]
+  userCreates: Record<string, unknown>[]
+  listHeaders: (string | undefined)[]
 }> {
   const sessions = options.sessions ?? []
+  const users = options.users ?? [{ id: 'u_main', name: 'catonooka', avatar: 1 }]
   const posts: { url: string; body: Record<string, unknown> }[] = []
   const historyFetches: string[] = []
   const uploads: { url: string; body: unknown }[] = []
   const attachmentFetches: string[] = []
   const sessionListFetches: string[] = []
+  const userPatches: { id: string; body: Record<string, unknown> }[] = []
+  const userCreates: Record<string, unknown>[] = []
+  const listHeaders: (string | undefined)[] = []
   const historyFetchCount = new Map<string, number>()
   const streams = [...options.streams ?? []]
   const summaries = sessions.map(session => ({
@@ -87,9 +96,26 @@ async function renderApp(options: {
   vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     const method = init?.method ?? 'GET'
+    if (url === '/api/users') {
+      if (method === 'POST') {
+        userCreates.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>)
+        return Promise.resolve(jsonResponse({ users, defaultUserId: users[0]?.id ?? '', createdId: 'u_new' }))
+      }
+      return Promise.resolve(jsonResponse({ users, defaultUserId: users[0]?.id ?? '' }))
+    }
+    const userPatch = url.match(/^\/api\/users\/([^/]+)$/)
+    if (userPatch !== null && method === 'PATCH') {
+      userPatches.push({ id: decodeURIComponent(userPatch[1] ?? ''), body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown> })
+      return Promise.resolve(jsonResponse({ users, defaultUserId: users[0]?.id ?? '', updatedId: userPatch[1] }))
+    }
     if (url.startsWith('/api/sessions?')) {
       sessionListFetches.push(url)
-      return Promise.resolve(jsonResponse({ sessions: summaries, total: summaries.length }))
+      const header = init?.headers !== undefined ? new Headers(init.headers).get('x-dsh-user') : undefined
+      listHeaders.push(header)
+      const listed = options.listSessionsFor !== undefined
+        ? options.listSessionsFor(header ?? undefined)
+        : { sessions: summaries, total: summaries.length }
+      return Promise.resolve(jsonResponse(listed))
     }
     if (url === '/api/config') return Promise.resolve(jsonResponse({ provider: 'p', model: 'm', persona: 'x' }))
     if (url === '/api/capabilities') {
@@ -130,10 +156,10 @@ async function renderApp(options: {
     return Promise.resolve(jsonResponse({}))
   }))
   render(<App />)
-  // Let the mount-time loads (sessions, config, history) settle before the
+  // Let the mount-time loads (users, sessions, config, history) settle before the
   // test drives the composer — real users cannot type faster than that.
   await new Promise((resolve) => { setTimeout(resolve, 0) })
-  return { posts, historyFetches, uploads, attachmentFetches, sessionListFetches }
+  return { posts, historyFetches, uploads, attachmentFetches, sessionListFetches, userPatches, userCreates, listHeaders }
 }
 
 const userItem = (text: string): ChatItem => ({ role: 'user', text })
@@ -142,6 +168,8 @@ const assistantItem = (text: string): ChatItem => ({ role: 'assistant', text })
 beforeEach(() => {
   localStorage.clear()
   localStorage.setItem('dsh-chat-avatar', '1')
+  // The acting-user header is module state; reset it so tests stay isolated.
+  setActingUser(undefined)
 })
 
 afterEach(() => {
@@ -820,5 +848,82 @@ describe('history attachment swap', () => {
       if (originalRevoke !== undefined) URL.revokeObjectURL = originalRevoke
       else delete (URL as { revokeObjectURL?: unknown }).revokeObjectURL
     }
+  })
+})
+
+describe('user profiles', () => {
+  it('switches profiles without disturbing the previous profile\'s running turn', async () => {
+    localStorage.setItem('dsh-chat-active', 'sess-a')
+    const { posts } = await renderApp({
+      sessions: [{ id: 'sess-a', title: 'A', items: [] }],
+      users: [
+        { id: 'u_main', name: 'catonooka', avatar: 1 },
+        { id: 'u_work', name: 'Work', avatar: 2 },
+      ],
+      streams: [timedSseResponse([
+        [{ t: 'delta', text: 'old profile keeps streaming' }, 20],
+        [{ t: 'assistant', text: 'the finished answer' }, 500],
+        [{ t: 'turn-end', reason: 'completed' }, 20],
+      ])],
+    })
+    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    fireEvent.change(composer, { target: { value: 'go' } })
+    fireEvent.keyDown(composer, { key: 'Enter' })
+    await screen.findByText('old profile keeps streaming', {}, { timeout: 3000 })
+
+    // Switch away: the header moves, the new profile gets a fresh draft, and
+    // the old profile's stream leaves the view without being cancelled.
+    fireEvent.click(screen.getByLabelText('Switch user'))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Work' }))
+    await screen.findByText('What can I help with?')
+    expect(localStorage.getItem('dsh-chat-user')).toBe('u_work')
+    expect(screen.queryByText('old profile keeps streaming')).toBeNull()
+
+    // Switch back: the remembered chat restores the still-running turn.
+    fireEvent.click(screen.getByLabelText('Switch user'))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'catonooka' }))
+    await screen.findByText('old profile keeps streaming', {}, { timeout: 3000 })
+    expect(localStorage.getItem('dsh-chat-user')).toBe('u_main')
+    // The turn then finishes on its own and commits its row.
+    await screen.findByText('the finished answer', {}, { timeout: 3000 })
+    await waitFor(() => { expect(document.querySelector('.caret')).toBeNull() })
+    expect(posts.length).toBe(1)
+  })
+
+  it('scopes the sidebar list and sends to the acting profile\'s header', async () => {
+    localStorage.setItem('dsh-chat-active', 'sess-a')
+    const { listHeaders } = await renderApp({
+      sessions: [{ id: 'sess-a', title: 'A', items: [] }],
+      users: [
+        { id: 'u_main', name: 'catonooka', avatar: 1 },
+        { id: 'u_work', name: 'Work', avatar: 2 },
+      ],
+    })
+    await waitFor(() => { expect(listHeaders[0]).toBe('u_main') })
+    fireEvent.click(screen.getByLabelText('Switch user'))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Work' }))
+    await waitFor(() => { expect(listHeaders[listHeaders.length - 1]).toBe('u_work') })
+  })
+
+  it('adds a user through the dialog and switches to them', async () => {
+    localStorage.setItem('dsh-chat-active', 'sess-a')
+    const { userCreates, listHeaders } = await renderApp({
+      sessions: [{ id: 'sess-a', title: 'A', items: [] }],
+    })
+    fireEvent.click(screen.getByLabelText('Switch user'))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Add user…' }))
+    fireEvent.change(screen.getByLabelText('User name'), { target: { value: 'Work' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add user' }))
+    await waitFor(() => { expect(userCreates).toEqual([{ name: 'Work', avatar: 1 }]) })
+    await waitFor(() => { expect(localStorage.getItem('dsh-chat-user')).toBe('u_new') })
+    await waitFor(() => { expect(listHeaders[listHeaders.length - 1]).toBe('u_new') })
+  })
+
+  it('seeds the default profile\'s avatar from the legacy local pick', async () => {
+    localStorage.setItem('dsh-chat-avatar', '3')
+    const { userPatches } = await renderApp({
+      users: [{ id: 'u_main', name: 'catonooka' }],
+    })
+    await waitFor(() => { expect(userPatches).toEqual([{ id: 'u_main', body: { avatar: 3 } }] ) })
   })
 })

@@ -4,13 +4,18 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type Clipboard
 import { randomUUID } from '@deepseek-ai/dsh-util-crypto'
 import {
   checkModelAbilities,
+  createUser,
   fetchConfig,
   fetchMessages,
   listSessions,
+  listUsers,
+  readStoredUserId,
   retrySession,
   searchSessions,
   sendMessage,
+  setActingUser,
   stopSession,
+  updateUser,
   SESSION_PAGE_SIZE,
   fetchAttachmentBlob,
   uploadAttachment,
@@ -22,10 +27,13 @@ import {
   type SessionSummary,
   type StreamEvent,
   type UploadedAttachment,
+  type UserInfo,
 } from './api.ts'
 import { renderMarkdown } from './markdown.ts'
 import { SettingsPanel, applyTheme, readStoredTheme, storeTheme, type Theme } from './Settings.tsx'
 import { AvatarModal } from './AvatarModal.tsx'
+import { AddUserModal } from './AddUserModal.tsx'
+import { UserMenu } from './UserMenu.tsx'
 import { BOT_AVATAR_SRC, avatarSrc, readStoredAvatar, storeAvatar } from './avatar.ts'
 import { StreamFeed } from './delta.ts'
 import { copyToClipboard } from './clipboard.ts'
@@ -33,6 +41,11 @@ import { replyLabel, replyTargetFor, type ReplyContext } from './reply.ts'
 
 const ACTIVE_KEY = 'dsh-chat-active'
 const COLLAPSED_KEY = 'dsh-chat-collapsed'
+
+/** Each profile remembers its own open chat under its own storage key. */
+function activeChatKey(userId: string): string {
+  return userId === '' ? ACTIVE_KEY : `${ACTIVE_KEY}:${userId}`
+}
 
 /** Debounce for the sidebar search box. */
 const SEARCH_DEBOUNCE_MS = 300
@@ -500,6 +513,9 @@ export default function App(): JSX.Element {
   const streaming = runningIds.includes(activeId)
   const activeIdRef = useRef(activeId)
   useEffect(() => { activeIdRef.current = activeId }, [activeId])
+  // Which profile the sidebar's in-flight list fetch belongs to; a fast
+  // switch back and forth must not let the slower response win.
+  const listOwnerRef = useRef('')
   // One registry of live turns: the feed keeps receiving deltas while its
   // session is out of view, and the entry's item list replays exactly when
   // the user switches back. Finished turns hand the session back to the
@@ -517,8 +533,16 @@ export default function App(): JSX.Element {
   const [config, setConfig] = useState<AppConfig | undefined>(undefined)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [theme, setTheme] = useState<Theme>(readStoredTheme)
-  // The avatar is a required pick: null means the chooser modal is up.
-  const [avatar, setAvatar] = useState<number | null>(readStoredAvatar)
+  // User profiles: the roster loads once, and the acting profile is pure
+  // client state (the x-dsh-user header) — switching never reloads and never
+  // disturbs running turns. '' means the roster has not resolved yet.
+  const [users, setUsers] = useState<UserInfo[] | undefined>(undefined)
+  const [activeUserId, setActiveUserId] = useState<string>('')
+  const [userMenuOpen, setUserMenuOpen] = useState(false)
+  const [addUserOpen, setAddUserOpen] = useState(false)
+  const activeUserInfo = users?.find(user => user.id === activeUserId)
+  // The avatar is a required pick per profile: null means the chooser is up.
+  const avatar = activeUserInfo?.avatar ?? null
   const [collapsed, setCollapsed] = useState<boolean>(() =>
     typeof localStorage !== 'undefined' && localStorage.getItem(COLLAPSED_KEY) === '1')
   const [error, setError] = useState<string | undefined>(undefined)
@@ -528,15 +552,51 @@ export default function App(): JSX.Element {
 
   const searchActive = debouncedQuery !== ''
 
-  // The first page fills the sidebar; older pages arrive on scroll.
+  // Resolve who this tab acts as before the first data loads, so every fetch
+  // carries the right profile header from the start. A stored id the server
+  // no longer knows heals to the default profile; the default profile seeds
+  // its avatar from this browser's legacy local pick; each profile resumes
+  // its own remembered chat.
   useEffect(() => {
-    listSessions({ limit: SESSION_PAGE_SIZE })
-      .then((body) => {
-        setSessions(body.sessions)
-        setTotal(body.total)
-      })
-      .catch((err: unknown) => { setError(err instanceof Error ? err.message : String(err)) })
+    let cancelled = false
+    void (async () => {
+      try {
+        const body = await listUsers()
+        if (cancelled) return
+        const stored = readStoredUserId()
+        const known = stored !== undefined && body.users.some(user => user.id === stored)
+        const resolved = known ? stored : body.defaultUserId
+        if (resolved !== stored) setActingUser(resolved)
+        setActiveUserId(resolved)
+        listOwnerRef.current = resolved
+        setUsers(body.users)
+        const fallback = body.users.find(user => user.id === body.defaultUserId)
+        if (fallback !== undefined && fallback.avatar === undefined) {
+          const legacy = readStoredAvatar()
+          if (legacy !== null) {
+            void updateUser(body.defaultUserId, { avatar: legacy })
+              .then((updated) => { if (!cancelled) setUsers(updated.users) })
+              .catch(() => { /* the profile keeps the placeholder avatar */ })
+          }
+        }
+        const remembered = typeof localStorage !== 'undefined'
+          ? localStorage.getItem(activeChatKey(resolved))
+          : null
+        if (remembered !== null) {
+          if (remembered !== activeIdRef.current) selectSession(remembered)
+        } else if (resolved !== body.defaultUserId) {
+          selectSession(newSessionId())
+        }
+        const page = await listSessions({ limit: SESSION_PAGE_SIZE })
+        if (cancelled || listOwnerRef.current !== resolved) return
+        setSessions(page.sessions)
+        setTotal(page.total)
+      } catch (err: unknown) {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err))
+      }
+    })()
     fetchConfig().then(setConfig).catch(() => { /* the header simply stays generic */ })
+    return () => { cancelled = true }
   }, [])
 
   // After a turn, refresh the first page only and merge it into the loaded
@@ -638,8 +698,9 @@ export default function App(): JSX.Element {
   }, [])
 
   useEffect(() => {
-    localStorage.setItem(ACTIVE_KEY, activeId)
-  }, [activeId])
+    // '' = roster unresolved; the bootstrap resolves the profile first.
+    if (activeUserId !== '') localStorage.setItem(activeChatKey(activeUserId), activeId)
+  }, [activeId, activeUserId])
 
   useEffect(() => {
     localStorage.setItem(COLLAPSED_KEY, collapsed ? '1' : '0')
@@ -859,6 +920,57 @@ export default function App(): JSX.Element {
     setFeed(undefined)
     textareaRef.current?.focus()
   }, [])
+
+  /**
+   * Switch the acting profile: pure client state. The header (and with it
+   * ownership of new chats) moves at once, the sidebar reloads for the new
+   * profile, and each profile resumes its own remembered chat. Running
+   * turns of the previous profile keep streaming untouched — their sessions,
+   * feeds, and rows live in the turn registry, not in the acting profile.
+   */
+  const switchUser = useCallback((id: string): void => {
+    setUserMenuOpen(false)
+    if (id === activeUserId) return
+    if (activeUserId !== '') localStorage.setItem(activeChatKey(activeUserId), activeIdRef.current)
+    setActingUser(id)
+    setActiveUserId(id)
+    listOwnerRef.current = id
+    setSessions([])
+    setTotal(0)
+    setHits([])
+    setSearchCursor(undefined)
+    setQuery('')
+    setDebouncedQuery('')
+    void listSessions({ limit: SESSION_PAGE_SIZE })
+      .then((body) => {
+        if (listOwnerRef.current !== id) return
+        setSessions(body.sessions)
+        setTotal(body.total)
+      })
+      .catch((err: unknown) => { setError(err instanceof Error ? err.message : String(err)) })
+    const remembered = typeof localStorage !== 'undefined' ? localStorage.getItem(activeChatKey(id)) : null
+    selectSession(remembered ?? newSessionId())
+  }, [activeUserId, selectSession])
+
+  /** Apply an avatar pick to the acting profile (and keep the legacy seed). */
+  const applyAvatar = useCallback((picked: number): void => {
+    storeAvatar(picked)
+    if (activeUserId === '') return
+    void updateUser(activeUserId, { avatar: picked })
+      .then((body) => { setUsers(body.users) })
+      .catch((err: unknown) => { setError(err instanceof Error ? err.message : String(err)) })
+  }, [activeUserId])
+
+  /** Create a profile from the dialog and switch straight to it. */
+  const addUser = useCallback((input: { name: string; avatar: number }): void => {
+    void createUser(input)
+      .then((body) => {
+        setUsers(body.users)
+        setAddUserOpen(false)
+        if (body.createdId !== undefined) switchUser(body.createdId)
+      })
+      .catch((err: unknown) => { setError(err instanceof Error ? err.message : String(err)) })
+  }, [switchUser])
 
   /**
    * Drive one model turn and stream it into the view. Both sends and retries
@@ -1136,25 +1248,57 @@ export default function App(): JSX.Element {
           />
         </nav>
         <div className="sidebar-footer">
-          <button type="button" className="user-row" onClick={() => { setSettingsOpen(true) }}>
-            <span className="user-avatar" aria-hidden="true">
-              {avatar !== null
-                ? <img className="user-avatar-img" src={avatarSrc(avatar)} alt="" draggable={false} />
-                : (
-                  <svg viewBox="0 0 16 16">
-                    <circle cx="8" cy="5.2" r="2.6" fill="none" stroke="currentColor" strokeWidth="1.5" />
-                    <path d="M3 13.5c.9-2.7 2.8-4.1 5-4.1s4.1 1.4 5 4.1" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                  </svg>
-                )}
-            </span>
-            <span className="user-name">catonooka</span>
-            <svg className="user-gear" viewBox="0 0 16 16" aria-hidden="true">
-              <line x1="2" y1="4.5" x2="14" y2="4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-              <circle cx="6" cy="4.5" r="1.9" fill="none" stroke="currentColor" strokeWidth="1.5" />
-              <line x1="2" y1="11.5" x2="14" y2="11.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-              <circle cx="10" cy="11.5" r="1.9" fill="none" stroke="currentColor" strokeWidth="1.5" />
-            </svg>
-          </button>
+          <div className="user-row">
+            <button
+              type="button"
+              className="user-avatar-btn"
+              aria-label="Switch user"
+              title="Switch user"
+              onClick={() => { setUserMenuOpen(!userMenuOpen) }}
+              onContextMenu={(event) => {
+                event.preventDefault()
+                setUserMenuOpen(true)
+              }}
+            >
+              <span className="user-avatar" aria-hidden="true">
+                {avatar !== null
+                  ? <img className="user-avatar-img" src={avatarSrc(avatar)} alt="" draggable={false} />
+                  : (
+                    <svg viewBox="0 0 16 16">
+                      <circle cx="8" cy="5.2" r="2.6" fill="none" stroke="currentColor" strokeWidth="1.5" />
+                      <path d="M3 13.5c.9-2.7 2.8-4.1 5-4.1s4.1 1.4 5 4.1" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                    </svg>
+                  )}
+              </span>
+            </button>
+            <button type="button" className="user-main" onClick={() => { setSettingsOpen(true) }}>
+              <span className="user-name">{activeUserInfo?.name ?? 'catonooka'}</span>
+              <svg className="user-gear" viewBox="0 0 16 16" aria-hidden="true">
+                <line x1="2" y1="4.5" x2="14" y2="4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                <circle cx="6" cy="4.5" r="1.9" fill="none" stroke="currentColor" strokeWidth="1.5" />
+                <line x1="2" y1="11.5" x2="14" y2="11.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                <circle cx="10" cy="11.5" r="1.9" fill="none" stroke="currentColor" strokeWidth="1.5" />
+              </svg>
+            </button>
+          </div>
+          {userMenuOpen && users !== undefined
+            ? (
+              <UserMenu
+                users={users}
+                activeUserId={activeUserId}
+                onSwitch={switchUser}
+                onAdd={() => {
+                  setUserMenuOpen(false)
+                  setAddUserOpen(true)
+                }}
+                onManage={() => {
+                  setUserMenuOpen(false)
+                  setSettingsOpen(true)
+                }}
+                onClose={() => { setUserMenuOpen(false) }}
+              />
+            )
+            : undefined}
         </div>
       </aside>
       <main className="main">
@@ -1343,8 +1487,11 @@ export default function App(): JSX.Element {
           <div className="composer-note">dsh chat can make mistakes. It searches the web with one internal tool.</div>
         </div>
       </main>
-      {avatar === null
-        ? <AvatarModal onPick={(picked) => { storeAvatar(picked); setAvatar(picked) }} />
+      {users !== undefined && avatar === null && !addUserOpen && !userMenuOpen
+        ? <AvatarModal onPick={applyAvatar} />
+        : undefined}
+      {addUserOpen
+        ? <AddUserModal onCreate={addUser} onClose={() => { setAddUserOpen(false) }} />
         : undefined}
       {settingsOpen && config !== undefined
         ? (
@@ -1353,7 +1500,7 @@ export default function App(): JSX.Element {
             theme={theme}
             onTheme={setTheme}
             avatar={avatar}
-            onAvatar={(picked) => { storeAvatar(picked); setAvatar(picked) }}
+            onAvatar={applyAvatar}
             onApplied={setConfig}
             onSaved={(next) => {
               setConfig(next)

@@ -188,20 +188,47 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 
 /* ── sidebar footer / user row ────────────────────────────────────────────── */
 
-.sidebar-footer { flex: none; }
+/* The footer anchors the profile-switcher popover above the user row. */
+.sidebar-footer { flex: none; position: relative; }
 
 .user-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 6px;
   width: 100%;
-  padding: 8px 10px;
+  padding: 4px;
   border-radius: 10px;
-  text-align: left;
-  color: var(--fg);
+}
+
+/* The avatar opens the profile switcher (click or right-click). */
+.user-avatar-btn {
+  flex: none;
+  padding: 2px;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  cursor: pointer;
   transition: background 120ms ease;
 }
-.user-row:hover { background: var(--hover); }
+.user-avatar-btn:hover, .user-avatar-btn:focus-visible { background: var(--hover); }
+
+/* The name + gear side opens settings, as the whole row did before. */
+.user-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 6px 4px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  text-align: left;
+  color: var(--fg);
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+.user-main:hover, .user-main:focus-visible { background: var(--hover); }
 
 .user-avatar {
   width: 28px;
@@ -226,6 +253,64 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 }
 
 .user-gear { width: 15px; height: 15px; flex: none; color: var(--fg-muted); }
+
+/* ── profile switcher popover ─────────────────────────────────────────────── */
+
+.user-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 60;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.14);
+}
+
+.user-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 8px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  text-align: left;
+  color: var(--fg);
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+.user-menu-item:hover, .user-menu-item:focus-visible { background: var(--hover); }
+
+.user-menu-avatar {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--fg);
+  color: var(--bg);
+  line-height: 0;
+}
+.user-menu-avatar svg { width: 12px; height: 12px; }
+.user-menu-avatar img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
+
+.user-menu-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-menu-check { width: 14px; height: 14px; flex: none; color: var(--fg-muted); }
+
+.user-menu-sep { height: 1px; margin: 6px 4px; background: var(--border); }
 
 /* ── settings panel ───────────────────────────────────────────────────────── */
 

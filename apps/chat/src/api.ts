@@ -97,18 +97,103 @@ export interface SettingsPatch {
   deleteProfile?: { id: string }
 }
 
+/** One chat group a user organizes their chats into. */
+export interface ChatGroupInfo {
+  id: string
+  name: string
+}
+
+/** One lightweight user profile, as the server serves it. */
+export interface UserInfo {
+  id: string
+  name: string
+  avatar?: number
+  chromeProfile?: string
+  groups: ChatGroupInfo[]
+}
+
+/** The roster plus which id requests act for when no header names one. */
+export interface UsersBody {
+  users: UserInfo[]
+  defaultUserId: string
+  createdId?: string
+  updatedId?: string
+}
+
+/** The user roster; switching is client state (the x-dsh-user header). */
+export function listUsers(): Promise<UsersBody> {
+  return fetchJson<UsersBody>('/api/users')
+}
+
+/** Add one user profile. The caller switches to it by setting the header. */
+export function createUser(input: { name: string; avatar?: number; chromeProfile?: string }): Promise<UsersBody> {
+  return fetchJson<UsersBody>('/api/users', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
+
+/** Edit one user profile; a blank chromeProfile unsets it. */
+export function updateUser(
+  id: string,
+  patch: { name?: string; avatar?: number; chromeProfile?: string },
+): Promise<UsersBody> {
+  return fetchJson<UsersBody>(`/api/users/${id}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(patch),
+  })
+}
+
 /**
  * Fetch with one self-healing retry: a 403 session-cookie rejection (a
  * server restart rotated expectations) refetches the page to receive a fresh
  * HttpOnly cookie, then replays the request once.
  */
 async function fetchWithSessionHeal(url: string, init?: RequestInit): Promise<Response> {
-  const first = await fetch(url, init)
+  const first = await fetch(url, withUserHeader(init))
   if (first.status !== 403) return first
   const reason = await first.clone().text().catch(() => '')
   if (!reason.includes('session cookie required')) return first
   await fetch('/', { cache: 'no-store' }).catch(() => undefined)
-  return await fetch(url, init)
+  return await fetch(url, withUserHeader(init))
+}
+
+/** localStorage key holding the acting user profile's id across reloads. */
+const USER_STORAGE_KEY = 'dsh-chat-user'
+
+/** The acting user profile's id, stamped on every API call via x-dsh-user. */
+let actingUserId = readStoredUserId()
+
+/** The stored acting user id; undefined when this browser never picked one. */
+export function readStoredUserId(): string | undefined {
+  try {
+    const raw = localStorage.getItem(USER_STORAGE_KEY)
+    return raw === null || raw === '' ? undefined : raw
+  } catch {
+    // No localStorage in this environment; requests ride without the header.
+    return undefined
+  }
+}
+
+/** Switch the acting profile: header state and storage update together. */
+export function setActingUser(id: string | undefined): void {
+  actingUserId = id
+  try {
+    if (id === undefined) localStorage.removeItem(USER_STORAGE_KEY)
+    else localStorage.setItem(USER_STORAGE_KEY, id)
+  } catch {
+    // Storage-less environments keep the in-memory switch only.
+  }
+}
+
+/** Copy one request init with the acting user header attached. */
+function withUserHeader(init: RequestInit | undefined): RequestInit | undefined {
+  if (actingUserId === undefined) return init
+  const headers = new Headers(init?.headers)
+  headers.set('x-dsh-user', actingUserId)
+  return { ...init, headers }
 }
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
