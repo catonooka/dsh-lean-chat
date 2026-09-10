@@ -106,8 +106,10 @@ function fakeChrome(initialSessions: Record<string, unknown> = {}, options: {
             return { result: { type: 'boolean', value: document.readyState === 'complete' } }
           }
           // The page helpers background.js injects carry markers; answer them
-          // from the fake's configured state.
-          if (expression.startsWith('/*dsh-ref*/')) return { result: { type: 'object', value: refCenter } }
+          // from the fake's configured state (refCenter null = stale ref).
+          if (expression.startsWith('/*dsh-click*/') || expression.startsWith('/*dsh-focus*/')) {
+            return { result: { type: 'boolean', value: refCenter !== null } }
+          }
           if (expression.startsWith('/*dsh-mod*/')) return { result: { type: 'number', value: 4 } }
           if (expression.startsWith('/*dsh-scroll*/')) return { result: { type: 'boolean', value: options.scrollMoved !== false } }
           if (expression.startsWith('/*dsh-back*/')) return { result: { type: 'object', value: null } }
@@ -281,7 +283,7 @@ describe('extension browser jobs', () => {
 })
 
 describe('extension actuation jobs', () => {
-  it('clicks a snapshot ref with real mouse events and returns the new outline', async () => {
+  it('clicks a snapshot ref through page script and returns the new outline', async () => {
     document.body.innerHTML = '<h1>After</h1><a href="/next">Next</a>'
     const { chromeStub, sent } = fakeChrome()
     const worker = loadWorker(chromeStub)
@@ -291,25 +293,26 @@ describe('extension actuation jobs', () => {
     expect(settlement?.ok).toBe(true)
     const observation = settlement?.browser as SerializedPage
     expect(observation.snapshot).toContain('# After')
-    const inputs = sent.filter(command => command.method === 'Input.dispatchMouseEvent')
-    expect(inputs).toEqual([
-      { tabId: inputs[0]?.tabId, method: 'Input.dispatchMouseEvent', params: { type: 'mousePressed', x: 150, y: 40, button: 'left', clickCount: 1 } },
-      { tabId: inputs[0]?.tabId, method: 'Input.dispatchMouseEvent', params: { type: 'mouseReleased', x: 150, y: 40, button: 'left', clickCount: 1 } },
-    ])
-    const refLookup = sent.find(command => command.method === 'Runtime.evaluate' && String(command.params.expression).startsWith('/*dsh-ref*/'))
-    expect(String(refLookup?.params.expression)).toContain('"@e3"')
+    // The click rides el.click() in page script — Input.dispatchMouseEvent
+    // never answers on current Chrome builds — and no mouse command ships.
+    const clickEval = sent.find(command => command.method === 'Runtime.evaluate' && String(command.params.expression).startsWith('/*dsh-click*/'))
+    expect(String(clickEval?.params.expression)).toContain('"@e3"')
+    expect(String(clickEval?.params.expression)).toContain('.click()')
+    expect(sent.some(command => command.method === 'Input.dispatchMouseEvent')).toBe(false)
   })
 
-  it('types by focusing with a click, selecting all through the chord, and inserting text', async () => {
+  it('types by focusing through script, selecting all through the chord, and inserting text', async () => {
     document.body.innerHTML = '<input placeholder="Search">'
     const { chromeStub, sent } = fakeChrome()
     const worker = loadWorker(chromeStub)
     worker.setActuationAllowed(true)
     await worker.run({ id: '2', type: 'browser', action: 'type', session: 'main', ref: '@e1', text: 'hello world' })
     const methods = sent.map(command => `${command.method}:${String(command.params.type ?? '')}`)
-    expect(methods).toContain('Input.dispatchMouseEvent:mousePressed')
     expect(methods).toContain('Input.dispatchKeyEvent:rawKeyDown')
     expect(methods).toContain('Input.dispatchKeyEvent:keyUp')
+    const focusEval = sent.find(command => command.method === 'Runtime.evaluate' && String(command.params.expression).startsWith('/*dsh-focus*/'))
+    expect(String(focusEval?.params.expression)).toContain('.focus()')
+    expect(sent.some(command => command.method === 'Input.dispatchMouseEvent')).toBe(false)
     const insert = sent.find(command => command.method === 'Input.insertText')
     expect(insert?.params).toEqual({ text: 'hello world' })
     const chord = sent.find(command => command.method === 'Input.dispatchKeyEvent' && command.params.key === 'a')

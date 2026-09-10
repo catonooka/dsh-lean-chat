@@ -411,38 +411,35 @@ async function actuationStep(tabId, job) {
   return await observe(tabId)
 }
 
-/** Where a snapshot ref currently sits, scrolled into view; null when stale. */
-async function refCenter(tabId, ref) {
-  if (typeof ref !== 'string' || ref === '') throw new Error('this action needs a ref from a snapshot')
-  const expression = `/*dsh-ref*/ (() => { const el = window.__dsh_refs && window.__dsh_refs.get(${JSON.stringify(ref)});`
-    + ' if (el === undefined || el === null || !el.isConnected) return null;'
-    + ' el.scrollIntoView({ block: \'center\' }); const r = el.getBoundingClientRect();'
-    + ' return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()'
-  const center = await evaluate(tabId, expression)
-  if (center === null || typeof center !== 'object') {
-    throw new Error(`ref ${ref} is not on the page — take a fresh snapshot and use its refs`)
-  }
-  return center
-}
-
-async function dispatchClick(tabId, x, y) {
-  const base = { x, y, button: 'left', clickCount: 1 }
-  await sendCommand(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed', ...base })
-  await sendCommand(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', ...base })
-}
-
 async function clickRef(tabId, ref) {
-  const { x, y } = await refCenter(tabId, ref)
-  await dispatchClick(tabId, x, y)
+  // A script click on the ref'd element: Input.dispatchMouseEvent never
+  // answers on current Chrome builds — the wheel form hangs outright, so the
+  // pressed/released pair cannot be trusted either — while el.click() fires
+  // the same handlers a real click reaches on the vast majority of pages.
+  const clicked = await evaluate(tabId, `/*dsh-click*/ (() => {
+    const el = window.__dsh_refs && window.__dsh_refs.get(${JSON.stringify(ref)})
+    if (el === undefined || el === null || !el.isConnected) return false
+    el.scrollIntoView({ block: 'center' })
+    el.click()
+    return true
+  })()`)
+  if (clicked !== true) throw new Error(`ref ${ref} is not on the page — take a fresh snapshot and use its refs`)
 }
 
 async function typeIntoRef(tabId, ref, text) {
   if (typeof text !== 'string' || text === '') throw new Error('the type action needs text')
-  const { x, y } = await refCenter(tabId, ref)
-  // Focus the field with a real click, then replace its content wholesale:
-  // select-all through the platform chord, then insert the text in one go
-  // (Input.insertText rides the input events every framework listens to).
-  await dispatchClick(tabId, x, y)
+  // Focus the field through script (see clickRef for why not a mouse click),
+  // then replace its content wholesale: select-all through the platform
+  // chord — key events work fine — and insert the text in one go, so
+  // Input.insertText rides the input events every framework listens to.
+  const focused = await evaluate(tabId, `/*dsh-focus*/ (() => {
+    const el = window.__dsh_refs && window.__dsh_refs.get(${JSON.stringify(ref)})
+    if (el === undefined || el === null || !el.isConnected) return false
+    el.scrollIntoView({ block: 'center' })
+    el.focus()
+    return true
+  })()`)
+  if (focused !== true) throw new Error(`ref ${ref} is not on the page — take a fresh snapshot and use its refs`)
   const modifier = await evaluate(tabId, '/*dsh-mod*/ (navigator.platform || "").includes("Mac") ? 4 : 2') === 4 ? 4 : 2
   await sendCommand(tabId, 'Input.dispatchKeyEvent', { type: 'rawKeyDown', modifiers: modifier, key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65 })
   await sendCommand(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', modifiers: modifier, key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65 })
