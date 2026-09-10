@@ -52,10 +52,10 @@ context**.
   exact install steps.
 - **A browser tool that is you**: the `browser` tool drives a real tab in
   your own Chrome — with your logins — for pages no search engine can see
-  (your X timeline, GitHub, mail). Read-only steps in this build (open,
-  snapshot, extract, close), one compact schema, hard-capped observations,
-  and multi-profile routing so the model can act in the right identity
-  (see below).
+  (your X timeline, GitHub, mail). Reading always works (open, snapshot,
+  extract, close); click/type/press/scroll/back run only in profiles whose
+  user turned actions on. One compact schema, hard-capped observations, and
+  multi-profile routing so the model acts in the right identity (see below).
 
 ## Run
 
@@ -180,12 +180,16 @@ real tab in your window, attach the Chrome debugger to it, and navigate it,
 so JavaScript-rendered pages load with your logins (Chrome shows its usual
 "started debugging this tab" banner while a tab is driven). One tab exists
 per named session, steps on it serialize, and tabs idle for ten minutes are
-closed automatically.
+closed automatically. **Actions are a per-profile opt-in**: the extension
+options carry an "allow actions in this profile" switch, off by default, so
+every profile starts read-only — turn it on for a guest or test profile
+first, and click/type/press/scroll/back never run anywhere else.
 
 **Chrome profiles**: load the extension in several profiles and give each a
-label in its options page. Labels ride the long-poll, jobs can pin to one,
-and `/api/chrome/status` lists who is connected — the model picks the right
-identity (right logins, right accounts) with the tool's `profile` argument.
+label in its options page. Labels ride the long-poll (with the actions
+flag), jobs can pin to one, and `/api/chrome/status` lists who is connected
+and who allows actions — the model picks the right identity (right logins,
+right accounts) with the tool's `profile` argument.
 
 Install once: `chrome://extensions` → Developer mode → Load unpacked → the
 `extension/` folder (the settings panel's *How to connect* prints the exact
@@ -208,8 +212,8 @@ cannot see — their X timeline, their GitHub, their mail. One compact schema
 the initial context small, and every observation is hard-capped so steps
 stay cheap:
 
-- `status` — list connected Chrome profile labels (answered server-side,
-  no extension round trip).
+- `status` — list connected Chrome profile labels, each marked with whether
+  it allows actions (answered server-side, no extension round trip).
 - `open` — navigate a session tab, wait for the render, and return the page
   outline: a bracket-format snapshot where interactive elements carry `@eN`
   refs (refs on interactive elements only measured 51–79% cheaper in tokens
@@ -219,13 +223,20 @@ stay cheap:
   With a `url` it navigates first, so open-and-read costs one round trip.
 - `snapshot` — re-serialize the current page (SPA content that changed).
 - `close` — release the session tab.
+- `click` / `type` / `press` / `scroll` / `back` — **actuation**, and only
+  ever inside a Chrome profile whose user turned actions on for it (the
+  extension options carry an off-by-default "allow actions in this profile"
+  switch; the poll advertises the state, the bridge routes actuation jobs
+  only to opted-in profiles, and the extension refuses them again locally).
+  click and type target an `@eN` ref from the session's latest snapshot;
+  typing focuses the field with a real click, selects all through the
+  platform chord, and inserts the text in one input event. Every actuation
+  step returns the fresh page outline, and a stale ref fails with a
+  take-a-fresh-snapshot error instead of clicking blindly.
 
-This build is deliberately **read-only**: nothing is clicked, typed, or
-submitted. The `@eN` refs are stashed on the page so actuation
-(click/type/press/scroll/back) can land as a follow-up without re-
-architecting. Every step's result renders in the chat as a browsing chip
-(globe icon, action + URL, excerpt behind the toggle), and the untrusted-
-content guard the search tool uses prefixes every observation.
+Every step's result renders in the chat as a chip (globe icon, action +
+URL, excerpt behind the toggle; actuation steps read Acting/Acted), and the
+untrusted-content guard the search tool uses prefixes every observation.
 
 ### Settings panel
 
@@ -335,8 +346,9 @@ request (the client debounces at 300ms and the index build is one-time).
   authentication is deliberately not pulled in).
 - No session deletion; history full-text search and attachments both
   exist but attachments are capped at one per message.
-- Browser steps are read-only in this build (open/snapshot/extract/close);
-  click/type actuation is the planned follow-up, riding the same `@eN` refs.
+- Browser actuation (click/type/press/scroll/back) runs only in Chrome
+  profiles whose user opted in via the extension options; every profile is
+  read-only until then.
 - Question generation costs one extra small model request per uncached
   search (disable with `generateQuestion: false` on the
   `tool-web-search-tiny` row).
