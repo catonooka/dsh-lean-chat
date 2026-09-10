@@ -43,7 +43,11 @@ function loadWorker(chromeStub: unknown): WorkerExports {
 }
 
 /** The chrome surface background.js touches, faked promise-style like MV3. */
-function fakeChrome(initialSessions: Record<string, unknown> = {}, options: { refCenter?: { x: number; y: number } | null } = {}) {
+function fakeChrome(initialSessions: Record<string, unknown> = {}, options: {
+  refCenter?: { x: number; y: number } | null
+  pageScriptError?: string
+  rawObservation?: unknown
+} = {}) {
   const sent: SentCommand[] = []
   let nextTabId = 0
   const liveTabs = new Set<number>()
@@ -91,6 +95,8 @@ function fakeChrome(initialSessions: Record<string, unknown> = {}, options: { re
           if (expression.startsWith('/*dsh-mod*/')) return { result: { type: 'number', value: 4 } }
           if (expression.startsWith('/*dsh-viewport*/')) return { result: { type: 'object', value: { x: 400, y: 300 } } }
           if (expression.startsWith('/*dsh-back*/')) return { result: { type: 'object', value: null } }
+          if (options.pageScriptError !== undefined) return { exceptionDetails: { text: options.pageScriptError } }
+          if (options.rawObservation !== undefined) return { result: { type: 'object', value: options.rawObservation } }
           // The serializer injections: run them against this jsdom document;
           // a page script error reports back the way real CDP does.
           try {
@@ -338,6 +344,29 @@ describe('extension actuation jobs', () => {
     await worker.run({ id: '8', type: 'browser', action: 'back', session: 'main' })
     expect(sent.some(command => command.method === 'Runtime.evaluate' && String(command.params.expression).startsWith('/*dsh-back*/'))).toBe(true)
     expect(posted[1]?.body.ok).toBe(true)
+  })
+})
+
+describe('extension page-script failure guards', () => {
+  it('surfaces a throwing page script as the step error', async () => {
+    const { chromeStub } = fakeChrome({}, { pageScriptError: 'TypeError: Cannot read props of null' })
+    const worker = loadWorker(chromeStub)
+    await worker.run({ id: '1', type: 'browser', action: 'open', session: 'main', url: 'https://a.example/' })
+    expect(posted[0]?.body).toMatchObject({ id: '1', ok: false, error: 'page script failed: TypeError: Cannot read props of null' })
+  })
+
+  it('refuses a snapshot observation that is not an object', async () => {
+    const { chromeStub } = fakeChrome({}, { rawObservation: 'just a string' })
+    const worker = loadWorker(chromeStub)
+    await worker.run({ id: '2', type: 'browser', action: 'snapshot', session: 'main' })
+    expect(posted[0]?.body).toMatchObject({ id: '2', ok: false, error: 'the page did not answer with an observation' })
+  })
+
+  it('refuses an extraction that is not an object', async () => {
+    const { chromeStub } = fakeChrome({}, { rawObservation: 42 })
+    const worker = loadWorker(chromeStub)
+    await worker.run({ id: '3', type: 'browser', action: 'extract', session: 'main' })
+    expect(posted[0]?.body).toMatchObject({ id: '3', ok: false, error: 'the page did not answer with an extraction' })
   })
 })
 
