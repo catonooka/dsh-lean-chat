@@ -1762,8 +1762,19 @@ export function apply(ctx: Context, config: Config): void {
 
   // The browser tool rides the same bridge as Chrome search: the model drives
   // a real tab in the user's own browser, step by step, with their logins.
+  // Steps the model did not pin to a Chrome profile default to the profile
+  // the chat's owner prefers — bound to the session's owner, not to whoever
+  // is currently switching profiles in some tab, so a running turn keeps its
+  // Chrome profile across user switches.
   ctx.inject(['tools'], (toolsCtx) => {
-    toolsCtx.tools.register(defineBrowserTool({ bridge: extensionBridge }))
+    toolsCtx.tools.register(defineBrowserTool({
+      bridge: extensionBridge,
+      profileForSession: (sessionId) => {
+        const meta = users.sessions[sessionId]
+        if (meta === undefined) return undefined
+        return users.users.find(user => user.id === meta.owner)?.chromeProfile
+      },
+    }))
   })
 
   /** Send one SSE payload to every open stream of one session. */

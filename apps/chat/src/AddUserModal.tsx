@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type JSX } from 'react'
 import { AVATAR_COUNT, avatarSrc } from './avatar.ts'
+import { fetchChromeStatus } from './api.ts'
 
 /**
  * A cancellable name + avatar form. The panel is presentational: App mints
@@ -9,11 +10,13 @@ import { AVATAR_COUNT, avatarSrc } from './avatar.ts'
  * simply leaves the dialog's error to this component's caller.
  */
 export function AddUserModal({ onCreate, onClose }: {
-  onCreate: (input: { name: string; avatar: number }) => void
+  onCreate: (input: { name: string; avatar: number; chromeProfile?: string }) => void
   onClose: () => void
 }): JSX.Element {
   const [name, setName] = useState('')
   const [avatar, setAvatar] = useState(1)
+  const [chromeProfile, setChromeProfile] = useState('')
+  const [chromeClients, setChromeClients] = useState<string[]>([])
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') onClose()
@@ -21,6 +24,14 @@ export function AddUserModal({ onCreate, onClose }: {
     window.addEventListener('keydown', onKey, true)
     return () => { window.removeEventListener('keydown', onKey, true) }
   }, [onClose])
+  // Offer the Chrome profiles connected right now; "any" is the default.
+  useEffect(() => {
+    fetchChromeStatus()
+      .then((status) => {
+        if (status.clients !== undefined) setChromeClients(status.clients.map(entry => entry.client))
+      })
+      .catch(() => { /* the picker stays at "any connected profile" */ })
+  }, [])
   const trimmed = name.trim()
   return (
     <div className="settings-overlay" role="presentation" onClick={onClose}>
@@ -45,7 +56,9 @@ export function AddUserModal({ onCreate, onClose }: {
             spellCheck={false}
             onChange={(event) => { setName(event.target.value) }}
             onKeyDown={(event) => {
-              if (event.key === 'Enter' && trimmed !== '') onCreate({ name: trimmed, avatar })
+              if (event.key === 'Enter' && trimmed !== '') {
+                onCreate({ name: trimmed, avatar, ...chromeProfile !== '' ? { chromeProfile } : {} })
+              }
             }}
           />
         </label>
@@ -63,13 +76,24 @@ export function AddUserModal({ onCreate, onClose }: {
             </button>
           ))}
         </div>
+        <label className="settings-row">
+          <span className="settings-label">Chrome</span>
+          <select
+            aria-label="Chrome profile for this user"
+            value={chromeProfile}
+            onChange={(event) => { setChromeProfile(event.target.value) }}
+          >
+            <option value="">Any connected profile</option>
+            {chromeClients.map(client => <option key={client} value={client}>{client}</option>)}
+          </select>
+        </label>
         <div className="settings-actions">
           <button type="button" className="btn" onClick={onClose}>Cancel</button>
           <button
             type="button"
             className="btn primary"
             disabled={trimmed === ''}
-            onClick={() => { onCreate({ name: trimmed, avatar }) }}
+            onClick={() => { onCreate({ name: trimmed, avatar, ...chromeProfile !== '' ? { chromeProfile } : {} }) }}
           >
             Add user
           </button>

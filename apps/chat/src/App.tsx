@@ -1034,7 +1034,7 @@ export default function App(): JSX.Element {
   }, [activeUserId])
 
   /** Create a profile from the dialog and switch straight to it. */
-  const addUser = useCallback((input: { name: string; avatar: number }): void => {
+  const addUser = useCallback((input: { name: string; avatar: number; chromeProfile?: string }): void => {
     void createUser(input)
       .then((body) => {
         setUsers(body.users)
@@ -1742,6 +1742,10 @@ export default function App(): JSX.Element {
             onTheme={setTheme}
             avatar={avatar}
             onAvatar={applyAvatar}
+            users={users}
+            activeUserId={activeUserId}
+            onSwitchUser={switchUser}
+            onUsersUpdated={setUsers}
             onApplied={setConfig}
             onSaved={(next) => {
               setConfig(next)

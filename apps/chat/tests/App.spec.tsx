@@ -140,6 +140,9 @@ async function renderApp(options: {
       return Promise.resolve(jsonResponse({ deleted: true }))
     }
     if (url === '/api/config') return Promise.resolve(jsonResponse({ provider: 'p', model: 'm', persona: 'x' }))
+    if (url === '/api/chrome/status') {
+      return Promise.resolve(jsonResponse({ extension: true, clients: [{ client: 'work' }], cdp: false }))
+    }
     if (url === '/api/capabilities') {
       return Promise.resolve(jsonResponse({
         model: 'm',
@@ -1048,5 +1051,41 @@ describe('chat context menu', () => {
     await waitFor(() => { expect(screen.queryByText('Zed')).toBeNull() })
     fireEvent.click(screen.getByRole('button', { name: 'All chats' }))
     await screen.findByText('A')
+  })
+})
+
+describe('settings users section', () => {
+  it('picks the acting user\'s Chrome profile and it lands in the users store', async () => {
+    localStorage.setItem('dsh-chat-active', 'sess-a')
+    const { userPatches } = await renderApp({
+      sessions: [{ id: 'sess-a', title: 'A', items: [] }],
+    })
+    await screen.findByText('A')
+    // The name side of the user row opens settings.
+    fireEvent.click(screen.getByRole('button', { name: /catonooka/ }))
+    const select = await screen.findByLabelText<HTMLSelectElement>('Chrome profile for this user')
+    expect(screen.getByText('Any connected profile')).toBeTruthy()
+    fireEvent.change(select, { target: { value: 'work' } })
+    await waitFor(() => {
+      expect(userPatches).toContainEqual({ id: 'u_main', body: { chromeProfile: 'work' } })
+    })
+  })
+
+  it('renames the acting user from the settings row', async () => {
+    localStorage.setItem('dsh-chat-active', 'sess-a')
+    const { userPatches } = await renderApp({
+      sessions: [{ id: 'sess-a', title: 'A', items: [] }],
+    })
+    await screen.findByText('A')
+    fireEvent.click(screen.getByRole('button', { name: /catonooka/ }))
+    // The provider-profile row has its own Rename; the Users row renders after it.
+    const renameButtons = await screen.findAllByRole('button', { name: 'Rename' })
+    fireEvent.click(renameButtons[renameButtons.length - 1]!)
+    const input = screen.getByLabelText<HTMLInputElement>('User name')
+    fireEvent.change(input, { target: { value: 'Renamed User' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => {
+      expect(userPatches).toContainEqual({ id: 'u_main', body: { name: 'Renamed User' } })
+    })
   })
 })

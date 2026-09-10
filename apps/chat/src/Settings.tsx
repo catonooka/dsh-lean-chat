@@ -8,11 +8,13 @@ import {
   fetchModels,
   testChromeSearch,
   updateConfig,
+  updateUser,
   type AppConfig,
   type ChromeStatus,
   type ModelAbilities,
   type ProfileInfo,
   type SettingsPatch,
+  type UserInfo,
 } from './api.ts'
 
 export type Theme = 'system' | 'light' | 'dark'
@@ -61,6 +63,13 @@ interface SettingsProps {
   /** The chosen avatar (1..10); picked instantly, like the theme. */
   avatar: number | null
   onAvatar: (avatar: number) => void
+  /** The user-profile roster, when it has loaded. */
+  users?: UserInfo[]
+  /** Which profile is acting; the picker switches instantly. */
+  activeUserId?: string
+  onSwitchUser: (id: string) => void
+  /** Adopt a refreshed roster after an edit landed server-side. */
+  onUsersUpdated: (users: UserInfo[]) => void
   /** A server-applied update that keeps the panel open (profile operations). */
   onApplied: (config: AppConfig) => void
   /** The Save button's update, which also closes the panel. */
@@ -68,7 +77,9 @@ interface SettingsProps {
   onClose: () => void
 }
 
-export function SettingsPanel({ config, theme, onTheme, avatar, onAvatar, onApplied, onSaved, onClose }: SettingsProps): JSX.Element {
+export function SettingsPanel({
+  config, theme, onTheme, avatar, onAvatar, users, activeUserId, onSwitchUser, onUsersUpdated, onApplied, onSaved, onClose,
+}: SettingsProps): JSX.Element {
   const [profiles, setProfiles] = useState<ProfileInfo[]>(config.profiles ?? [])
   const [activeId, setActiveId] = useState(config.activeProfileId ?? config.profiles?.[0]?.id ?? '')
   const [renaming, setRenaming] = useState(false)
@@ -91,7 +102,44 @@ export function SettingsPanel({ config, theme, onTheme, avatar, onAvatar, onAppl
   const [chromeTesting, setChromeTesting] = useState(false)
   const [chromeTest, setChromeTest] = useState<string | undefined>(undefined)
   const [showChromeHelp, setShowChromeHelp] = useState(false)
+  const [userRenaming, setUserRenaming] = useState(false)
+  const [userNameDraft, setUserNameDraft] = useState('')
+  const [chromeClients, setChromeClients] = useState<string[]>([])
+  const activeUser = users?.find(user => user.id === activeUserId)
   const [error, setError] = useState<string | undefined>(undefined)
+
+  // The Chrome-profile picker needs the connected client labels once per
+  // panel visit; the connection row keeps its own live poll when visible.
+  useEffect(() => {
+    fetchChromeStatus()
+      .then((status) => {
+        if (status.clients !== undefined) setChromeClients(status.clients.map(entry => entry.client))
+      })
+      .catch(() => { /* the picker falls back to "any connected profile" */ })
+  }, [])
+
+  const commitUserName = async (): Promise<void> => {
+    const name = userNameDraft.trim()
+    setUserRenaming(false)
+    if (name === '' || activeUserId === undefined) return
+    try {
+      const body = await updateUser(activeUserId, { name })
+      onUsersUpdated(body.users)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  /** The Chrome-profile preference applies instantly, like the avatar. */
+  const applyChromeProfile = async (label: string): Promise<void> => {
+    if (activeUserId === undefined) return
+    try {
+      const body = await updateUser(activeUserId, { chromeProfile: label })
+      onUsersUpdated(body.users)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
 
   /** Adopt a server response: refresh the profile list and re-seed the rows
    * from the profile that is now active, keeping the panel open. */
@@ -304,6 +352,80 @@ export function SettingsPanel({ config, theme, onTheme, avatar, onAvatar, onAppl
             {' '}profile runs on the same OpenAI-compatible adapter.
           </span>
         </div>
+
+        {users !== undefined && users.length > 0 && activeUserId !== undefined && activeUserId !== ''
+          ? (
+            <div className="settings-row">
+              <span className="settings-label">User</span>
+              <div className="model-row">
+                {userRenaming
+                  ? (
+                    <>
+                      <input
+                        type="text"
+                        value={userNameDraft}
+                        spellCheck={false}
+                        autoFocus
+                        aria-label="User name"
+                        onChange={(event) => { setUserNameDraft(event.target.value) }}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') void commitUserName()
+                          if (event.key === 'Escape') setUserRenaming(false)
+                        }}
+                      />
+                      <button type="button" className="models-load" onClick={() => { void commitUserName() }}>
+                        Save name
+                      </button>
+                      <button type="button" className="models-load" onClick={() => { setUserRenaming(false) }}>
+                        Cancel
+                      </button>
+                    </>
+                  )
+                  : (
+                    <>
+                      <select
+                        aria-label="User profile"
+                        value={activeUserId}
+                        onChange={(event) => { onSwitchUser(event.target.value) }}
+                      >
+                        {users.map(user => <option key={user.id} value={user.id}>{user.name}</option>)}
+                      </select>
+                      <button
+                        type="button"
+                        className="models-load"
+                        onClick={() => {
+                          setUserRenaming(true)
+                          setUserNameDraft(activeUser?.name ?? '')
+                        }}
+                      >
+                        Rename
+                      </button>
+                    </>
+                  )}
+              </div>
+              <span className="settings-hint">
+                Each user keeps their own chats, groups, and avatar; switching is instant and never stops a
+                {' '}running task. The avatar row below edits the selected user.
+              </span>
+              <label className="chrome-pick">
+                <span className="settings-label">Chrome</span>
+                <select
+                  aria-label="Chrome profile for this user"
+                  value={activeUser?.chromeProfile ?? ''}
+                  onChange={(event) => { void applyChromeProfile(event.target.value) }}
+                >
+                  <option value="">Any connected profile</option>
+                  {chromeClients.map(client => <option key={client} value={client}>{client}</option>)}
+                </select>
+              </label>
+              <span className="settings-hint">
+                Browser steps in this user's chats default to the chosen Chrome profile — connected right now:
+                {' '}{chromeClients.length > 0 ? chromeClients.join(', ') : 'none'}. Each profile labels itself in the
+                {' '}extension options.
+              </span>
+            </div>
+          )
+          : undefined}
 
         <label className="settings-row">
           <span className="settings-label">Model</span>

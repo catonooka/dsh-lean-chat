@@ -344,3 +344,60 @@ describe('browser tool rendering', () => {
     })
   })
 })
+
+describe('owner-preferred Chrome profile', () => {
+  /** The execution context the agent loop hands the tool, trimmed to the
+   * session identity the profile resolution reads. */
+  const execOf = (sessionId: string | undefined): unknown =>
+    sessionId === undefined ? undefined : { agent: { session: { id: sessionId } } }
+
+  const twoClientBridge = (): BrowserBridge & { state: BridgeState } =>
+    stubBridge({
+      clientList: [
+        { client: 'default', actuation: false },
+        { client: 'work', actuation: false },
+      ],
+    })
+
+  it('pins unpinned steps to the session owner\'s preferred profile', async () => {
+    const bridge = twoClientBridge()
+    const created = defineBrowserTool({
+      bridge,
+      profileForSession: sessionId => (sessionId === 'sess-owned' ? 'work' : undefined),
+    }) as unknown as ToolDefinition
+    await created.execute({ action: 'snapshot' }, execOf('sess-owned') as never)
+    expect(bridge.state.jobs[0]?.job.client).toBe('work')
+  })
+
+  it('an explicit model pin beats the owner preference', async () => {
+    const bridge = twoClientBridge()
+    const created = defineBrowserTool({
+      bridge,
+      profileForSession: () => 'work',
+    }) as unknown as ToolDefinition
+    await created.execute({ action: 'snapshot', profile: 'default' }, execOf('sess-owned') as never)
+    expect(bridge.state.jobs[0]?.job.client).toBe('default')
+  })
+
+  it('ownerless or context-less calls stay unpinned', async () => {
+    const bridge = twoClientBridge()
+    const created = defineBrowserTool({
+      bridge,
+      profileForSession: sessionId => (sessionId === 'sess-owned' ? 'work' : undefined),
+    }) as unknown as ToolDefinition
+    // No execution context at all (status-style direct calls in tests).
+    await created.execute({ action: 'snapshot' })
+    // A session the resolver has no preference for.
+    await created.execute({ action: 'snapshot' }, execOf('sess-other') as never)
+    expect(bridge.state.jobs.map(entry => entry.job.client)).toEqual([undefined, undefined])
+  })
+
+  it('a preferred profile that is not connected fails by name', async () => {
+    const created = defineBrowserTool({
+      bridge: twoClientBridge(),
+      profileForSession: () => 'ghost',
+    }) as unknown as ToolDefinition
+    await expect(created.execute({ action: 'snapshot' }, execOf('sess-owned') as never))
+      .rejects.toThrow('no Chrome profile named "ghost" is connected')
+  })
+})

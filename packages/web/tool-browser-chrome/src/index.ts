@@ -15,7 +15,7 @@
  * @module @deepseek-ai/dsh-tool-browser-chrome
  */
 
-import { defineTool } from '@deepseek-ai/dsh-tools'
+import { defineTool, type ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import { EXTENSION_PROTOCOL, type BrowserJob, type BrowserObservation, type ExtensionBridge } from '@deepseek-ai/dsh-web-search-chrome/src/bridge.ts'
@@ -99,6 +99,10 @@ export interface BrowserToolOptions {
   jobTimeoutMs?: number
   /** The tool's cooperative timeout budget. */
   timeoutMs?: number
+  /** Resolve the Chrome profile the running chat's owner prefers — the
+   * default for steps the model did not pin explicitly. Called per execution
+   * with the agent's session id; the resolver reads its own stores. */
+  profileForSession?: (sessionId: string) => string | undefined
 }
 
 /** Is this action one that acts on the page rather than reading it? */
@@ -182,7 +186,7 @@ export function defineBrowserTool(options: BrowserToolOptions) {
       },
       profile: {
         type: 'string',
-        description: 'Chrome profile label to run in (status lists them, with whether each allows actions); omit to run in any connected one.',
+        description: 'Chrome profile label to run in (status lists them, with whether each allows actions); omit to use this chat\'s owner\'s preferred profile, else any connected one.',
       },
       session: {
         type: 'string',
@@ -249,7 +253,7 @@ export function defineBrowserTool(options: BrowserToolOptions) {
     },
     timeoutMs,
     isConcurrencySafe: () => false,
-    async execute(args: BrowserToolArgs): Promise<BrowserToolValue> {
+    async execute(args: BrowserToolArgs, exec?: ToolRunContext): Promise<BrowserToolValue> {
       if (args.action === 'status') {
         const profiles = bridge.clientList(ttlMs, Date.now())
           .map(({ client, actuation, version }) => ({
@@ -267,7 +271,14 @@ export function defineBrowserTool(options: BrowserToolOptions) {
       // burning the whole budget per call.
       const clients = bridge.clientList(ttlMs, Date.now())
       const current = clients.filter(entry => entry.version >= EXTENSION_PROTOCOL)
-      const profile = args.profile !== undefined && args.profile.trim() !== '' ? args.profile.trim() : undefined
+      // The chat's owner may prefer one Chrome profile; an explicit model
+      // pin always wins, and ownerless sessions run unpinned.
+      const preferred = options.profileForSession !== undefined && exec?.agent !== undefined
+        ? options.profileForSession(String(exec.agent.session.id))
+        : undefined
+      const profile = args.profile !== undefined && args.profile.trim() !== ''
+        ? args.profile.trim()
+        : (preferred !== undefined && preferred.trim() !== '' ? preferred : undefined)
       if (current.length === 0) throw new Error(STALE_BUILD_MESSAGE)
       if (profile !== undefined) {
         const requested = clients.find(entry => entry.client === profile)
