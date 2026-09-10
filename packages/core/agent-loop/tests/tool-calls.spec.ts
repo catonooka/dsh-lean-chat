@@ -9,7 +9,7 @@ import { createUserMessage, ToolCallId, StreamChunk  } from '@deepseek-ai/dsh-ll
 import SessionStore, { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
-import ToolRuntime, { defineContentToolFixture, TOOL_ABORTED_BEFORE_DISPATCH, TOOL_RUNTIME_SCHEDULER, type PostToolDecision, type PreToolDecision } from '@deepseek-ai/dsh-tools'
+import ToolRuntime, { defineContentToolFixture, defineTool, TOOL_ABORTED_BEFORE_DISPATCH, TOOL_RUNTIME_SCHEDULER, type PostToolDecision, type PreToolDecision } from '@deepseek-ai/dsh-tools'
 import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop, { DEFAULT_MAX_PARALLEL_TOOL_CALLS } from '@deepseek-ai/dsh-agent-loop'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
@@ -765,5 +765,96 @@ describe('PTC mode native-tool denial through the agent loop', () => {
       name: 'ToolNotFoundError',
       code: 'UNKNOWN_TOOL',
     })
+  })
+})
+
+describe('tool-result identity meta', () => {
+  /** A raw-call variant of multiCall whose arguments string is arbitrary. */
+  function rawCall(id: string, name: string, argumentsRaw: string): StreamChunk[] {
+    return [
+      { type: 'block-start', index: 0, blockType: 'tool-call' },
+      { type: 'block-end', index: 0, block: { type: 'tool-call', id: ToolCallId(id), name, arguments: argumentsRaw } },
+      { type: 'usage', usage: { inputTokens: 5, outputTokens: 5 } },
+      { type: 'finish', reason: { kind: 'tool-calls' } },
+    ]
+  }
+
+  it('labels a failed call with the tool name and its identifying arguments', async () => {
+    const adapter = new MockAdapter([
+      multiCall([{ id: 'c1', name: 'browser', args: { action: 'extract', url: 'https://x.com' } }]),
+      textResponse('it failed'),
+    ])
+    const ctx = await harness(adapter)
+    ctx.tools.register(defineContentToolFixture({
+      name: 'browser', description: 'test browser',
+      parameters: { action: { type: 'string', required: true }, url: { type: 'string' } },
+      async execute() { throw new Error('the extension did not answer') },
+    }))
+    const agent = await ctx.agentLoop.create(SessionId('meta-failed'), { provider: 'mock', model: 'mock' })
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, agent)
+    const result = events(agent).find(e => e.type === 'tool/result')!
+    expect(result.data.meta).toEqual({ name: 'browser', action: 'extract', url: 'https://x.com' })
+  })
+
+  it('keeps a tool-provided presentation payload untouched', async () => {
+    const adapter = new MockAdapter([
+      multiCall([{ id: 'c1', name: 'shaped', args: { action: 'open', url: 'https://ignored.example' } }]),
+      textResponse('done'),
+    ])
+    const ctx = await harness(adapter)
+    ctx.tools.register(defineTool({
+      name: 'shaped', description: 'test shaped',
+      parameters: { action: { type: 'string', required: true } },
+      output: {
+        schema: { type: 'object', additionalProperties: false, properties: { ok: { type: 'boolean', required: true } } },
+        render: () => [{ type: 'text', text: 'ok' }],
+        presentationMeta: () => ({ name: 'shaped', marker: 'tool-owned' }),
+      },
+      async execute() { return { ok: true } },
+    }))
+    const agent = await ctx.agentLoop.create(SessionId('meta-owned'), { provider: 'mock', model: 'mock' })
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, agent)
+    const result = events(agent).find(e => e.type === 'tool/result')!
+    expect(result.data.meta).toEqual({ name: 'shaped', marker: 'tool-owned' })
+  })
+
+  it('falls back to the bare name when the arguments carry none of the identity fields', async () => {
+    const adapter = new MockAdapter([
+      rawCall('c1', 'bare', JSON.stringify({ id: 'x' })),
+      textResponse('done'),
+    ])
+    const ctx = await harness(adapter)
+    ctx.tools.register(defineContentToolFixture({
+      name: 'bare', description: 'test bare',
+      parameters: { id: { type: 'string', required: true } },
+      async execute(args) { return [{ type: 'text', text: `done-${args.id}` }] },
+    }))
+    const agent = await ctx.agentLoop.create(SessionId('meta-bare'), { provider: 'mock', model: 'mock' })
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, agent)
+    const result = events(agent).find(e => e.type === 'tool/result')!
+    expect(result.data.meta).toEqual({ name: 'bare' })
+  })
+
+  it('survives malformed argument JSON with the name alone', async () => {
+    const adapter = new MockAdapter([
+      rawCall('c1', 'broken', '{not json'),
+      textResponse('done'),
+    ])
+    const ctx = await harness(adapter)
+    ctx.tools.register(defineContentToolFixture({
+      name: 'broken', description: 'test broken',
+      parameters: { action: { type: 'string' } },
+      async execute() { return [{ type: 'text', text: 'never reached' }] },
+    }))
+    const agent = await ctx.agentLoop.create(SessionId('meta-broken'), { provider: 'mock', model: 'mock' })
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, agent)
+    // Validation fails the call before execute; the error result still
+    // carries enough identity for a UI card.
+    const result = events(agent).find(e => e.type === 'tool/result')!
+    expect(result.data.meta).toEqual({ name: 'broken' })
   })
 })

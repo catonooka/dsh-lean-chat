@@ -115,6 +115,23 @@ it('projects a browser result from its presentation meta, keeping the tool name'
   })
 })
 
+it('projects a failed browser step from its call-identity meta, not as a blank search', () => {
+  // The agent loop stamps error results with the call's own identity when
+  // the tool produced no presentation payload; the card must keep the
+  // browser face instead of degrading to "Searched ·".
+  expect(projectSurfaceEvent(surfaceEvent('tool/result', {
+    message: { content: [{ type: 'tool-result', toolCallId: 'c1', content: [{ type: 'text', text: 'Error: the browser step failed: the extension did not answer within 45000ms' }] }] },
+    error: { name: 'Error', message: 'the extension did not answer' },
+    meta: { name: 'browser', action: 'extract', url: 'https://x.com' },
+  }))).toEqual({
+    role: 'tool',
+    name: 'browser',
+    action: 'extract',
+    url: 'https://x.com',
+    text: '',
+  })
+})
+
 it('ignores non-surface events', () => {
   expect(projectSurfaceEvent(surfaceEvent('turn/end', { turn: 1, reason: { kind: 'completed' } })))
     .toBeUndefined()

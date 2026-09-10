@@ -265,6 +265,28 @@ function appendToolCall(session: Session, turn: number, step: number, block: Too
   return event.seq
 }
 
+/**
+ * The call's own identity, standing in when the tool produced no
+ * presentation payload — failures never do, yet a failed call is still a
+ * card a UI must label with more than "a tool ran". Sparse by design:
+ * whichever identifying strings the model's arguments happened to carry.
+ */
+function callIdentityMeta(block: ToolCallBlock): { name: string } & Record<string, string> {
+  const meta: { name: string } & Record<string, string> = { name: block.name }
+  try {
+    const parsed: unknown = JSON.parse(block.arguments)
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+      const record = parsed as Record<string, unknown>
+      for (const field of ['query', 'action', 'url'] as const) {
+        if (typeof record[field] === 'string' && record[field] !== '') meta[field] = record[field] as string
+      }
+    }
+  } catch {
+    // Malformed arguments contribute nothing beyond the tool's name.
+  }
+  return meta
+}
+
 /** Append a model-ordered result linked to its call event. */
 function appendToolResult(
   session: Session,
@@ -284,7 +306,8 @@ function appendToolResult(
     message,
     ...result.error?.info ? { error: result.error.info } : {},
     // The tool's private presentation payload (e.g. a result-time diff),
-    // persisted so a UI bridge reproduces the card on replay.
-    ...result.meta !== undefined ? { meta: result.meta } : {},
+    // persisted so a UI bridge reproduces the card on replay; when the tool
+    // sent none, the call's identity labels the card instead.
+    meta: result.meta ?? callIdentityMeta(block),
   }, { surfaceOp: 'append', sourceEventSeqs: [callSeq] })
 }
