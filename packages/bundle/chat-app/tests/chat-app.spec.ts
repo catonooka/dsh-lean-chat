@@ -94,6 +94,13 @@ it('falls back to rendered text when meta is absent', () => {
   }))).toEqual({ role: 'tool', name: 'web_search', text: 'Error: no provider' })
 })
 
+it('flags a tool result failed from its content block, not only the event error', () => {
+  expect(projectSurfaceEvent(surfaceEvent('tool/result', {
+    message: { content: [{ type: 'tool-result', toolCallId: 'c1', isError: true, content: [{ type: 'text', text: 'Error: boom' }] }] },
+    meta: { name: 'web_search', query: 'q?' },
+  }))).toEqual({ role: 'tool', name: 'web_search', query: 'q?', error: true })
+})
+
 it('projects a browser result from its presentation meta, keeping the tool name', () => {
   expect(projectSurfaceEvent(surfaceEvent('tool/result', {
     message: { content: [{ type: 'text', text: 'External web content follows…' }] },
@@ -120,7 +127,7 @@ it('projects a failed browser step from its call-identity meta, not as a blank s
   // the tool produced no presentation payload; the card must keep the
   // browser face instead of degrading to "Searched ·".
   expect(projectSurfaceEvent(surfaceEvent('tool/result', {
-    message: { content: [{ type: 'tool-result', toolCallId: 'c1', content: [{ type: 'text', text: 'Error: the browser step failed: the extension did not answer within 45000ms' }] }] },
+    message: { content: [{ type: 'tool-result', toolCallId: 'c1', isError: true, content: [{ type: 'text', text: 'Error: the browser step failed: the extension did not answer within 45000ms' }] }] },
     error: { name: 'Error', message: 'the extension did not answer' },
     meta: { name: 'browser', action: 'extract', url: 'https://x.com' },
   }))).toEqual({
@@ -129,6 +136,7 @@ it('projects a failed browser step from its call-identity meta, not as a blank s
     action: 'extract',
     url: 'https://x.com',
     text: '',
+    error: true,
   })
 })
 

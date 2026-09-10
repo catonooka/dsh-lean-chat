@@ -971,6 +971,8 @@ export interface ChatItem {
   url?: string
   title?: string
   excerpt?: string
+  /** The tool call settled as a failure; chips render the failed state. */
+  error?: boolean
 }
 
 /** Longest reply quote the server keeps; longer text is cut, not rejected. */
@@ -1179,6 +1181,19 @@ function textOf(content: readonly ContentBlock[] | undefined): string {
 }
 
 /**
+ * Whether a tool-result message marks itself failed. Thrown execute errors
+ * set the flag on the content block; scheduler-level failures additionally
+ * carry `event.data.error` — both mean the same thing to a chip.
+ */
+function toolResultFailed(message: { content: readonly ContentBlock[] } | undefined): boolean {
+  if (message === undefined) return false
+  for (const block of message.content) {
+    if (block.type === 'tool-result' && block.isError === true) return true
+  }
+  return false
+}
+
+/**
  * Project one session event into a browser chat item, or `undefined` for
  * events the chat UI does not render.
  * @param event - one session event (a surface event from `readSurface`, or a
@@ -1221,6 +1236,7 @@ export function projectSurfaceEvent(event: SessionEvent): ChatItem | undefined {
       // The producing tool names itself in its meta; sessions recorded before
       // any second tool existed carry no name, and search is what they were.
       const item: ChatItem = { role: 'tool', name: 'web_search' }
+      if (toolResultFailed(event.data.message)) item.error = true
       const meta = event.data.meta
       if (typeof meta === 'object' && meta !== null && !Array.isArray(meta)) {
         const record = meta as Record<string, unknown>
@@ -1886,7 +1902,7 @@ export function apply(ctx: Context, config: Config): void {
               ...projected.text !== undefined ? { text: projected.text } : {},
             }
             : {},
-          isError: event.data.error !== undefined,
+          isError: event.data.error !== undefined || toolResultFailed(event.data.message),
         })
         break
       }
