@@ -25,7 +25,10 @@ import {
   type ChatUsers,
 } from '../src/users-store.ts'
 
-function storeOf(users: string[], sessions: Record<string, { owner: string }> = {}): ChatUsers {
+function storeOf(
+  users: string[],
+  sessions: Record<string, { owner: string; archivedAt?: number; groupId?: string }> = {},
+): ChatUsers {
   return {
     users: users.map(name => ({ id: `u_${name}`, name, groups: [] })),
     sessions,
@@ -215,14 +218,17 @@ describe('applyUserGroups / pruneSessionGroups', () => {
       'sess-1': { owner: 'u_alice' },
       'sess-2': { owner: 'u_bob' },
     })
-    users.sessions['sess-1'].groupId = 'g1'
-    users.sessions['sess-2'].groupId = 'g1'
+    const aliceSession = users.sessions['sess-1']
+    const bobSession = users.sessions['sess-2']
+    if (aliceSession === undefined || bobSession === undefined) throw new Error('test setup: no sessions')
+    aliceSession.groupId = 'g1'
+    bobSession.groupId = 'g1'
     applyUserGroups(users, 'u_alice', [{ name: 'Only' }])
     // Alice's chats with the deleted group fall back to ungrouped; another
     // user's chats (even sharing the id string) keep their bookkeeping.
     expect(pruneSessionGroups(users, 'u_alice')).toBe(true)
-    expect(users.sessions['sess-1'].groupId).toBeUndefined()
-    expect(users.sessions['sess-2'].groupId).toBe('g1')
+    expect(aliceSession.groupId).toBeUndefined()
+    expect(bobSession.groupId).toBe('g1')
     expect(pruneSessionGroups(users, 'u_alice')).toBe(false)
   })
 })
@@ -231,11 +237,11 @@ describe('session meta mutations', () => {
   it('archives and unarchives, keeping the original stamp', () => {
     const users = storeOf(['alice'], { 'sess-1': { owner: 'u_alice' } })
     expect(setSessionArchived(users, 'sess-1', true, 100)).toBe(true)
-    expect(users.sessions['sess-1'].archivedAt).toBe(100)
+    expect(users.sessions['sess-1']?.archivedAt).toBe(100)
     expect(setSessionArchived(users, 'sess-1', true, 999)).toBe(false)
-    expect(users.sessions['sess-1'].archivedAt).toBe(100)
+    expect(users.sessions['sess-1']?.archivedAt).toBe(100)
     expect(setSessionArchived(users, 'sess-1', false, 0)).toBe(true)
-    expect(users.sessions['sess-1'].archivedAt).toBeUndefined()
+    expect(users.sessions['sess-1']?.archivedAt).toBeUndefined()
     // Unknown sessions answer unchanged rather than inventing bookkeeping.
     expect(setSessionArchived(users, 'sess-x', true, 100)).toBe(false)
   })
@@ -243,11 +249,11 @@ describe('session meta mutations', () => {
   it('groups, regroups, and ungroups', () => {
     const users = storeOf(['alice'], { 'sess-1': { owner: 'u_alice' } })
     expect(setSessionGroup(users, 'sess-1', 'g1')).toBe(true)
-    expect(users.sessions['sess-1'].groupId).toBe('g1')
+    expect(users.sessions['sess-1']?.groupId).toBe('g1')
     expect(setSessionGroup(users, 'sess-1', 'g1')).toBe(false)
     expect(setSessionGroup(users, 'sess-1', 'g2')).toBe(true)
     expect(setSessionGroup(users, 'sess-1', null)).toBe(true)
-    expect(users.sessions['sess-1'].groupId).toBeUndefined()
+    expect(users.sessions['sess-1']?.groupId).toBeUndefined()
     expect(setSessionGroup(users, 'sess-1', null)).toBe(false)
   })
 
