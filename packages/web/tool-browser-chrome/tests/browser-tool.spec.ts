@@ -6,11 +6,13 @@
 
 import { describe, expect, it } from 'vitest'
 import {
+  BROWSER_ACTIONS,
   BROWSER_TOOL_NAME,
   DEFAULT_JOB_TIMEOUT_MS,
   DEFAULT_TOOL_TIMEOUT_MS,
   EXTERNAL_PAGE_CONTENT_NOTICE,
   defineBrowserTool,
+  isActuationAction,
   type BrowserBridge,
   type BrowserToolValue,
 } from '../src/index.ts'
@@ -207,6 +209,40 @@ describe('browser tool actuation', () => {
 })
 
 describe('browser tool rendering', () => {
+  it('splits actions into reads and actuation exactly', () => {
+    const reads = BROWSER_ACTIONS.filter(action => !isActuationAction(action))
+    expect(reads).toEqual(['status', 'open', 'snapshot', 'extract', 'close'])
+    expect(BROWSER_ACTIONS.filter(action => isActuationAction(action))).toEqual(['click', 'type', 'press', 'scroll', 'back'])
+  })
+
+  it('says so when the page returned nothing readable', () => {
+    const created = tool(stubBridge())
+    const text = created.output.render({ action: 'snapshot' }, { action: 'snapshot', truncated: false })[0]?.text ?? ''
+    expect(text).toBe(`${EXTERNAL_PAGE_CONTENT_NOTICE}\n\n(the page returned nothing readable)`)
+  })
+
+  it('lists no profiles as none in the status render', () => {
+    const created = tool(stubBridge({ clientList: [] }))
+    const value: BrowserToolValue = { action: 'status', truncated: false, profiles: [] }
+    expect(created.output.render({ action: 'status' }, value)[0]?.text).toBe(`${EXTERNAL_PAGE_CONTENT_NOTICE}\n\nConnected Chrome profiles: none.`)
+  })
+
+  it('caps an oversized extracted text defensively', () => {
+    const created = tool(stubBridge())
+    const value: BrowserToolValue = { action: 'extract', text: 'y'.repeat(25_000), truncated: true }
+    const text = created.output.render({ action: 'extract' }, value)[0]?.text ?? ''
+    expect(text.length).toBeLessThan(EXTERNAL_PAGE_CONTENT_NOTICE.length + 21_000)
+    expect(text.endsWith('(page content was truncated)')).toBe(true)
+  })
+
+  it('derives the chip excerpt from the snapshot when there is no text', () => {
+    const created = tool(stubBridge())
+    const meta = created.output.presentationMeta({ action: 'open' }, {
+      action: 'open', url: 'https://x.com/me', title: 'me', snapshot: 'page "me"\n# Timeline', truncated: false,
+    })
+    expect(meta.excerpt).toBe('page "me"')
+  })
+
   it('renders the guard, page header, snapshot, and truncation note', () => {
     const bridge = stubBridge()
     const created = tool(bridge)
