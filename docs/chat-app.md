@@ -319,16 +319,55 @@ format — a chat session opened here is readable by any other dsh surface.
 
 The glue serves the built dist on the webserver fallback seat and one API
 prefix. All requests must carry a loopback `Host` (and loopback `Origin` when
-present); there is no token exchange.
+present) plus the session cookie `index.html` mints; the two extension
+bridge routes (`chrome/next`, `chrome/result`) are the only carve-outs.
+
+Every route acts on behalf of one **user profile**: the `x-dsh-user` header
+names it, absent means the default profile, and an unknown id is refused
+with 403 so the client can refetch the roster and self-heal.
 
 - `GET /api/config` — provider and model
-- `GET /api/sessions` — newest-first conversation list with folded titles
+- `GET/PUT /api/config` — runtime settings (provider profiles, model,
+  persona, temperature, search tool, auto-compact)
+- `GET /api/users` · `POST /api/users` `{name, avatar?, chromeProfile?}` ·
+  `PATCH /api/users/:id` `{name?, avatar?, chromeProfile?, groups?}` — the
+  user-profile roster; switching is pure client state (the header)
+- `GET /api/sessions?limit&offset&archived` — newest-first list of the
+  acting user's chats with folded titles, archive flag, and group
+- `GET /api/sessions/search?q&cursor` — full-text search over the acting
+  user's active chats
 - `GET /api/sessions/:id/messages` — projected surface history
 - `POST /api/sessions/:id/messages` `{text}` — SSE stream (`user`, `delta`,
   `assistant`, `tool-start`, `tool-end`, `status`, `turn-end`, `error`)
 - `POST /api/sessions/:id/stop` — cancel the active turn
+- `POST /api/sessions/:id/retry` · `POST /api/sessions/:id/compact`
+- `PATCH /api/sessions/:id` `{title?, archived?, groupId?}` — rename (pins
+  the title against automatic regeneration), archive/unarchive, regroup
+- `DELETE /api/sessions/:id` — delete the chat for good: stops the turn,
+  retires the agent, closes the streams, removes the log directory, and
+  cleans every piece of bookkeeping
 - `POST /api/uploads?kind=image|video|file&name=…` — raw-body attachment
   upload; the response's durable `ref` rides the message send
+
+## User profiles
+
+Users are lightweight named profiles over the one shared login token —
+not accounts or a security boundary. Each carries a display name, an avatar
+tile, chat groups, and a preferred Chrome profile, persisted in
+`$DSH_HOME/chat-users.json` (0600, defensively parsed; a corrupt file falls
+back to one default user). The first message claims the chat for the acting
+user and ownership never moves, so lists, search, and every session route
+scope to one profile — another profile's chat answers as not-found. Switching
+is pure client state: the header moves, each profile resumes its own
+remembered chat, and running turns of the previous profile keep streaming
+(their SSE readers are not tied to the acting profile).
+
+Browser steps the model did not pin to a Chrome profile default to the
+chat owner's preference — resolved from the running agent's session id, so
+a turn keeps its Chrome profile across user switches. The extension is not
+involved: it keeps labeling itself per Chrome profile in its options, and
+the Settings Users row (plus the add-user dialog) picks which label each
+user prefers.
 
 ## Performance model
 
@@ -370,10 +409,11 @@ request (the client debounces at 300ms and the index build is one-time).
 
 ## Limitations
 
-- Loopback-only; no auth token (the full `web` profile's browser
-  authentication is deliberately not pulled in).
-- No session deletion; history full-text search and attachments both
-  exist but attachments are capped at one per message.
+- Loopback-only with one shared session token; user profiles separate
+  chats and identity but are not an authentication boundary (the full
+  `web` profile's browser authentication is deliberately not pulled in).
+- History full-text search and attachments both exist but attachments are
+  capped at one per message.
 - Browser actuation (click/type/press/scroll/back) runs only in Chrome
   profiles whose user opted in via the extension options; every profile is
   read-only until then.

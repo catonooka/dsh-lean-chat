@@ -64,6 +64,11 @@ closes any stragglers after ten idle minutes.
 Results are posted back to the app on loopback and cited in the chat like any
 other source.
 
+The label each Chrome profile sets here doubles as its identity to the app's
+**user profiles**: in the chat's Settings (Users row) or the add-user dialog,
+each user picks the Chrome label their browser steps default to, and a
+running chat keeps its owner's preference across user switches.
+
 ## Privacy
 
 - The extension only ever talks to `127.0.0.1`/`localhost` (your app), the
