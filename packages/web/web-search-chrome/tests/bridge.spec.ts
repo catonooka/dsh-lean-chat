@@ -5,7 +5,9 @@
  */
 
 import { afterEach, describe, expect, it } from 'vitest'
-import { ACTUATION_ACTIONS, ExtensionBridge, isActuationJob, type ExtensionJob } from '../src/bridge.ts'
+import {
+  ACTUATION_ACTIONS, DEFAULT_BRIDGE_CLIENT, ExtensionBridge, EXTENSION_PROTOCOL, isActuationJob, type ExtensionJob,
+} from '../src/bridge.ts'
 
 /** Jobs settle on real timers; every test disposes to clear them. */
 const bridges: ExtensionBridge[] = []
@@ -27,6 +29,17 @@ async function nextSearchJob(created: ExtensionBridge, waitMs = 5): Promise<Exte
   const job = await created.nextJob(waitMs)
   expect(job === null || 'kind' in job).toBe(true)
   return job
+}
+
+/** Browser jobs only ride pollers whose build speaks the current protocol,
+ * so tests poll as a current build unless they exercise version gating. */
+async function nextBrowserJob(
+  created: ExtensionBridge,
+  waitMs = 5,
+  client = DEFAULT_BRIDGE_CLIENT,
+  actuation = false,
+): Promise<ExtensionJob | null> {
+  return await created.nextJob(waitMs, undefined, client, actuation, EXTENSION_PROTOCOL)
 }
 
 describe('nextJob', () => {
@@ -278,7 +291,7 @@ describe('browser jobs', () => {
   it('round-trips an open step and its observation', async () => {
     const created = bridge()
     const settlement = created.enqueue({ type: 'browser', action: 'open', session: 'main', url: 'https://x.com/me' }, 60)
-    const job = await created.nextJob(5)
+    const job = await nextBrowserJob(created)
     expect(job).toMatchObject({ type: 'browser', action: 'open', session: 'main', url: 'https://x.com/me' })
     expect(created.settle({
       id: job?.id,
@@ -291,31 +304,43 @@ describe('browser jobs', () => {
     })
   })
 
-  it('defaults missing observation fields and refuses malformed payloads', async () => {
+  it('fails the job when the observation payload is malformed', async () => {
     const created = bridge()
     const settlement = created.enqueue({ type: 'browser', action: 'extract', session: 'main', goal: 'recent posts' }, 60)
-    const job = await created.nextJob(5)
-    // A success without a well-typed observation object does not consume the
-    // job: the extension would have to retry with a real payload.
-    expect(created.settle({ id: job?.id, ok: true })).toBe(false)
-    expect(created.settle({ id: job?.id, ok: true, browser: 'nope' })).toBe(false)
+    const job = await nextBrowserJob(created)
+    // A success with a present-but-malformed observation fails at once
+    // instead of hanging the caller until its timeout.
+    expect(created.settle({ id: job?.id, ok: true, browser: 'nope' })).toBe(true)
+    await expect(settlement).resolves.toMatchObject({ ok: false, error: 'the extension posted a malformed browser observation' })
+    // The job is consumed: a corrected payload arrives too late.
+    expect(created.settle({ id: job?.id, ok: true, browser: { url: 'https://x.com/me' } })).toBe(false)
+  })
+
+  it('coerces a well-typed observation and drops unknown fields', async () => {
+    const created = bridge()
+    const settlement = created.enqueue({ type: 'browser', action: 'snapshot', session: 'main' }, 60)
+    const job = await nextBrowserJob(created)
     expect(created.settle({ id: job?.id, ok: true, browser: { url: 'https://x.com/me', extra: 1 } })).toBe(true)
     await expect(settlement).resolves.toEqual({ ok: true, browser: { url: 'https://x.com/me', title: '', truncated: false } })
   })
 
-  it('refuses settlements of the wrong arm without consuming the job', async () => {
+  it('fails a wrong-arm settlement fast instead of timing out', async () => {
     const created = bridge()
-    const search = created.enqueue(webJob, 60)
-    const searchJob = await created.nextJob(5)
-    expect(created.settle({ id: searchJob?.id, ok: true, browser: { url: '', title: '', truncated: false } })).toBe(false)
-    expect(created.settle({ id: searchJob?.id, ok: true, sources: [] })).toBe(true)
-    await expect(search).resolves.toEqual({ ok: true, sources: [] })
+    // A pre-browser build answers every job with search data; the caller
+    // must hear that within the settlement, not after its whole budget.
+    const browse = created.enqueue({ type: 'browser', action: 'snapshot', session: 'main' }, 10_000)
+    const browseJob = await nextBrowserJob(created)
+    expect(created.settle({ id: browseJob?.id, ok: true, sources: [] })).toBe(true)
+    await expect(browse).resolves.toEqual({
+      ok: false,
+      error: 'the extension answered this browser step with search data — its build is older than the app; reload it in chrome://extensions',
+    })
 
-    const browse = created.enqueue({ type: 'browser', action: 'snapshot', session: 'main' }, 60)
-    const browseJob = await created.nextJob(5)
-    expect(created.settle({ id: browseJob?.id, ok: true, sources: [] })).toBe(false)
-    expect(created.settle({ id: browseJob?.id, ok: true, browser: { url: 'https://x.com/me', title: 'me', truncated: false } })).toBe(true)
-    await expect(browse).resolves.toMatchObject({ ok: true, browser: { title: 'me' } })
+    // The mirror image: browser data for a search job fails it too.
+    const search = created.enqueue(webJob, 10_000)
+    const searchJob = await created.nextJob(5)
+    expect(created.settle({ id: searchJob?.id, ok: true, browser: { url: '', title: '', truncated: false } })).toBe(true)
+    await expect(search).resolves.toMatchObject({ ok: false, error: expect.stringContaining('newer than the app') })
   })
 })
 
@@ -324,8 +349,8 @@ describe('profile-label routing', () => {
     const created = bridge()
     const settlement = created.enqueue({ type: 'browser', action: 'snapshot', session: 'main', client: 'work' }, 60)
     // The unlabeled poller must not take a job pinned to another identity.
-    await expect(created.nextJob(5)).resolves.toBeNull()
-    const job = await created.nextJob(5, undefined, 'work')
+    await expect(nextBrowserJob(created)).resolves.toBeNull()
+    const job = await nextBrowserJob(created, 5, 'work')
     expect(job).toMatchObject({ type: 'browser', client: 'work' })
     created.dispose()
     await settlement
@@ -336,7 +361,7 @@ describe('profile-label routing', () => {
     const plain = created.enqueue(webJob, 60)
     const pinned = created.enqueue({ type: 'browser', action: 'open', session: 'main', url: 'https://a.dev', client: 'work' }, 60)
     // The work poller jumps past the unpinned search waiting in front.
-    expect(await created.nextJob(5, undefined, 'work')).toMatchObject({ client: 'work' })
+    expect(await nextBrowserJob(created, 5, 'work')).toMatchObject({ client: 'work' })
     // The default poller still gets the unpinned job.
     const plainJob = await nextSearchJob(created)
     if (plainJob !== null && 'kind' in plainJob) expect(plainJob.kind).toBe('web')
@@ -348,7 +373,7 @@ describe('profile-label routing', () => {
   it('hands a pinned job to the matching parked waiter, not the first one', async () => {
     const created = bridge()
     const defaultParked = created.nextJob(10_000)
-    const workParked = created.nextJob(10_000, undefined, 'work')
+    const workParked = created.nextJob(10_000, undefined, 'work', false, EXTENSION_PROTOCOL)
     const pinned = created.enqueue({ type: 'browser', action: 'snapshot', session: 'main', client: 'work' }, 60)
     await expect(workParked).resolves.toMatchObject({ client: 'work' })
     const plain = created.enqueue(webJob, 60)
@@ -374,8 +399,8 @@ describe('per-client heartbeats', () => {
     created.markSeen(2_000, 'default')
     expect(created.seenWithin(15_000, 3_000)).toBe(true)
     expect(created.clientList(15_000, 3_000)).toEqual([
-      { client: 'default', lastSeenAt: 2_000, actuation: false },
-      { client: 'work', lastSeenAt: 1_000, actuation: false },
+      { client: 'default', lastSeenAt: 2_000, actuation: false, version: 0 },
+      { client: 'work', lastSeenAt: 1_000, actuation: false, version: 0 },
     ])
     // An unlabelled markSeen lands on the default label.
     created.markSeen(4_000)
@@ -388,7 +413,7 @@ describe('per-client heartbeats', () => {
     const created = bridge()
     created.markSeen(1_000, 'work')
     created.markSeen(20_000, 'default')
-    expect(created.clientList(15_000, 20_000)).toEqual([{ client: 'default', lastSeenAt: 20_000, actuation: false }])
+    expect(created.clientList(15_000, 20_000)).toEqual([{ client: 'default', lastSeenAt: 20_000, actuation: false, version: 0 }])
     expect(created.seenWithin(15_000, 20_000)).toBe(true)
   })
 
@@ -398,8 +423,8 @@ describe('per-client heartbeats', () => {
     created.setClientActuation('main', true)
     created.markSeen(2_000, 'guest')
     expect(created.clientList(15_000, 2_000)).toEqual([
-      { client: 'guest', lastSeenAt: 2_000, actuation: false },
-      { client: 'main', lastSeenAt: 1_000, actuation: true },
+      { client: 'guest', lastSeenAt: 2_000, actuation: false, version: 0 },
+      { client: 'main', lastSeenAt: 1_000, actuation: true, version: 0 },
     ])
     // A later poll can turn actions back off for the profile.
     created.setClientActuation('main', false)
@@ -429,14 +454,14 @@ describe('actuation routing', () => {
     const created = bridge()
     const settlement = created.enqueue(clickJob, 15)
     // The read-only default poller finds nothing — its wait lapses empty.
-    await expect(created.nextJob(5)).resolves.toBeNull()
+    await expect(nextBrowserJob(created)).resolves.toBeNull()
     await expect(settlement).resolves.toEqual({ ok: false, error: 'the extension did not answer within 15ms' })
   })
 
   it('hands an actuation job to an actions-enabled poller', async () => {
     const created = bridge()
     const settlement = created.enqueue(clickJob, 60)
-    const job = await created.nextJob(5, undefined, 'guest', true)
+    const job = await nextBrowserJob(created, 5, 'guest', true)
     expect(job).toMatchObject({ type: 'browser', action: 'click', ref: '@e1' })
     expect(created.settle({ id: job?.id, ok: true, browser: { url: 'https://a.example', title: 'a', truncated: false } })).toBe(true)
     await expect(settlement).resolves.toMatchObject({ ok: true })
@@ -446,19 +471,19 @@ describe('actuation routing', () => {
     const created = bridge()
     const pinned = created.enqueue({ ...clickJob, client: 'work' }, 15)
     // The work poller, actions off, cannot take its own pinned click.
-    await expect(created.nextJob(5, undefined, 'work')).resolves.toBeNull()
+    await expect(nextBrowserJob(created, 5, 'work')).resolves.toBeNull()
     await expect(pinned).resolves.toMatchObject({ ok: false })
     // A read-only job for the same label still flows.
     const read = created.enqueue({ type: 'browser', action: 'snapshot', session: 'main', client: 'work' }, 60)
-    expect(await created.nextJob(5, undefined, 'work')).toMatchObject({ action: 'snapshot' })
+    expect(await nextBrowserJob(created, 5, 'work')).toMatchObject({ action: 'snapshot' })
     created.dispose()
     await read
   })
 
   it('skips actuation jobs ahead to an actions-enabled parked waiter', async () => {
     const created = bridge()
-    const readOnlyParked = created.nextJob(10_000)
-    const actionsParked = created.nextJob(10_000, undefined, 'guest', true)
+    const readOnlyParked = created.nextJob(10_000, undefined, DEFAULT_BRIDGE_CLIENT, false, EXTENSION_PROTOCOL)
+    const actionsParked = created.nextJob(10_000, undefined, 'guest', true, EXTENSION_PROTOCOL)
     const click = created.enqueue({ ...clickJob, session: 'form' }, 60)
     await expect(actionsParked).resolves.toMatchObject({ action: 'click', session: 'form' })
     const read = created.enqueue({ type: 'browser', action: 'snapshot', session: 'main' }, 60)
@@ -466,5 +491,53 @@ describe('actuation routing', () => {
     created.dispose()
     await click
     await read
+  })
+})
+
+describe('protocol versions', () => {
+  it('records each poll\'s stamp and reports it through clientList', () => {
+    const created = bridge()
+    created.markSeen(1_000, 'work')
+    created.setClientVersion('work', EXTENSION_PROTOCOL)
+    created.markSeen(2_000, 'default')
+    expect(created.clientList(15_000, 2_000)).toEqual([
+      { client: 'default', lastSeenAt: 2_000, actuation: false, version: 0 },
+      { client: 'work', lastSeenAt: 1_000, actuation: false, version: EXTENSION_PROTOCOL },
+    ])
+    // Junk stamps record as 0, the pre-protocol build's signature.
+    created.setClientVersion('default', Number.NaN)
+    expect(created.clientList(15_000, 2_000)[0]?.version).toBe(0)
+    created.setClientVersion('default', -2)
+    expect(created.clientList(15_000, 2_000)[0]?.version).toBe(0)
+  })
+
+  it('never hands a queued browser job to an unstamped poller', async () => {
+    const created = bridge()
+    const settlement = created.enqueue({ type: 'browser', action: 'snapshot', session: 'main' }, 15)
+    await expect(created.nextJob(5)).resolves.toBeNull()
+    await expect(settlement).resolves.toEqual({ ok: false, error: 'the extension did not answer within 15ms' })
+  })
+
+  it('skips a parked stale poller in favor of a current one', async () => {
+    const created = bridge()
+    const staleParked = created.nextJob(10_000)
+    const currentParked = created.nextJob(10_000, undefined, 'work', false, EXTENSION_PROTOCOL)
+    const settlement = created.enqueue({ type: 'browser', action: 'open', session: 'main', url: 'https://a.dev' }, 60)
+    await expect(currentParked).resolves.toMatchObject({ type: 'browser' })
+    // The stale poller still waits; a search flows to it untouched.
+    const search = created.enqueue(webJob, 60)
+    await expect(staleParked).resolves.toMatchObject({ kind: 'web' })
+    created.dispose()
+    await settlement
+    await search
+  })
+
+  it('serves searches to stale pollers — only the browser vocabulary is gated', async () => {
+    const created = bridge()
+    const settlement = created.enqueue(webJob, 60)
+    const job = await created.nextJob(5)
+    expect(job).toMatchObject({ query: 'dsh chat' })
+    expect(created.settle({ id: job?.id, ok: true, sources: [] })).toBe(true)
+    await expect(settlement).resolves.toEqual({ ok: true, sources: [] })
   })
 })

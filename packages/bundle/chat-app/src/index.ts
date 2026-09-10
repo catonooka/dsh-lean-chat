@@ -2509,9 +2509,14 @@ export function apply(ctx: Context, config: Config): void {
     if (req.method === 'GET' && parts.length === 2 && parts[0] === 'chrome' && parts[1] === 'next') {
       const client = bridgeClientOf(url)
       extensionBridge.markSeen(Date.now(), client)
-      // The poller declares whether its profile's user allows actions; only
-      // such profiles ever receive click/type/press/scroll/back jobs.
-      extensionBridge.setClientActuation(client, url.searchParams.get('act') === '1')
+      // The poller declares whether its profile's user allows actions — only
+      // such profiles ever receive click/type/press/scroll/back jobs — and
+      // stamps the protocol its build speaks, so browser steps never ride a
+      // build from before the browser vocabulary existed.
+      const actuation = url.searchParams.get('act') === '1'
+      extensionBridge.setClientActuation(client, actuation)
+      const versionRaw = Number.parseInt(url.searchParams.get('v') ?? '', 10)
+      extensionBridge.setClientVersion(client, Number.isFinite(versionRaw) ? versionRaw : 0)
       const waitRaw = Number.parseInt(url.searchParams.get('wait') ?? '', 10)
       const waitSeconds = Math.min(Math.max(Number.isFinite(waitRaw) ? waitRaw : 25, 1), 55)
       // A poller that dies mid-park (sleeping machine, reloaded extension)
@@ -2519,7 +2524,8 @@ export function apply(ctx: Context, config: Config): void {
       // be handed to and lost.
       const pollAbort = new AbortController()
       req.once('close', () => { pollAbort.abort() })
-      const job = await extensionBridge.nextJob(waitSeconds * 1000, pollAbort.signal, client, url.searchParams.get('act') === '1')
+      const version = Number.isFinite(versionRaw) ? versionRaw : 0
+      const job = await extensionBridge.nextJob(waitSeconds * 1000, pollAbort.signal, client, actuation, version)
       sendJson(res, 200, { job }, chromeCors(req))
       return
     }

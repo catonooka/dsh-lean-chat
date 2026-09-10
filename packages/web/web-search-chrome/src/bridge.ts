@@ -13,6 +13,18 @@ import { coerceRawHits, type RawHit, type WebEngine } from './provider.ts'
 /** The label a poller carries when the extension did not configure one. */
 export const DEFAULT_BRIDGE_CLIENT = 'default'
 
+/**
+ * The job vocabulary this app speaks. The extension stamps its polls with the
+ * protocol it was built for; a poller without the stamp is a pre-browser
+ * search-only build, and browser jobs must neither wait on it nor run on it.
+ */
+export const EXTENSION_PROTOCOL = 3
+
+/** The settlement error for an extension that answered a job in the wrong
+ * vocabulary — the loaded build predates the job type it was handed. */
+const WRONG_ARM_ERROR = 'the extension answered this browser step with search data — its build is older than the app; reload it in chrome://extensions'
+const WRONG_ARM_SEARCH_ERROR = 'the extension answered this search with browser data — its build is newer than the app; restart the chat app'
+
 /** One search handed to the extension. */
 export interface SearchJob {
   /** Bridge-assigned id, echoed back with the result. */
@@ -66,6 +78,11 @@ export function isActuationJob(job: ExtensionJob): boolean {
   return 'type' in job && job.type === 'browser' && ACTUATION_ACTIONS.has(job.action)
 }
 
+/** Which vocabulary a job speaks: a browser step, or a search. */
+function isBrowserArm(job: ExtensionJob): boolean {
+  return 'type' in job && job.type === 'browser'
+}
+
 /** Any job the bridge hands to an extension long-poll. */
 export type ExtensionJob = SearchJob | BrowserJob
 
@@ -108,11 +125,13 @@ interface PendingSlot {
   timer: ReturnType<typeof setTimeout>
 }
 
-/** A parked long-poll, remembered with the profile label it polls for and
- * whether that profile's user allows actions (not just reading). */
+/** A parked long-poll, remembered with the profile label it polls for,
+ * whether that profile's user allows actions (not just reading), and the
+ * extension protocol its build speaks. */
 interface ParkedPoll {
   client: string
   actuation: boolean
+  version: number
   resolve: (job: ExtensionJob | null) => void
   timer: ReturnType<typeof setTimeout>
 }
@@ -133,6 +152,7 @@ export class ExtensionBridge {
   private readonly waiters: ParkedPoll[] = []
   private readonly clientSeenAt = new Map<string, number>()
   private readonly clientActuation = new Map<string, boolean>()
+  private readonly clientVersions = new Map<string, number>()
 
   /**
    * Record that an extension just made a bridge request.
@@ -149,6 +169,14 @@ export class ExtensionBridge {
     this.clientActuation.set(client, allowed)
   }
 
+  /**
+   * Record the extension protocol one profile's build speaks. Polls without
+   * the stamp record as 0 — a build from before the browser vocabulary.
+   */
+  setClientVersion(client: string, version: number): void {
+    this.clientVersions.set(client, Number.isFinite(version) && version > 0 ? Math.floor(version) : 0)
+  }
+
   /** Whether any profile's extension made a request within the window. */
   seenWithin(ttlMs: number, now: number = Date.now()): boolean {
     return this.lastSeenAt > 0 && now - this.lastSeenAt <= ttlMs
@@ -161,18 +189,25 @@ export class ExtensionBridge {
   }
 
   /** The profile labels seen within the window, freshest first, with whether
-   * each allows actions. */
-  clientList(ttlMs: number, now: number = Date.now()): { client: string; lastSeenAt: number; actuation: boolean }[] {
+   * each allows actions and which protocol its build speaks. */
+  clientList(ttlMs: number, now: number = Date.now()): { client: string; lastSeenAt: number; actuation: boolean; version: number }[] {
     return [...this.clientSeenAt.entries()]
       .filter(([, at]) => at > 0 && now - at <= ttlMs)
-      .map(([client, lastSeenAt]) => ({ client, lastSeenAt, actuation: this.clientActuation.get(client) === true }))
+      .map(([client, lastSeenAt]) => ({
+        client,
+        lastSeenAt,
+        actuation: this.clientActuation.get(client) === true,
+        version: this.clientVersions.get(client) ?? 0,
+      }))
       .sort((a, b) => b.lastSeenAt - a.lastSeenAt)
   }
 
   /** Whether one poller may run one job: label pin plus, for actuation
-   * steps, the profile's own opt-in. */
-  private mayTake(job: ExtensionJob, client: string, actuation: boolean): boolean {
+   * steps, the profile's own opt-in — and browser jobs never ride a build
+   * that predates the browser vocabulary. */
+  private mayTake(job: ExtensionJob, client: string, actuation: boolean, version = EXTENSION_PROTOCOL): boolean {
     if (isActuationJob(job) && !actuation) return false
+    if (isBrowserArm(job) && version < EXTENSION_PROTOCOL) return false
     return job.client === undefined || job.client === client
   }
 
@@ -183,19 +218,27 @@ export class ExtensionBridge {
    * extension) stops holding a waiter that a fresh job would be handed to and
    * lost. A poller takes the jobs pinned to its own profile label first, then
    * the unpinned jobs any profile may run; jobs pinned to another label never
-   * move, and actuation steps move only to profiles whose user allows them.
+   * move, actuation steps move only to profiles whose user allows them, and
+   * browser steps only to builds that speak the current protocol.
    */
-  nextJob(waitMs: number, signal?: AbortSignal, client: string = DEFAULT_BRIDGE_CLIENT, actuation = false): Promise<ExtensionJob | null> {
-    const pinned = this.queue.findIndex(job => job.client === client && (!isActuationJob(job) || actuation))
+  nextJob(
+    waitMs: number,
+    signal?: AbortSignal,
+    client: string = DEFAULT_BRIDGE_CLIENT,
+    actuation = false,
+    version = 0,
+  ): Promise<ExtensionJob | null> {
+    const pinned = this.queue.findIndex(job => job.client === client && this.mayTake(job, client, actuation, version))
     const pinnedJob = pinned !== -1 ? this.queue.splice(pinned, 1)[0] : undefined
     if (pinnedJob !== undefined) return Promise.resolve(pinnedJob)
-    const shared = this.queue.findIndex(job => job.client === undefined && (!isActuationJob(job) || actuation))
+    const shared = this.queue.findIndex(job => job.client === undefined && this.mayTake(job, client, actuation, version))
     const sharedJob = shared !== -1 ? this.queue.splice(shared, 1)[0] : undefined
     if (sharedJob !== undefined) return Promise.resolve(sharedJob)
     return new Promise((resolve) => {
       const waiter: ParkedPoll = {
         client,
         actuation,
+        version,
         resolve,
         timer: setTimeout(() => {
           const index = this.waiters.indexOf(waiter)
@@ -235,7 +278,7 @@ export class ExtensionBridge {
   enqueue(job: Omit<BrowserJob, 'id'>, timeoutMs: number): Promise<BrowserSettlement>
   enqueue(job: Omit<ExtensionJob, 'id'>, timeoutMs: number): Promise<ExtensionSettlement> {
     const full = { id: String(this.nextJobId++), ...job } as ExtensionJob
-    const arm: 'search' | 'browser' = 'type' in full && full.type === 'browser' ? 'browser' : 'search'
+    const arm: 'search' | 'browser' = isBrowserArm(full) ? 'browser' : 'search'
     return new Promise((resolve) => {
       const entry: PendingSlot = {
         arm,
@@ -253,11 +296,14 @@ export class ExtensionBridge {
       this.pending.set(full.id, entry)
       // A pinned job goes to a poller of the same label; an unpinned one
       // prefers the unlabeled poller and falls back to any parked one; an
-      // actuation step only ever rides a profile that allows actions.
+      // actuation step only ever rides a profile that allows actions; and a
+      // browser step rides only parked pollers whose build speaks the
+      // current protocol — with none parked, it queues for the next one.
+      const eligible = (parked: ParkedPoll): boolean => this.mayTake(full, parked.client, parked.actuation, parked.version)
       const waiter = full.client === undefined
-        ? this.waiters.find(parked => parked.client === DEFAULT_BRIDGE_CLIENT && this.mayTake(full, parked.client, parked.actuation))
-          ?? this.waiters.find(parked => this.mayTake(full, parked.client, parked.actuation))
-        : this.waiters.find(parked => this.mayTake(full, parked.client, parked.actuation))
+        ? this.waiters.find(parked => parked.client === DEFAULT_BRIDGE_CLIENT && eligible(parked))
+          ?? this.waiters.find(eligible)
+        : this.waiters.find(eligible)
       if (waiter !== undefined) {
         const index = this.waiters.indexOf(waiter)
         this.waiters.splice(index, 1)
@@ -273,8 +319,10 @@ export class ExtensionBridge {
    * Deliver one result payload from the extension.
    * @param raw - the `POST /api/chrome/result` body.
    * @returns whether a pending job consumed it; `false` for unknown ids,
-   *   malformed payloads, payloads of the wrong arm, and jobs that already
-   *   timed out.
+   *   malformed payloads, and jobs that already timed out. A payload in the
+   *   wrong vocabulary fails its job at once: the loaded build predates (or
+   *   postdates) the job it answered, and waiting would only burn the
+   *   caller's whole timeout.
    */
   settle(raw: unknown): boolean {
     if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return false
@@ -285,29 +333,38 @@ export class ExtensionBridge {
     if (payload.ok === true) {
       const observation = coerceObservation(payload.browser)
       if (entry.arm === 'browser') {
-        if (observation === null) return false
+        if (observation === null) {
+          // No observation object at all is the stale-build signature; a
+          // present-but-malformed one is a broken current build. Either way
+          // the job fails now rather than waiting out its budget.
+          this.failPending(payload.id, entry, payload.browser === undefined ? WRONG_ARM_ERROR : 'the extension posted a malformed browser observation')
+          return true
+        }
         this.pending.delete(payload.id)
         clearTimeout(entry.timer)
         entry.resolve({ ok: true, browser: observation })
         return true
       }
-      // A browser-shaped payload for a search job is the wrong arm; the job
-      // stays pending for a real search settlement.
-      if (observation !== null && payload.sources === undefined) return false
+      if (observation !== null && payload.sources === undefined) {
+        this.failPending(payload.id, entry, WRONG_ARM_SEARCH_ERROR)
+        return true
+      }
       this.pending.delete(payload.id)
       clearTimeout(entry.timer)
       entry.resolve({ ok: true, sources: coerceRawHits(payload.sources) })
       return true
     }
-    this.pending.delete(payload.id)
-    clearTimeout(entry.timer)
-    entry.resolve({
-      ok: false,
-      error: typeof payload.error === 'string' && payload.error !== ''
-        ? payload.error
-        : 'the extension reported an unknown failure',
-    })
+    this.failPending(payload.id, entry, typeof payload.error === 'string' && payload.error !== ''
+      ? payload.error
+      : 'the extension reported an unknown failure')
     return true
+  }
+
+  /** Resolve one pending job with a failure and stop its timeout timer. */
+  private failPending(id: string, entry: PendingSlot, error: string): void {
+    this.pending.delete(id)
+    clearTimeout(entry.timer)
+    entry.resolve({ ok: false, error })
   }
 
   /** Drop everything: open long-polls resolve empty, pending jobs fail. */
