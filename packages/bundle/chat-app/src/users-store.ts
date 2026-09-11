@@ -10,7 +10,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { chmod, mkdir, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 
 /** Name given to the first user on a fresh store (matches the pre-users UI). */
@@ -443,6 +443,26 @@ export function removeSessionMeta(users: ChatUsers, sessionId: string): boolean 
   return true
 }
 
+/**
+ * Write a secrets-bearing file atomically: the body lands in a uniquely named
+ * sibling temp file first and a rename then swaps it into place, so a crash
+ * mid-write can never truncate what is already stored. The directory is
+ * created owner-only and the mode is re-asserted because `mode` on write only
+ * applies at file creation.
+ */
+export async function writeFileAtomic(path: string, body: string, mode = 0o600): Promise<void> {
+  const temp = `${path}.${process.pid}.${randomUUID()}.tmp`
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 })
+  await writeFile(temp, body, { mode, flag: 'w' })
+  await chmod(temp, mode)
+  try {
+    await rename(temp, path)
+  } catch (error) {
+    await rm(temp, { force: true }).catch(() => {})
+    throw error
+  }
+}
+
 /** Persist the users file; failures log but never break the request. */
 export async function persistUsers(path: string, users: ChatUsers): Promise<void> {
   const body = `${JSON.stringify({
@@ -455,8 +475,5 @@ export async function persistUsers(path: string, users: ChatUsers): Promise<void
     })),
     sessions: users.sessions,
   }, null, 2)}\n`
-  await mkdir(dirname(path), { recursive: true })
-  await writeFile(path, body, { mode: 0o600, flag: 'w' })
-  // `mode` only applies at creation; re-assert it for pre-existing files.
-  await chmod(path, 0o600)
+  await writeFileAtomic(path, body)
 }

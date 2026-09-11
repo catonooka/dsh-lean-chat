@@ -3,6 +3,9 @@
  */
 
 import type { IncomingMessage } from 'node:http'
+import { mkdtemp, readFile, readdir, stat } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   activeProfile,
@@ -31,6 +34,7 @@ import {
   parseReplyTo,
   parseSessionToken,
   parseSettingsFile,
+  persistSettings,
   projectSurfaceEvent,
   requestChunks,
   bridgeClientOf,
@@ -1531,5 +1535,35 @@ describe('sessionVisibleToUser', () => {
     expect(sessionVisibleToUser(archived, 'u_me', false)).toBe(false)
     expect(sessionVisibleToUser(archived, 'u_me', true)).toBe(true)
     expect(sessionVisibleToUser(mine, 'u_me', true)).toBe(false)
+  })
+})
+
+describe('persistSettings', () => {
+  it('round-trips settings through disk with keys, personas, and avatars intact', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-settings-'))
+    const path = `${dir}/chat-settings.json`
+    const settings: ChatSettings = {
+      ...twoProfiles,
+      reasoningEffort: 'low',
+      temperature: 0.7,
+      autoCompact: false,
+    }
+    settings.profiles[0]!.persona = 'Speak like a pirate.'
+    settings.profiles[0]!.greeting = 'Ahoy?'
+    settings.profiles[0]!.avatar = 17
+    await persistSettings(path, settings)
+    const reloaded = parseSettingsFile(await readFile(path, 'utf8'), baseConfig)
+    expect(reloaded.reasoningEffort).toBe('low')
+    expect(reloaded.temperature).toBe(0.7)
+    expect(reloaded.autoCompact).toBe(false)
+    const gatewayA = reloaded.profiles.find(profile => profile.id === 'a')
+    expect(gatewayA?.apiKey).toBe('key-a')
+    expect(gatewayA?.baseUrl).toBe('https://a.example/v1')
+    expect(gatewayA?.persona).toBe('Speak like a pirate.')
+    expect(gatewayA?.greeting).toBe('Ahoy?')
+    expect(gatewayA?.avatar).toBe(17)
+    // The write is owner-only and leaves no temp sibling behind.
+    expect((await stat(path)).mode & 0o777).toBe(0o600)
+    expect(await readdir(dir)).toEqual(['chat-settings.json'])
   })
 })

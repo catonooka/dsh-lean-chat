@@ -4,6 +4,9 @@
  */
 
 import { describe, expect, it } from 'vitest'
+import { mkdtemp, readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   activeUserFromHeader,
   applyUserGroups,
@@ -11,6 +14,7 @@ import {
   createUser,
   defaultUser,
   ensureSessionOwner,
+  persistUsers,
   pruneSessionGroups,
   removeSessionMeta,
   setSessionArchived,
@@ -22,6 +26,7 @@ import {
   parseUsersFile,
   updateUser,
   usersJson,
+  writeFileAtomic,
   type ChatUsers,
 } from '../src/users-store.ts'
 
@@ -269,5 +274,45 @@ describe('session meta mutations', () => {
 describe('defaultUser', () => {
   it('always answers the first user (parse keeps the roster non-empty)', () => {
     expect(defaultUser(storeOf(['alice', 'bob']).users).name).toBe('alice')
+  })
+})
+
+describe('writeFileAtomic', () => {
+  it('writes the body, rewrites over an existing file, and leaves no temp files', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-atomic-'))
+    const path = `${dir}/nested/chat-users.json`
+    await writeFileAtomic(path, '{"users":[]}\n')
+    expect(await readFile(path, 'utf8')).toBe('{"users":[]}\n')
+    await writeFileAtomic(path, '{"users":[1]}\n')
+    expect(await readFile(path, 'utf8')).toBe('{"users":[1]}\n')
+    // Only the destination remains; the rename consumed its temp sibling.
+    expect(await readdir(`${dir}/nested`)).toEqual(['chat-users.json'])
+  })
+
+  it('keeps the file owner-only even over a pre-existing wider mode', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-atomic-'))
+    const path = `${dir}/secrets.json`
+    await writeFile(path, 'stale\n', { mode: 0o644, flag: 'w' })
+    await writeFileAtomic(path, 'fresh\n')
+    expect(await readFile(path, 'utf8')).toBe('fresh\n')
+    expect((await stat(path)).mode & 0o777).toBe(0o600)
+  })
+})
+
+describe('persistUsers', () => {
+  it('round-trips a store through disk with avatars, profiles, and session meta intact', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-users-'))
+    const path = `${dir}/chat-users.json`
+    const users = parseUsersFile(undefined)
+    const created = createUser(users, { name: 'Ada' })
+    updateUser(users, created.id, { avatar: 3, chromeProfile: 'Profile 1' })
+    users.sessions['sess-9'] = { owner: created.id, archivedAt: 123, groupId: 'g-1' }
+    await persistUsers(path, users)
+    const reloaded = parseUsersFile(await readFile(path, 'utf8'))
+    const ada = reloaded.users.find(user => user.id === created.id)
+    expect(ada?.name).toBe('Ada')
+    expect(ada?.avatar).toBe(3)
+    expect(ada?.chromeProfile).toBe('Profile 1')
+    expect(reloaded.sessions['sess-9']).toEqual({ owner: created.id, archivedAt: 123, groupId: 'g-1' })
   })
 })

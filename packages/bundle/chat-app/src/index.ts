@@ -23,7 +23,7 @@
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { existsSync, readFileSync } from 'node:fs'
-import { chmod, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, readFile, rm, stat } from 'node:fs/promises'
 import { dirname, extname, join, resolve, sep } from 'node:path'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { TinyMetasearchProvider } from '@deepseek-ai/dsh-web-search-tiny/src/provider.ts'
@@ -46,6 +46,7 @@ import {
   setSessionGroup,
   updateUser,
   usersJson,
+  writeFileAtomic,
   type SessionUserMeta,
 } from './users-store.ts'
 import { routeSearchTarget, toSources, UserChromeSearchProvider } from '@deepseek-ai/dsh-web-search-chrome/src/provider.ts'
@@ -822,7 +823,7 @@ export function settingsJson(settings: ChatSettings): Record<string, unknown> {
 
 /** Persist settings to disk; failures log but never break the request. The
  * file can hold API keys, so it is owner-only. */
-async function persistSettings(path: string, settings: ChatSettings): Promise<void> {
+export async function persistSettings(path: string, settings: ChatSettings): Promise<void> {
   const body = `${JSON.stringify({
     provider: settings.provider,
     profiles: settings.profiles.map(profile => ({
@@ -841,10 +842,7 @@ async function persistSettings(path: string, settings: ChatSettings): Promise<vo
     searchTool: settings.searchTool,
     ...settings.autoCompact !== undefined ? { autoCompact: settings.autoCompact } : {},
   }, null, 2)}\n`
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 })
-  await writeFile(path, body, { mode: 0o600, flag: 'w' })
-  // `mode` only applies at creation; re-assert it for pre-existing files.
-  await chmod(path, 0o600)
+  await writeFileAtomic(path, body)
 }
 
 /** One page of the sidebar list plus the full filtered count. */
@@ -1656,9 +1654,7 @@ export function apply(ctx: Context, config: Config): void {
   const storedToken = parseSessionToken(readFileSyncSafe(tokenPath))
   const sessionToken = storedToken ?? randomUUID()
   if (storedToken === undefined) {
-    void mkdir(dirname(tokenPath), { recursive: true })
-      .then(() => writeFile(tokenPath, `${sessionToken}\n`, { mode: 0o600, flag: 'w' }))
-      .then(() => chmod(tokenPath, 0o600))
+    void writeFileAtomic(tokenPath, `${sessionToken}\n`)
       .catch((error: unknown) => {
         const reason = error instanceof Error ? error.message : String(error)
         console.error(`chat-app: could not persist the session token because ${reason}`)
@@ -1745,8 +1741,7 @@ export function apply(ctx: Context, config: Config): void {
     // data for every session ever touched does not stay resident.
     activity.clear()
     for (const [id, stamp] of entries) activity.set(id, stamp)
-    await mkdir(dirname(activityPath), { recursive: true })
-    await writeFile(activityPath, `${JSON.stringify(Object.fromEntries(entries), null, 2)}\n`, { mode: 0o600, flag: 'w' })
+    await writeFileAtomic(activityPath, `${JSON.stringify(Object.fromEntries(entries), null, 2)}\n`)
   }
 
   /**
