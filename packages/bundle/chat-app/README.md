@@ -1,5 +1,5 @@
 ---
-description: "The chat profile bundle: a lean, chat-only web app with user profiles, model characters, and durable sessions, for users running the dsh chat surface."
+description: "The chat profile bundle behind Sato: a lean, chat-only web app with user profiles, model characters, and durable sessions, for users running the dsh chat surface."
 kind: "package-bundle"
 ---
 

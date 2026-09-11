@@ -1,4 +1,4 @@
-# The chat profile: a chat-only web app with a tiny initial context
+# The chat profile (Sato): a chat-only web app with a tiny initial context
 
 `dsh --profile chat` serves a minimal ChatGPT-style chat surface built on the
 same harness kernel as every other dsh profile — but composed from a

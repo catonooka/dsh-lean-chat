@@ -1,18 +1,28 @@
-# dsh-lean-chat
+# Sato
 
 A lean, chat-only web app forked from [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)
 (MIT — see [LICENSE](LICENSE) and [README.upstream.md](README.upstream.md) for the upstream project).
+The repo was previously `dsh-lean-chat`; GitHub redirects the old URL.
 
-One chat surface, no agent shell: a minimal system prompt, one `web_search`
-tool, and a small ChatGPT-style UI you can point at **any OpenAI-compatible
-endpoint** — DeepSeek, an mLLM gateway, or a local Ollama/vLLM.
+One chat surface, no agent shell: a minimal system prompt, web search, and an
+optional browser tool, in a small ChatGPT-style UI you can point at **any
+OpenAI-compatible endpoint** — DeepSeek, an mLLM gateway, or a local
+Ollama/vLLM.
 
 ## Highlights
 
-- **Tiny model context** — one persona line plus a single tool schema on the
-  wire; nothing else mounts.
-- **Provider profiles** — save any number of named endpoints (base URL, key,
-  model each), switch in the settings panel, all riding one adapter.
+- **Model characters** — every provider profile is a character: its own name,
+  system prompt, welcome question, and a robot avatar (20 tiles, kept apart
+  from the users' cat avatars). Tap the bot's avatar mid-conversation to
+  switch characters — the running turn finishes where it is, the next message
+  runs on the new one. "New character…" clones the current endpoint, key, and
+  model so it starts working immediately.
+- **User profiles** — named local profiles with cat avatars keep chat lists,
+  groups, and Chrome-profile routing apart on one machine. Identity and
+  organization, not an authentication boundary: one session token still gates
+  the whole app.
+- **Tiny model context** — one persona line plus the tool schemas on the wire;
+  nothing else mounts.
 - **Search your way** — the keyless built-in metasearch, or *Your Chrome*:
   a tiny [companion extension](packages/web/web-search-chrome/extension/README.md)
   runs searches inside your logged-in browser (no debug port, no tab), with a
@@ -31,8 +41,7 @@ endpoint** — DeepSeek, an mLLM gateway, or a local Ollama/vLLM.
 - **Clean UI** — collapsible sidebar (with a new-chat rail when collapsed),
   chat-style replies that quote the answered message, per-message
   copy/reply/try-again actions, full-text chat search, lazy-loaded
-  history, streaming that re-renders only the growing row, avatars,
-  light/dark theme.
+  history, streaming that re-renders only the growing row, light/dark theme.
 - **Parallel conversations** — turns belong to their session: start a new
   chat or switch mid-stream and the old turn keeps generating in the
   background, marked live in the sidebar; come back and it is still
@@ -41,11 +50,16 @@ endpoint** — DeepSeek, an mLLM gateway, or a local Ollama/vLLM.
   model's context window: older turns become a model-readable summary while
   the recent tail stays verbatim (optional in Settings; the full ledger stays
   on disk). The hot paths stay flat too: cached sidebar titles and listings,
-  memoized history rows, bounded agent lifetimes, and search caches with a
-  tight question-generator budget.
-- **Hardened localhost surface** — loopback-only, boot-minted HttpOnly session
-  cookie, extension trust scoped to exactly two bridge routes, rate-limited
-  probe endpoint.
+  memoized history rows, bounded agent lifetimes, ETag-revalidated assets,
+  and search caches with a tight question-generator budget.
+- **Hardened localhost surface** — loopback-only (`--host 0.0.0.0` is
+  refused); every non-bridge API route requires a boot-minted session token
+  compared in constant time, behind a loopback Host/Origin fence. The API key
+  is written atomically, owner-only, and never serialized to the browser;
+  static responses carry ETag, `nosniff`, and frame denial; model- and
+  search-fed links are http(s)-only; SSE streams send a keepalive and close
+  a client whose backlog runs unbounded. Extension trust is scoped to
+  exactly two bridge routes, and the probe endpoint is rate-limited.
 
 ## Run it
 
@@ -55,16 +69,17 @@ Requires Node `^22.19.0 || >=24.0.0` and pnpm (`corepack enable` sorts it).
 > minutes and a couple of GB in `node_modules`.
 
 ```sh
-git clone https://github.com/catonooka/dsh-lean-chat.git
-cd dsh-lean-chat
+git clone https://github.com/catonooka/Sato.git
+cd Sato
 pnpm install && pnpm run build
 
 export DEEPSEEK_API_KEY=...        # or skip this and configure in the UI
 pnpm dsh --profile chat            # http://127.0.0.1:3095 (opens the browser)
 ```
 
-Then open **Settings** (user row, bottom-left) to pick an avatar and set up a
-provider profile: base URL, API key, and model all live there. Any
+Then open **Settings** (user row, bottom-left) to pick your avatar and set up
+a provider profile: base URL, API key, and model all live there — plus the
+character's system prompt, welcome question, and avatar. Any
 OpenAI-compatible gateway works, e.g. `http://localhost:11434/v1` for Ollama.
 
 Useful flags: `--no-open`, `--port <n>`, `--host <h>` (loopback only).
@@ -84,7 +99,7 @@ The full environment-variable table and the access model are in
 ## Develop
 
 ```sh
-pnpm vitest run packages/bundle/chat-app packages/web/web-search-chrome apps/chat   # the fork's suites
+pnpm vitest run packages/bundle/chat-app packages/web packages/llm/llm-deepseek apps/chat   # the fork's suites
 pnpm run build:chat-web        # rebuild the frontend after UI edits
 pnpm run build:lib:host        # rebuild server libs after bundle edits
 ```
@@ -93,7 +108,7 @@ pnpm run build:lib:host        # rebuild server libs after bundle edits
 
 | Path | What it is |
 |---|---|
-| `packages/bundle/chat-app/` | the chat profile bundle: API routes, SSE, settings, engines |
+| `packages/bundle/chat-app/` | the chat profile bundle: API routes, SSE, settings, characters, engines |
 | `apps/chat/` | the web frontend (React, no runtime deps beyond it) |
 | `packages/web/web-search-chrome/` | the user-Chrome search provider + companion extension |
 | `packages/web/web-search-tiny/`, `packages/web/tool-web-search-tiny/` | the built-in search engines and tool |
