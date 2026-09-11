@@ -20,7 +20,7 @@
  * @module @deepseek-ai/dsh-chat-app
  */
 
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { existsSync, readFileSync } from 'node:fs'
 import { chmod, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
@@ -1350,12 +1350,20 @@ export function parseSessionToken(raw: string | undefined): string | undefined {
   return /^[A-Za-z0-9-]{16,128}$/.test(trimmed) ? trimmed : undefined
 }
 
+/** Constant-time secret comparison: both sides are hashed to fixed-length
+ * digests first, so `timingSafeEqual` never throws on a length mismatch and
+ * never leaks how much of a presented token was right. */
+export function tokensMatch(presented: string, expected: string): boolean {
+  const digest = (value: string): Buffer => createHash('sha256').update(value).digest()
+  return timingSafeEqual(digest(presented), digest(expected))
+}
+
 export function hasSessionCookie(cookieHeader: string | undefined, token: string): boolean {
   if (typeof cookieHeader !== 'string') return false
   for (const part of cookieHeader.split(';')) {
     const separator = part.indexOf('=')
     if (separator === -1) continue
-    if (part.slice(0, separator).trim() === SESSION_COOKIE && part.slice(separator + 1).trim() === token) return true
+    if (part.slice(0, separator).trim() === SESSION_COOKIE && tokensMatch(part.slice(separator + 1).trim(), token)) return true
   }
   return false
 }
@@ -1655,6 +1663,13 @@ export function apply(ctx: Context, config: Config): void {
         const reason = error instanceof Error ? error.message : String(error)
         console.error(`chat-app: could not persist the session token because ${reason}`)
       })
+  } else {
+    // The file predates this boot; re-assert owner-only mode on it, the same
+    // way every other secrets writer below re-asserts its chmod on reuse.
+    void chmod(tokenPath, 0o600).catch((error: unknown) => {
+      const reason = error instanceof Error ? error.message : String(error)
+      console.error(`chat-app: could not tighten the session token mode because ${reason}`)
+    })
   }
   // Runtime settings: boot-time config (which folds the env seeds) overlaid
   // with the persisted panel edits, mutable through PUT /api/config.

@@ -16,6 +16,7 @@ import {
   modalityClaim,
   evictableSessionIds,
   hasSessionCookie,
+  tokensMatch,
   InFlightDedup,
   isLocalOrBridgeRequest,
   isLocalRequest,
@@ -973,6 +974,18 @@ describe('hasSessionCookie', () => {
     expect(hasSessionCookie('other=abc', 'abc')).toBe(false)
     expect(hasSessionCookie(undefined, 'abc')).toBe(false)
     expect(hasSessionCookie('dsh-chat-sessionx=abc', 'abc')).toBe(false)
+  })
+})
+
+describe('tokensMatch', () => {
+  it('compares equal and unequal secrets without caring about length', () => {
+    expect(tokensMatch('0f2c6d51-9d1a-4bb2-9f2e-6a4c8b1e3f77', '0f2c6d51-9d1a-4bb2-9f2e-6a4c8b1e3f77')).toBe(true)
+    expect(tokensMatch('0f2c6d51-9d1a-4bb2-9f2e-6a4c8b1e3f77', '0f2c6d51-9d1a-4bb2-9f2e-6a4c8b1e3f78')).toBe(false)
+    // Different lengths must answer false instead of throwing, so a
+    // length-mismatched presentation leaks nothing and never 500s the gate.
+    expect(tokensMatch('', '0f2c6d51-9d1a-4bb2-9f2e-6a4c8b1e3f77')).toBe(false)
+    expect(tokensMatch('0f2c6d51-9d1a-4bb2-9f2e-6a4c8b1e3f77-extra', '0f2c6d51-9d1a-4bb2-9f2e-6a4c8b1e3f77')).toBe(false)
+    expect(tokensMatch('a', 'a')).toBe(true)
   })
 })
 
