@@ -303,9 +303,9 @@ describe('reply flow', () => {
     fireEvent.click(screen.getAllByLabelText('Reply to this message')[1]!)
     const chip = document.querySelector('.reply-chip')
     expect(chip).not.toBeNull()
-    expect(chip?.querySelector('.reply-chip-label')?.textContent).toBe('dsh chat')
+    expect(chip?.querySelector('.reply-chip-label')?.textContent).toBe('Sato')
     expect(chip?.querySelector('.reply-chip-text')?.textContent).toContain('hello there')
-    const draft = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    const draft = screen.getByPlaceholderText<HTMLTextAreaElement>('Message Sato…')
     expect(draft.value).toBe('')
 
     fireEvent.keyDown(draft, { key: 'Escape' })
@@ -327,7 +327,7 @@ describe('reply flow', () => {
         ]),
       ],
     })
-    const draft = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    const draft = screen.getByPlaceholderText<HTMLTextAreaElement>('Message Sato…')
 
     fireEvent.change(draft, { target: { value: 'first question' } })
     fireEvent.keyDown(draft, { key: 'Enter' })
@@ -346,7 +346,7 @@ describe('reply flow', () => {
     expect(draft.value).toBe('')
     expect(document.querySelector('.reply-chip')).toBeNull()
     const quote = document.querySelector('.row.user .reply-quote')
-    expect(quote?.querySelector('.reply-quote-label')?.textContent).toBe('dsh chat')
+    expect(quote?.querySelector('.reply-quote-label')?.textContent).toBe('Sato')
     expect(quote?.querySelector('.reply-quote-text')?.textContent).toBe('hello there')
   })
 
@@ -451,7 +451,7 @@ describe('compaction rendering', () => {
     await screen.findByText('old answer')
     expect(historyFetches).toHaveLength(1)
 
-    const draft = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    const draft = screen.getByPlaceholderText<HTMLTextAreaElement>('Message Sato…')
     fireEvent.change(draft, { target: { value: 'next question' } })
     fireEvent.keyDown(draft, { key: 'Enter' })
     await screen.findByText('new answer')
@@ -490,7 +490,7 @@ describe('attachment upload flow', () => {
         sessions: [{ id: 'sess-a', title: 'A', items: [] }],
         abilities: { image: 'yes', video: 'no' },
       })
-      const composer = await screen.findByPlaceholderText('Message dsh chat…')
+      const composer = await screen.findByPlaceholderText('Message Sato…')
       const image = new File([new Uint8Array([1, 2, 3])], 'shot.png', { type: 'image/png' })
       fireEvent.paste(composer, { clipboardData: { files: [image] } })
       await screen.findByText('shot.png')
@@ -523,7 +523,7 @@ describe('attachment upload flow', () => {
         sessions: [{ id: 'sess-a', title: 'A', items: [] }],
         abilities: { image: 'yes', video: 'no' },
       })
-      const composer = await screen.findByPlaceholderText('Message dsh chat…')
+      const composer = await screen.findByPlaceholderText('Message Sato…')
       fireEvent.paste(composer, { clipboardData: { files: [new File([new Uint8Array([1])], 'x.png', { type: 'image/png' })] } })
       await screen.findByText('x.png')
       fireEvent.click(screen.getByRole('button', { name: 'Remove attachment' }))
@@ -564,7 +564,7 @@ describe('history attachment lifecycle', () => {
       expect(document.querySelector('img.bubble-attachment')?.getAttribute('src')).toBe('blob:hist-1')
       // A turn whose compaction event refetches history replaces the item
       // objects wholesale; the same attachment id must not refetch or swap.
-      const composer = screen.getByPlaceholderText('Message dsh chat…')
+      const composer = screen.getByPlaceholderText('Message Sato…')
       fireEvent.change(composer, { target: { value: 'again' } })
       fireEvent.submit(composer.closest('form') as HTMLFormElement)
       await waitFor(() => { expect(historyFetches.length).toBe(2) })
@@ -653,7 +653,7 @@ describe('streaming turn', () => {
         { t: 'turn-end', reason: 'completed' },
       ], 30)],
     })
-    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message Sato…')
     fireEvent.change(composer, { target: { value: 'what is the answer?' } })
     fireEvent.keyDown(composer, { key: 'Enter' })
     // Before the first delta lands, the streaming row thinks.
@@ -686,7 +686,7 @@ describe('streaming turn', () => {
         { t: 'turn-end', reason: 'completed' },
       ], 30)],
     })
-    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message Sato…')
     fireEvent.change(composer, { target: { value: 'search node' } })
     fireEvent.keyDown(composer, { key: 'Enter' })
     await screen.findByText('Searched · node 25', {}, { timeout: 3000 })
@@ -711,7 +711,7 @@ describe('streaming turn', () => {
         { t: 'turn-end', reason: 'completed' },
       ], 40)],
     })
-    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message Sato…')
     fireEvent.change(composer, { target: { value: 'search node' } })
     fireEvent.keyDown(composer, { key: 'Enter' })
     // The search opens the turn before any delta: the placeholder says so.
@@ -729,7 +729,7 @@ describe('streaming turn', () => {
         [{ t: 'turn-end', reason: 'completed' }, 10_000],
       ])],
     })
-    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message Sato…')
     fireEvent.change(composer, { target: { value: 'go' } })
     fireEvent.keyDown(composer, { key: 'Enter' })
     await screen.findByText('streaming along', {}, { timeout: 3000 })
@@ -748,7 +748,7 @@ describe('streaming turn', () => {
         { t: 'turn-end', reason: 'completed' },
       ], 30)],
     })
-    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message Sato…')
     fireEvent.change(composer, { target: { value: 'go' } })
     fireEvent.keyDown(composer, { key: 'Enter' })
     // No `assistant` frame arrives: the turn's finally block commits the
@@ -769,7 +769,7 @@ describe('streaming turn', () => {
         { t: 'turn-end', reason: 'completed' },
       ], 30)],
     })
-    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message Sato…')
     fireEvent.change(composer, { target: { value: 'my recent 5 posts on X' } })
     fireEvent.keyDown(composer, { key: 'Enter' })
     await screen.findByText('Browsing · open https://x.com/me', {}, { timeout: 3000 })
@@ -810,7 +810,7 @@ describe('streaming turn', () => {
         { t: 'turn-end', reason: 'completed' },
       ], 30)],
     })
-    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message Sato…')
     fireEvent.change(composer, { target: { value: 'read my posts' } })
     fireEvent.keyDown(composer, { key: 'Enter' })
     await screen.findByText('Browsed · extract https://x.com · failed', {}, { timeout: 3000 })
@@ -831,7 +831,7 @@ describe('streaming turn', () => {
         { t: 'turn-end', reason: 'completed' },
       ], 30)],
     })
-    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message Sato…')
     fireEvent.change(composer, { target: { value: 'fill the form' } })
     fireEvent.keyDown(composer, { key: 'Enter' })
     await screen.findByText('Acting · type https://form.example', {}, { timeout: 3000 })
@@ -856,7 +856,7 @@ describe('parallel conversations', () => {
         [{ t: 'turn-end', reason: 'completed' }, 20],
       ])],
     })
-    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message Sato…')
     fireEvent.change(composer, { target: { value: 'from alpha' } })
     fireEvent.keyDown(composer, { key: 'Enter' })
     await screen.findByText(/The old chat keeps/, {}, { timeout: 3000 })
@@ -885,13 +885,13 @@ describe('parallel conversations', () => {
         [{ t: 'turn-end', reason: 'completed' }, 20],
       ])],
     })
-    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message Sato…')
     fireEvent.change(composer, { target: { value: 'hello alpha' } })
     fireEvent.keyDown(composer, { key: 'Enter' })
     await screen.findByText(/alpha is still working/, {}, { timeout: 3000 })
     // New chat mid-stream: never blocked, fresh empty thread takes over.
     fireEvent.click(screen.getByText('New chat'))
-    expect((screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…') as HTMLTextAreaElement).value).toBe('')
+    expect((screen.getByPlaceholderText<HTMLTextAreaElement>('Message Sato…') as HTMLTextAreaElement).value).toBe('')
     expect(document.querySelector('.caret')).toBeNull()
     expect(screen.queryByText(/alpha is still working/)).toBeNull()
     // The old conversation keeps its stream and finishes in the background.
@@ -922,13 +922,13 @@ describe('parallel conversations', () => {
         ]),
       ],
     })
-    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message Sato…')
     fireEvent.change(composer, { target: { value: 'to alpha' } })
     fireEvent.keyDown(composer, { key: 'Enter' })
     await screen.findByText(/alpha answer/, {}, { timeout: 3000 })
     // Switch to Beta and send there while Alpha is still generating.
     fireEvent.click(screen.getByTitle('Beta'))
-    const betaComposer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    const betaComposer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message Sato…')
     fireEvent.change(betaComposer, { target: { value: 'to beta' } })
     fireEvent.keyDown(betaComposer, { key: 'Enter' })
     await screen.findByText(/beta answer/, {}, { timeout: 3000 })
@@ -957,7 +957,7 @@ describe('parallel conversations', () => {
         [{ t: 'turn-end', reason: 'completed' }, 20],
       ])],
     })
-    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message Sato…')
     fireEvent.change(composer, { target: { value: 'first' } })
     fireEvent.keyDown(composer, { key: 'Enter' })
     await screen.findByText(/working/, {}, { timeout: 3000 })
@@ -981,7 +981,7 @@ describe('post-turn sidebar refresh', () => {
       streams: [sseResponse([{ t: 'turn-end', reason: 'completed' }])],
     })
     await screen.findByText('A')
-    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message Sato…')
     fireEvent.change(composer, { target: { value: 'hello' } })
     fireEvent.keyDown(composer, { key: 'Enter' })
     await waitFor(() => { expect(sessionListFetches.length).toBe(2) })
@@ -1017,7 +1017,7 @@ describe('history attachment swap', () => {
       expect(document.querySelector('img.bubble-attachment')?.getAttribute('src')).toBe('blob:swap-1')
       // The refetched history carries a different attachment id: the row
       // fetches the new bytes and swaps its URL, revoking the stale one.
-      const composer = screen.getByPlaceholderText('Message dsh chat…')
+      const composer = screen.getByPlaceholderText('Message Sato…')
       fireEvent.change(composer, { target: { value: 'again' } })
       fireEvent.submit(composer.closest('form') as HTMLFormElement)
       await waitFor(() => { expect(attachmentFetches.length).toBe(2) })
@@ -1049,7 +1049,7 @@ describe('user profiles', () => {
         [{ t: 'turn-end', reason: 'completed' }, 20],
       ])],
     })
-    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message Sato…')
     fireEvent.change(composer, { target: { value: 'go' } })
     fireEvent.keyDown(composer, { key: 'Enter' })
     await screen.findByText('old profile keeps streaming', {}, { timeout: 3000 })
@@ -1346,7 +1346,7 @@ describe('model characters', () => {
         [{ t: 'turn-end', reason: 'completed' }, 10_000],
       ])],
     })
-    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message Sato…')
     fireEvent.change(composer, { target: { value: 'go' } })
     fireEvent.keyDown(composer, { key: 'Enter' })
     await screen.findByText('mid-flight words', {}, { timeout: 3000 })
@@ -1370,7 +1370,7 @@ describe('model characters', () => {
         [{ t: 'turn-end', reason: 'completed' }, 0],
       ])],
     })
-    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message Sato…')
     fireEvent.change(composer, { target: { value: 'go' } })
     fireEvent.keyDown(composer, { key: 'Enter' })
     await screen.findByText('mid-flight words', {}, { timeout: 3000 })

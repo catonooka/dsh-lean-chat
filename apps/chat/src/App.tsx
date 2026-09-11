@@ -1441,7 +1441,7 @@ export default function App(): JSX.Element {
     <div className={collapsed ? 'app collapsed' : 'app'}>
       <aside className="sidebar">
         <div className="sidebar-header">
-          <span className="brand">dsh chat</span>
+          <span className="brand">Sato</span>
           <button
             type="button"
             className="icon-btn sidebar-toggle"
@@ -1741,7 +1741,7 @@ export default function App(): JSX.Element {
             <textarea
               ref={textareaRef}
               value={draft}
-              placeholder="Message dsh chat…"
+              placeholder="Message Sato…"
               rows={1}
               onPaste={handleComposerPaste}
               onDrop={handleComposerDrop}
@@ -1778,7 +1778,7 @@ export default function App(): JSX.Element {
                 </button>
               )}
           </form>
-          <div className="composer-note">dsh chat can make mistakes. It searches the web with one internal tool.</div>
+          <div className="composer-note">Sato can make mistakes. It searches the web with one internal tool.</div>
         </div>
       </main>
       {users !== undefined && avatar === null && !addUserOpen && !userMenuOpen

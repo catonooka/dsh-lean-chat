@@ -21,7 +21,7 @@ export function clampReplyText(text: string, max: number = REPLY_SNIPPET_MAX): s
 
 /** Who a reply quotes, in the user's own words. */
 export function replyLabel(role: 'user' | 'assistant'): string {
-  return role === 'user' ? 'You' : 'dsh chat'
+  return role === 'user' ? 'You' : 'Sato'
 }
 
 /**

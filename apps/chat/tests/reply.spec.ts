@@ -36,7 +36,7 @@ describe('clampReplyText', () => {
 describe('replyLabel', () => {
   it('names the two roles', () => {
     expect(replyLabel('user')).toBe('You')
-    expect(replyLabel('assistant')).toBe('dsh chat')
+    expect(replyLabel('assistant')).toBe('Sato')
   })
 })
 
