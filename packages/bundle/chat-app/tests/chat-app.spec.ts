@@ -2,8 +2,8 @@
  * Unit coverage for the chat glue's pure history projection and settings.
  */
 
-import type { IncomingMessage } from 'node:http'
-import { mkdtemp, readFile, readdir, stat } from 'node:fs/promises'
+import type { IncomingMessage, ServerResponse } from 'node:http'
+import { mkdir, mkdtemp, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -41,6 +41,7 @@ import {
   settingsJson,
   isExtensionBridgePath,
   sessionVisibleToUser,
+  serveStatic,
   toolCallSummary,
   resolveProviderFallback,
   TitleSnapshotCache,
@@ -1565,5 +1566,105 @@ describe('persistSettings', () => {
     // The write is owner-only and leaves no temp sibling behind.
     expect((await stat(path)).mode & 0o777).toBe(0o600)
     expect(await readdir(dir)).toEqual(['chat-settings.json'])
+  })
+})
+
+describe('serveStatic', () => {
+  interface ResState {
+    status: number
+    headers: Record<string, string>
+    body: string | undefined
+  }
+  function fakeRes(): { res: ServerResponse; state: ResState } {
+    const state: ResState = { status: 0, headers: {}, body: undefined }
+    const res = {
+      writeHead(status: number, headers: Record<string, string>) {
+        state.status = status
+        state.headers = headers
+        return res
+      },
+      end(body?: string | Buffer) {
+        if (body !== undefined) state.body = typeof body === 'string' ? body : Buffer.from(body).toString('utf8')
+        return res
+      },
+    }
+    return { res: res as unknown as ServerResponse, state }
+  }
+  function request(method: string, url: string, headers: Record<string, string> = {}): IncomingMessage {
+    return { method, url, headers } as unknown as IncomingMessage
+  }
+  async function distRoot(): Promise<string> {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-dist-'))
+    await writeFile(join(root, 'index.html'), '<html>page</html>')
+    await mkdir(join(root, 'avatars'))
+    await writeFile(join(root, 'avatars', 'avatar-11.png'), 'pngbytes')
+    await mkdir(join(root, 'assets'))
+    await writeFile(join(root, 'assets', 'app-1234.js'), 'jsbytes')
+    return root
+  }
+
+  it('serves files with nosniff, frame denial, and a strong ETag, cookie only on the page', async () => {
+    const root = await distRoot()
+    const page = fakeRes()
+    await serveStatic(request('GET', '/'), page.res, root, 'tok')
+    expect(page.state.status).toBe(200)
+    expect(page.state.body).toBe('<html>page</html>')
+    expect(page.state.headers['content-type']).toBe('text/html; charset=utf-8')
+    expect(page.state.headers['x-content-type-options']).toBe('nosniff')
+    expect(page.state.headers['x-frame-options']).toBe('DENY')
+    expect(page.state.headers['set-cookie']).toBe('dsh-chat-session=tok; HttpOnly; SameSite=Strict; Path=/')
+    expect(page.state.headers.etag).toMatch(/^"\d+-[\d.]+"$/u)
+    const tile = fakeRes()
+    await serveStatic(request('GET', '/avatars/avatar-11.png'), tile.res, root, 'tok')
+    expect(tile.state.status).toBe(200)
+    expect(tile.state.headers['content-type']).toBe('image/png')
+    expect(tile.state.headers['cache-control']).toBe('no-cache')
+    expect(tile.state.headers['set-cookie']).toBeUndefined()
+    const hashed = fakeRes()
+    await serveStatic(request('GET', '/assets/app-1234.js'), hashed.res, root, 'tok')
+    expect(hashed.state.headers['cache-control']).toBe('public, max-age=31536000, immutable')
+  })
+
+  it('answers 304 for a matching If-None-Match but always serves the page in full', async () => {
+    const root = await distRoot()
+    const first = fakeRes()
+    await serveStatic(request('GET', '/avatars/avatar-11.png'), first.res, root, 'tok')
+    const etag = first.state.headers.etag as string
+    const revalidated = fakeRes()
+    await serveStatic(request('GET', '/avatars/avatar-11.png', { 'if-none-match': etag }), revalidated.res, root, 'tok')
+    expect(revalidated.state.status).toBe(304)
+    expect(revalidated.state.body).toBeUndefined()
+    expect(revalidated.state.headers.etag).toBe(etag)
+    // A stale ETag still gets the full body.
+    const stale = fakeRes()
+    await serveStatic(request('GET', '/avatars/avatar-11.png', { 'if-none-match': '"0-0"' }), stale.res, root, 'tok')
+    expect(stale.state.status).toBe(200)
+    expect(stale.state.body).toBe('pngbytes')
+    // index.html revalidations keep the full response so the cookie reissues.
+    const pageFirst = fakeRes()
+    await serveStatic(request('GET', '/index.html'), pageFirst.res, root, 'tok')
+    const pageAgain = fakeRes()
+    await serveStatic(request('GET', '/index.html', { 'if-none-match': pageFirst.state.headers.etag as string }), pageAgain.res, root, 'tok')
+    expect(pageAgain.state.status).toBe(200)
+    expect(pageAgain.state.headers['set-cookie']).toContain('dsh-chat-session=tok')
+  })
+
+  it('answers HEAD without a body and refuses wrong methods, bad paths, escapes, and misses', async () => {
+    const root = await distRoot()
+    const head = fakeRes()
+    await serveStatic(request('HEAD', '/avatars/avatar-11.png'), head.res, root, 'tok')
+    expect(head.state.status).toBe(200)
+    expect(head.state.body).toBeUndefined()
+    expect(head.state.headers['content-length']).toBe('8')
+    for (const [method, url, status] of [
+      ['POST', '/', 405],
+      ['GET', '/%zz', 400],
+      ['GET', '/..%2F..%2Fetc%2Fpasswd', 403],
+      ['GET', '/missing.png', 404],
+    ] as const) {
+      const refused = fakeRes()
+      await serveStatic(request(method, url), refused.res, root, 'tok')
+      expect(refused.state.status).toBe(status)
+    }
   })
 })

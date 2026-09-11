@@ -1588,8 +1588,14 @@ export function cachePolicyFor(pathname: string): Record<string, string> {
     : { 'cache-control': 'no-cache' }
 }
 
-/** Serve the built dist over the fallback seat: assets by MIME, `/` as index. */
-async function serveStatic(
+/**
+ * Serve the built dist over the fallback seat: assets by MIME, `/` as index.
+ * Every response carries a strong ETag (size + mtime) so the `no-cache`
+ * revalidation of tiles and other non-hashed files answers 304 instead of
+ * re-sending bytes; `/index.html` is always served in full because it is the
+ * one response that also (re)issues the session cookie.
+ */
+export async function serveStatic(
   req: IncomingMessage,
   res: ServerResponse,
   distRoot: string,
@@ -1622,10 +1628,19 @@ async function serveStatic(
       res.end()
       return
     }
+    const etag = `"${String(info.size)}-${String(info.mtimeMs)}"`
+    if (pathname !== '/index.html' && req.headers['if-none-match'] === etag) {
+      res.writeHead(304, { etag, ...cachePolicyFor(pathname) })
+      res.end()
+      return
+    }
     const body = req.method === 'HEAD' ? undefined : await readFile(target)
     res.writeHead(200, {
       'content-type': MIME[extname(target)] ?? 'application/octet-stream',
       'content-length': String(info.size),
+      etag,
+      'x-content-type-options': 'nosniff',
+      'x-frame-options': 'DENY',
       ...cachePolicyFor(pathname),
       ...pathname === '/index.html'
         ? { 'set-cookie': `${SESSION_COOKIE}=${sessionToken}; HttpOnly; SameSite=Strict; Path=/` }
