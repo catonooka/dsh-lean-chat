@@ -1127,6 +1127,12 @@ export default function App(): JSX.Element {
       .catch((err: unknown) => { setError(err instanceof Error ? err.message : String(err)) })
   }, [])
 
+  /** Cancel the inline row editor. Stable so the memoized list body is not
+   * re-rendered by every unrelated state change while a rename is open. */
+  const cancelRename = useCallback((): void => {
+    setRenamingId(undefined)
+  }, [])
+
   /** Rename through the inline row editor; the row updates optimistically. */
   const renameChat = useCallback((id: string, title: string): void => {
     setRenamingId(undefined)
@@ -1511,7 +1517,7 @@ export default function App(): JSX.Element {
             grouped={!searchActive && !archivedView}
             renamingId={renamingId}
             onRenameSubmit={renameChat}
-            onRenameCancel={() => { setRenamingId(undefined) }}
+            onRenameCancel={cancelRename}
             onContext={openChatMenu}
           />
         </nav>

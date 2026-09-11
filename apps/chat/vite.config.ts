@@ -8,7 +8,9 @@ export default defineConfig({
   plugins: [react()],
   build: {
     target: 'es2022',
-    sourcemap: true,
+    // The dist is served as-is in production; shipping .map files there
+    // only hands out the source tree and pads the folder.
+    sourcemap: false,
   },
   server: {
     port: 5175,
