@@ -36,6 +36,7 @@ import {
   activeUserFromHeader,
   applyUserGroups,
   assignUnownedSessions,
+  AVATAR_COUNT,
   createUser,
   ensureSessionOwner,
   parseUsersFile,
@@ -133,6 +134,10 @@ export interface ProviderProfile {
   baseUrl?: string
   /** API key overriding `$DEEPSEEK_API_KEY`; persisted owner-only, never served. */
   apiKey?: string
+  /** This character's own system prompt; absent = the default persona. */
+  persona?: string
+  /** Avatar tile 1..AVATAR_COUNT; absent = the classic bot avatar. */
+  avatar?: number
 }
 
 /** Everything the settings panel can change while the app runs. */
@@ -146,7 +151,6 @@ export interface ChatSettings {
   reasoningEffort?: 'off' | 'low' | 'high' | 'max'
   /** Sampling temperature applied to every conversation request. */
   temperature?: number
-  persona: string
   /** Which engine the pinned chat-selector provider dispatches to. */
   searchTool: 'tiny-metasearch' | 'user-chrome'
   /** Whether conversations auto-compact under context pressure; absent = on. */
@@ -169,6 +173,18 @@ export function activeProfile(settings: ChatSettings): ProviderProfile {
   return settings.profiles.find(profile => profile.id === settings.activeProfileId)
     ?? settings.profiles[0]
     ?? { id: 'default', name: 'Default', model: '' }
+}
+
+/**
+ * The persona a profile answers with: its own system prompt when set, else
+ * the default helpful persona. Re-read per request, so persona edits apply
+ * to the very next turn without touching any agent.
+ * @param profile - the profile model calls run on.
+ * @returns the system prompt text for requests on this profile.
+ */
+export function personaOf(profile: ProviderProfile): string {
+  const persona = profile.persona?.trim()
+  return persona === undefined || persona === '' ? DEFAULT_PERSONA : persona
 }
 
 /** A migrated profile's display name: the endpoint's host, else plain. */
@@ -444,6 +460,8 @@ export function applySettingsPatch(
           throw new Error(`at most ${String(MAX_PROFILES)} profiles can be saved`)
         }
         const requested = profileOpName(value, 'newProfile')
+        const requestedAvatar = profileOpAvatar(value, 'newProfile')
+        const requestedPersona = profileOpPersona(value, 'newProfile')
         const base = activeProfile(next)
         const created: ProviderProfile = {
           id: mintId(),
@@ -451,6 +469,8 @@ export function applySettingsPatch(
           model: base.model,
           ...base.baseUrl !== undefined ? { baseUrl: base.baseUrl } : {},
           ...base.apiKey !== undefined ? { apiKey: base.apiKey } : {},
+          ...requestedAvatar !== undefined ? { avatar: requestedAvatar } : {},
+          ...requestedPersona !== undefined ? { persona: requestedPersona } : {},
         }
         next.profiles.push(created)
         next.activeProfileId = created.id
@@ -497,7 +517,21 @@ export function applySettingsPatch(
         if (typeof value !== 'string') throw new Error('persona must be a string')
         if (value.length > MAX_PERSONA_LENGTH) throw new Error(`persona must be at most ${String(MAX_PERSONA_LENGTH)} characters`)
         const trimmed = value.trim()
-        next.persona = trimmed === '' ? DEFAULT_PERSONA : trimmed
+        const target = activeProfile(next)
+        if (trimmed === '') delete target.persona
+        else target.persona = trimmed
+        break
+      }
+      case 'avatar': {
+        const target = activeProfile(next)
+        if (value === null) {
+          delete target.avatar
+          break
+        }
+        if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > AVATAR_COUNT) {
+          throw new Error(`avatar must be an integer 1-${String(AVATAR_COUNT)}, or null`)
+        }
+        target.avatar = value
         break
       }
       case 'baseUrl': {
@@ -572,6 +606,8 @@ function coerceProfiles(value: unknown): ProviderProfile[] {
       model: candidate.model.trim(),
       ...typeof candidate.baseUrl === 'string' && candidate.baseUrl.trim() !== '' ? { baseUrl: candidate.baseUrl } : {},
       ...typeof candidate.apiKey === 'string' && candidate.apiKey.trim() !== '' ? { apiKey: candidate.apiKey } : {},
+      ...personaField(candidate.persona),
+      ...avatarField(candidate.avatar),
     }
   }).filter((entry): entry is ProviderProfile => entry !== undefined)
   if (profiles.length === 0) throw new Error('profiles must hold at least one valid profile')
@@ -579,6 +615,19 @@ function coerceProfiles(value: unknown): ProviderProfile[] {
     throw new Error('profile ids must be unique')
   }
   return profiles.slice(0, MAX_PROFILES)
+}
+
+/** Sanitize a per-profile persona from a raw file entry; invalid or blank drops out. */
+function personaField(raw: unknown): { persona?: string } {
+  if (typeof raw !== 'string' || raw.length > MAX_PERSONA_LENGTH) return {}
+  const trimmed = raw.trim()
+  return trimmed === '' ? {} : { persona: trimmed }
+}
+
+/** Sanitize a per-profile avatar tile from a raw file entry; invalid numbers drop out. */
+function avatarField(raw: unknown): { avatar?: number } {
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 1 || raw > AVATAR_COUNT) return {}
+  return { avatar: raw }
 }
 
 /** Pull the id out of a profile-operation body, or explain what is missing. */
@@ -603,6 +652,29 @@ function profileOpName(value: unknown, op: string): string | undefined {
   return trimmed
 }
 
+/** Pull an optional avatar tile out of a profile-operation body. */
+function profileOpAvatar(value: unknown, op: string): number | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error(`${op} must be an object`)
+  const avatar = (value as { avatar?: unknown }).avatar
+  if (avatar === undefined) return undefined
+  if (typeof avatar !== 'number' || !Number.isInteger(avatar) || avatar < 1 || avatar > AVATAR_COUNT) {
+    throw new Error(`${op} avatar must be an integer 1-${String(AVATAR_COUNT)}`)
+  }
+  return avatar
+}
+
+/** Pull an optional system prompt out of a profile-operation body. */
+function profileOpPersona(value: unknown, op: string): string | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error(`${op} must be an object`)
+  const persona = (value as { persona?: unknown }).persona
+  if (persona === undefined) return undefined
+  if (typeof persona !== 'string' || persona.length > MAX_PERSONA_LENGTH) {
+    throw new Error(`${op} persona must be a string of at most ${String(MAX_PERSONA_LENGTH)} characters`)
+  }
+  const trimmed = persona.trim()
+  return trimmed === '' ? undefined : trimmed
+}
+
 /**
  * Load settings over the config defaults from the persisted JSON file's
  * contents. A missing or corrupt file falls back to the defaults — settings
@@ -616,11 +688,15 @@ function profileOpName(value: unknown, op: string): string | undefined {
 export function parseSettingsFile(raw: string | undefined, defaults: Config): ChatSettings {
   const base: ChatSettings = {
     provider: defaults.provider,
-    profiles: [{ id: 'default', name: 'Default', model: defaults.model }],
+    profiles: [{
+      id: 'default',
+      name: 'Default',
+      model: defaults.model,
+      ...defaults.persona !== '' && defaults.persona !== DEFAULT_PERSONA ? { persona: defaults.persona } : {},
+    }],
     activeProfileId: 'default',
     ...defaults.reasoningEffort !== undefined ? { reasoningEffort: defaults.reasoningEffort } : {},
     ...defaults.temperature !== undefined ? { temperature: defaults.temperature } : {},
-    persona: defaults.persona === '' ? DEFAULT_PERSONA : defaults.persona,
     searchTool: 'tiny-metasearch',
   }
   if (raw === undefined) return base
@@ -640,6 +716,17 @@ export function parseSettingsFile(raw: string | undefined, defaults: Config): Ch
     if (migrating !== undefined && record.profiles === undefined && typeof record.baseUrl === 'string') {
       migrating.name = deriveProfileName(record.baseUrl)
     }
+    // Legacy files kept one global persona applying to every profile; stamp
+    // it onto each profile without its own, preserving what requests used to
+    // answer with (the patch itself already covered the active one).
+    if (typeof record.persona === 'string') {
+      const legacy = record.persona.trim().slice(0, MAX_PERSONA_LENGTH)
+      if (legacy !== '') {
+        for (const profile of applied.profiles) {
+          if (profile.persona === undefined) profile.persona = legacy
+        }
+      }
+    }
     return applied
   } catch {
     return base
@@ -649,15 +736,16 @@ export function parseSettingsFile(raw: string | undefined, defaults: Config): Ch
 /** Project settings into the JSON body served by `GET /api/config`. The
  * active profile supplies the flat fields; per-profile API keys never cross
  * to the browser, only their presence does. */
-function settingsJson(settings: ChatSettings): Record<string, unknown> {
+export function settingsJson(settings: ChatSettings): Record<string, unknown> {
   const active = activeProfile(settings)
   return {
     provider: settings.provider,
     model: active.model,
     ...settings.reasoningEffort !== undefined ? { reasoningEffort: settings.reasoningEffort } : {},
     ...settings.temperature !== undefined ? { temperature: settings.temperature } : {},
-    persona: settings.persona,
+    persona: personaOf(active),
     ...active.baseUrl !== undefined ? { baseUrl: active.baseUrl } : {},
+    ...active.avatar !== undefined ? { avatar: active.avatar } : {},
     apiKeySet: active.apiKey !== undefined,
     searchTool: settings.searchTool,
     autoCompact: settings.autoCompact ?? true,
@@ -666,6 +754,8 @@ function settingsJson(settings: ChatSettings): Record<string, unknown> {
       id: profile.id,
       name: profile.name,
       model: profile.model,
+      persona: personaOf(profile),
+      ...profile.avatar !== undefined ? { avatar: profile.avatar } : {},
       ...profile.baseUrl !== undefined ? { baseUrl: profile.baseUrl } : {},
       apiKeySet: profile.apiKey !== undefined,
     })),
@@ -683,11 +773,12 @@ async function persistSettings(path: string, settings: ChatSettings): Promise<vo
       model: profile.model,
       ...profile.baseUrl !== undefined ? { baseUrl: profile.baseUrl } : {},
       ...profile.apiKey !== undefined ? { apiKey: profile.apiKey } : {},
+      ...profile.persona !== undefined ? { persona: profile.persona } : {},
+      ...profile.avatar !== undefined ? { avatar: profile.avatar } : {},
     })),
     activeProfileId: settings.activeProfileId,
     ...settings.reasoningEffort !== undefined ? { reasoningEffort: settings.reasoningEffort } : {},
     ...settings.temperature !== undefined ? { temperature: settings.temperature } : {},
-    persona: settings.persona,
     searchTool: settings.searchTool,
     ...settings.autoCompact !== undefined ? { autoCompact: settings.autoCompact } : {},
   }, null, 2)}\n`
@@ -2015,9 +2106,10 @@ export function apply(ctx: Context, config: Config): void {
     }
   })
 
-  // The persona is the whole system prompt, and the settings panel owns it:
-  // one dynamic section evaluated per request keeps panel edits live. Two
-  // app-owned lines follow it. The reply-language anchor exists because
+  // The persona is the whole system prompt, and each model character owns
+  // one: the section resolves through the active profile, so switching or
+  // editing a character changes the very next request. Two app-owned lines
+  // follow it. The reply-language anchor exists because
   // Chinese-base models occasionally drift on Sino-Vietnamese input
   // ("mâu thuẫn" → a Chinese 矛盾 essay); pinning the reply to the user's
   // last message costs ~10 tokens and survives persona edits. The current
@@ -2027,7 +2119,7 @@ export function apply(ctx: Context, config: Config): void {
     promptCtx.systemPrompt.section({
       name: 'app:persona',
       order: promptCtx.systemPrompt.getSectionOrder('DEPLOYMENT_PERSONA_PREFIX'),
-      text: () => settings.persona,
+      text: () => personaOf(activeProfile(settings)),
     })
     promptCtx.systemPrompt.section({
       name: 'app:reply-language',

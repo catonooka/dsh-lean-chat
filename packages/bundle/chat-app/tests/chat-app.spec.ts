@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest'
 import {
   activeProfile,
   applySettingsPatch,
+  DEFAULT_PERSONA,
   RateLimiter,
   attachmentDescriptors,
   cachePolicyFor,
@@ -17,6 +18,7 @@ import {
   InFlightDedup,
   isLocalOrBridgeRequest,
   isLocalRequest,
+  personaOf,
   sortSessionsByActivity,
   SessionListingCache,
   normalizeSearchQuery,
@@ -29,6 +31,7 @@ import {
   projectSurfaceEvent,
   requestChunks,
   bridgeClientOf,
+  settingsJson,
   isExtensionBridgePath,
   sessionVisibleToUser,
   toolCallSummary,
@@ -308,7 +311,6 @@ const baseSettings: ChatSettings = {
   provider: 'deepseek-official',
   profiles: [{ id: 'default', name: 'Default', model: 'deepseek-chat' }],
   activeProfileId: 'default',
-  persona: 'You are a helpful assistant.',
   searchTool: 'tiny-metasearch',
 }
 
@@ -333,10 +335,18 @@ describe('applySettingsPatch', () => {
       })
   })
 
-  it('clears optional fields with null and normalizes an empty persona', () => {
-    const set: ChatSettings = { ...baseSettings, reasoningEffort: 'low', temperature: 1, persona: 'custom' }
-    expect(applySettingsPatch(set, { reasoningEffort: null, temperature: null, persona: '  ' }))
-      .toEqual({ ...baseSettings, persona: 'You are a helpful assistant.' })
+  it('clears optional fields with null and an empty persona back to the default', () => {
+    const set: ChatSettings = {
+      ...baseSettings,
+      reasoningEffort: 'low',
+      temperature: 1,
+      profiles: [{ id: 'default', name: 'Default', model: 'deepseek-chat', persona: 'custom' }],
+    }
+    const cleared = applySettingsPatch(set, { reasoningEffort: null, temperature: null, persona: '  ' })
+    expect(cleared.reasoningEffort).toBeUndefined()
+    expect(cleared.temperature).toBeUndefined()
+    expect(cleared.profiles[0]?.persona).toBeUndefined()
+    expect(personaOf(activeProfile(cleared))).toBe(DEFAULT_PERSONA)
   })
 
   it('rejects unknown keys and invalid values', () => {
@@ -427,6 +437,112 @@ describe('provider profiles', () => {
       profiles: [{ id: 'p', name: 'P', model: 'm' }, { id: 'p', name: 'P2', model: 'm2' }],
     })).toThrow('unique')
   })
+
+  it('sanitizes per-profile persona and avatar on a wholesale replace', () => {
+    const replaced = applySettingsPatch(twoProfiles, {
+      profiles: [
+        { id: 'x', name: 'X', model: 'mx', persona: '  kept  ', avatar: 30 },
+        { id: 'y', name: 'Y', model: 'my', persona: '   ', avatar: 31 },
+        { id: 'z', name: 'Z', model: 'mz', persona: 'x'.repeat(4001), avatar: '3' },
+      ],
+    })
+    expect(replaced.profiles).toEqual([
+      { id: 'x', name: 'X', model: 'mx', persona: 'kept', avatar: 30 },
+      { id: 'y', name: 'Y', model: 'my' },
+      { id: 'z', name: 'Z', model: 'mz' },
+    ])
+  })
+})
+
+describe('model characters — persona and avatar', () => {
+  it('edits the persona of the active profile, and a switch retargets the edit', () => {
+    const edited = applySettingsPatch(twoProfiles, { persona: 'persona a' })
+    expect(edited.profiles.find(profile => profile.id === 'a')?.persona).toBe('persona a')
+    expect(edited.profiles.find(profile => profile.id === 'b')?.persona).toBeUndefined()
+
+    const switched = applySettingsPatch(twoProfiles, { persona: 'persona b', switchProfile: 'b' })
+    expect(switched.activeProfileId).toBe('b')
+    expect(switched.profiles.find(profile => profile.id === 'b')?.persona).toBe('persona b')
+    expect(switched.profiles.find(profile => profile.id === 'a')?.persona).toBeUndefined()
+  })
+
+  it('resolves each profile persona with a default fallback', () => {
+    expect(personaOf({ id: 'x', name: 'X', model: 'm', persona: ' p ' })).toBe('p')
+    expect(personaOf({ id: 'x', name: 'X', model: 'm', persona: '   ' })).toBe(DEFAULT_PERSONA)
+    expect(personaOf({ id: 'x', name: 'X', model: 'm' })).toBe(DEFAULT_PERSONA)
+  })
+
+  it('sets and clears the active character avatar within the tile pool', () => {
+    const set = applySettingsPatch(twoProfiles, { avatar: 11 })
+    expect(set.profiles.find(profile => profile.id === 'a')?.avatar).toBe(11)
+    expect(set.profiles.find(profile => profile.id === 'b')?.avatar).toBeUndefined()
+    expect(applySettingsPatch(set, { avatar: null }).profiles.find(profile => profile.id === 'a')?.avatar).toBeUndefined()
+    expect(() => applySettingsPatch(twoProfiles, { avatar: 31 })).toThrow('avatar must be an integer 1-30')
+    expect(() => applySettingsPatch(twoProfiles, { avatar: 1.5 })).toThrow('avatar must be an integer 1-30')
+    expect(() => applySettingsPatch(twoProfiles, { avatar: '11' })).toThrow('avatar must be an integer 1-30')
+  })
+
+  it('creates a character with its own persona and avatar, cloning only the endpoint', () => {
+    const seeded: ChatSettings = {
+      ...twoProfiles,
+      profiles: [
+        { id: 'a', name: 'Gateway A', model: 'model-a', baseUrl: 'https://a.example/v1', apiKey: 'key-a', persona: 'old persona', avatar: 5 },
+        { id: 'b', name: 'Gateway B', model: 'model-b' },
+      ],
+    }
+    let calls = 0
+    const created = applySettingsPatch(seeded, {
+      newProfile: { name: 'Robo', avatar: 20, persona: 'beep boop' },
+    }, () => {
+      calls += 1
+      return `id${String(calls)}`
+    })
+    expect(created.activeProfileId).toBe('id1')
+    expect(created.profiles.find(profile => profile.id === 'id1')).toEqual({
+      id: 'id1', name: 'Robo', model: 'model-a', baseUrl: 'https://a.example/v1', apiKey: 'key-a',
+      avatar: 20, persona: 'beep boop',
+    })
+  })
+
+  it('creates a bare profile without inheriting the active persona or avatar', () => {
+    const seeded: ChatSettings = {
+      ...twoProfiles,
+      profiles: [{ id: 'a', name: 'Gateway A', model: 'model-a', persona: 'old persona', avatar: 5 }],
+    }
+    const created = applySettingsPatch(seeded, { newProfile: {} }, () => 'n1')
+    expect(created.profiles.find(profile => profile.id === 'n1')).toEqual({ id: 'n1', name: 'Profile 2', model: 'model-a' })
+  })
+
+  it('rejects a new character with an invalid avatar or persona', () => {
+    expect(() => applySettingsPatch(twoProfiles, { newProfile: { avatar: 31 } })).toThrow('newProfile avatar must be an integer 1-30')
+    expect(() => applySettingsPatch(twoProfiles, { newProfile: { persona: 7 } })).toThrow('newProfile persona must be a string')
+    expect(() => applySettingsPatch(twoProfiles, { newProfile: { persona: 'x'.repeat(4001) } })).toThrow('at most 4000')
+  })
+
+  it('projects flat and per-profile persona/avatar without ever serving a key', () => {
+    const seeded: ChatSettings = {
+      ...twoProfiles,
+      profiles: [
+        { id: 'a', name: 'Gateway A', model: 'model-a', apiKey: 'key-a', persona: 'persona a', avatar: 12 },
+        { id: 'b', name: 'Gateway B', model: 'model-b' },
+      ],
+    }
+    expect(settingsJson(seeded)).toEqual({
+      provider: 'deepseek-official',
+      model: 'model-a',
+      persona: 'persona a',
+      avatar: 12,
+      apiKeySet: true,
+      searchTool: 'tiny-metasearch',
+      autoCompact: true,
+      activeProfileId: 'a',
+      profiles: [
+        { id: 'a', name: 'Gateway A', model: 'model-a', persona: 'persona a', avatar: 12, apiKeySet: true },
+        { id: 'b', name: 'Gateway B', model: 'model-b', persona: DEFAULT_PERSONA, apiKeySet: false },
+      ],
+    })
+    expect(JSON.stringify(settingsJson(seeded))).not.toContain('key-a')
+  })
 })
 
 describe('parseSettingsFile', () => {
@@ -465,7 +581,7 @@ describe('parseSettingsFile', () => {
     expect(parsed.activeProfileId).toBe('default')
   })
 
-  it('round-trips a modern profiled file', () => {
+  it('migrates a legacy global persona onto every profile', () => {
     const parsed = parseSettingsFile(JSON.stringify({
       provider: 'deepseek-official',
       profiles: [
@@ -478,12 +594,33 @@ describe('parseSettingsFile', () => {
     expect(parsed).toEqual({
       ...baseSettings,
       profiles: [
-        { id: 'a', name: 'Gateway A', model: 'model-a', baseUrl: 'https://a.example/v1', apiKey: 'key-a' },
-        { id: 'b', name: 'Gateway B', model: 'model-b' },
+        { id: 'a', name: 'Gateway A', model: 'model-a', baseUrl: 'https://a.example/v1', apiKey: 'key-a', persona: 'custom persona' },
+        { id: 'b', name: 'Gateway B', model: 'model-b', persona: 'custom persona' },
       ],
       activeProfileId: 'b',
-      persona: 'custom persona',
     })
+  })
+
+  it('keeps a per-profile persona verbatim when no legacy global one rides along', () => {
+    const parsed = parseSettingsFile(JSON.stringify({
+      profiles: [
+        { id: 'a', name: 'A', model: 'm', persona: 'persona a' },
+        { id: 'b', name: 'B', model: 'm' },
+      ],
+      activeProfileId: 'a',
+    }), baseConfig)
+    expect(parsed.profiles.find(profile => profile.id === 'a')?.persona).toBe('persona a')
+    expect(parsed.profiles.find(profile => profile.id === 'b')?.persona).toBeUndefined()
+    expect(personaOf(activeProfile(parsed))).toBe('persona a')
+  })
+
+  it('stamps a legacy flat file\'s persona onto its migrated profile', () => {
+    const parsed = parseSettingsFile(JSON.stringify({
+      model: 'm2',
+      baseUrl: 'https://gw.example/v1',
+      persona: 'flat persona',
+    }), baseConfig)
+    expect(parsed.profiles[0]?.persona).toBe('flat persona')
   })
 
   it('falls back when the file carries an unknown key', () => {
@@ -534,7 +671,7 @@ describe('applySettingsPatch — boundary corners', () => {
   })
 
   it('accepts the exact persona and API-key caps and rejects one over', () => {
-    expect(applySettingsPatch(baseSettings, { persona: 'p'.repeat(4000) }).persona).toBe('p'.repeat(4000))
+    expect(applySettingsPatch(baseSettings, { persona: 'p'.repeat(4000) }).profiles[0]?.persona).toBe('p'.repeat(4000))
     expect(() => applySettingsPatch(baseSettings, { persona: 'p'.repeat(4001) })).toThrow()
     expect(applySettingsPatch(baseSettings, { apiKey: 'k'.repeat(500) }).profiles[0]?.apiKey).toBe('k'.repeat(500))
     expect(() => applySettingsPatch(baseSettings, { apiKey: 'k'.repeat(501) })).toThrow()
