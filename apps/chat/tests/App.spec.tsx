@@ -75,6 +75,7 @@ async function renderApp(options: {
   users?: { id: string; name: string; avatar?: number; groups?: { id: string; name: string }[] }[]
   listSessionsFor?: (userId: string | undefined, archived: boolean) => { sessions: unknown[]; total: number }
   config?: Record<string, unknown>
+  configPutError?: string
 } = {}): Promise<{
   posts: { url: string; body: Record<string, unknown> }[]
   historyFetches: string[]
@@ -87,6 +88,7 @@ async function renderApp(options: {
   sessionPatches: { id: string; body: Record<string, unknown> }[]
   sessionDeletes: string[]
   configPatches: Record<string, unknown>[]
+  stopPosts: string[]
 }> {
   const sessions = options.sessions ?? []
   const users = options.users ?? [{ id: 'u_main', name: 'catonooka', avatar: 1 }]
@@ -101,6 +103,7 @@ async function renderApp(options: {
   const sessionPatches: { id: string; body: Record<string, unknown> }[] = []
   const sessionDeletes: string[] = []
   const configPatches: Record<string, unknown>[] = []
+  const stopPosts: string[] = []
   const historyFetchCount = new Map<string, number>()
   const streams = [...options.streams ?? []]
   // A miniature settings server, seeded like the real projection: the active
@@ -170,6 +173,17 @@ async function renderApp(options: {
       if (method === 'PUT') {
         const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
         configPatches.push(body)
+        if (options.configPutError !== undefined) {
+          const errorBody = { error: options.configPutError }
+          const errorResponse = {
+            ok: false,
+            status: 400,
+            statusText: 'Bad Request',
+            json: async () => errorBody,
+            text: async () => JSON.stringify(errorBody),
+          }
+          return Promise.resolve({ ...errorResponse, clone: () => errorResponse } as unknown as Response)
+        }
         const profiles = ((configState.profiles as ConfigProfile[] | undefined) ?? [])
           .map(profile => ({ ...profile }))
         const activeId = typeof body.switchProfile === 'string' ? body.switchProfile : String(configState.activeProfileId ?? '')
@@ -246,6 +260,10 @@ async function renderApp(options: {
       if (stream !== undefined) return Promise.resolve(stream)
       return Promise.resolve(sseResponse([{ t: 'turn-end', reason: 'completed' }]))
     }
+    if (url.endsWith('/stop') && method === 'POST') {
+      stopPosts.push(url)
+      return Promise.resolve(jsonResponse({ stopped: true }))
+    }
     return Promise.resolve(jsonResponse({}))
   }))
   render(<App />)
@@ -255,6 +273,7 @@ async function renderApp(options: {
   return {
     posts, historyFetches, uploads, attachmentFetches, sessionListFetches,
     userPatches, userCreates, listHeaders, sessionPatches, sessionDeletes, configPatches,
+    stopPosts,
   }
 }
 
@@ -679,6 +698,45 @@ describe('streaming turn', () => {
     expect(hostile.tagName).toBe('SPAN')
     expect(hostile.closest('a')).toBeNull()
     await screen.findByText('done', {}, { timeout: 3000 })
+  })
+
+  it('shows the searching placeholder when a tool runs before any text lands', async () => {
+    localStorage.setItem('dsh-chat-active', 'sess-a')
+    await renderApp({
+      sessions: [{ id: 'sess-a', title: 'A', items: [] }],
+      streams: [delayedSseResponse([
+        { t: 'tool-start', name: 'web_search', query: 'node 25' },
+        { t: 'delta', text: 'found it live' },
+        { t: 'assistant', text: 'found it' },
+        { t: 'turn-end', reason: 'completed' },
+      ], 40)],
+    })
+    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    fireEvent.change(composer, { target: { value: 'search node' } })
+    fireEvent.keyDown(composer, { key: 'Enter' })
+    // The search opens the turn before any delta: the placeholder says so.
+    await screen.findByText('Searching the web…', {}, { timeout: 3000 })
+    await screen.findByText('found it', {}, { timeout: 3000 })
+  })
+
+  it('stops a running turn from the composer', async () => {
+    localStorage.setItem('dsh-chat-active', 'sess-a')
+    const { stopPosts } = await renderApp({
+      sessions: [{ id: 'sess-a', title: 'A', items: [] }],
+      streams: [timedSseResponse([
+        [{ t: 'delta', text: 'streaming along' }, 20],
+        [{ t: 'assistant', text: 'streaming along' }, 10_000],
+        [{ t: 'turn-end', reason: 'completed' }, 10_000],
+      ])],
+    })
+    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    fireEvent.change(composer, { target: { value: 'go' } })
+    fireEvent.keyDown(composer, { key: 'Enter' })
+    await screen.findByText('streaming along', {}, { timeout: 3000 })
+    // While streaming, the composer's action button is Stop; clicking it
+    // asks the server to end the turn.
+    fireEvent.click(screen.getByRole('button', { name: 'Stop generating' }))
+    await waitFor(() => { expect(stopPosts).toEqual(['/api/sessions/sess-a/stop']) })
   })
 
   it('lands the streamed text as the committed row when no frame supersedes it', async () => {
@@ -1303,6 +1361,37 @@ describe('model characters', () => {
     })
   })
 
+  it('completes a character switch mid-turn and retargets the streaming row', async () => {
+    const { configPatches } = await renderApp({
+      config: { activeProfileId: 'pa', profiles },
+      streams: [timedSseResponse([
+        [{ t: 'delta', text: 'mid-flight words' }, 20],
+        [{ t: 'assistant', text: 'mid-flight words' }, 300],
+        [{ t: 'turn-end', reason: 'completed' }, 0],
+      ])],
+    })
+    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    fireEvent.change(composer, { target: { value: 'go' } })
+    fireEvent.keyDown(composer, { key: 'Enter' })
+    await screen.findByText('mid-flight words', {}, { timeout: 3000 })
+    // Switch from the streaming row's avatar while the turn is still open.
+    const avatarButtons = screen.getAllByRole('button', { name: 'Switch model character' })
+    const streamingAvatar = avatarButtons[avatarButtons.length - 1]!
+    fireEvent.click(streamingAvatar)
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Robo/ }))
+    await waitFor(() => {
+      expect(configPatches).toContainEqual({ switchProfile: 'pb' })
+    })
+    // The row's bot avatar now points at Robo's tile while it finishes.
+    await waitFor(() => {
+      expect(streamingAvatar.querySelector('img')?.getAttribute('src')).toBe('avatars/avatar-22.png')
+    })
+    // And the turn still commits cleanly on the old route.
+    await waitFor(() => {
+      expect(screen.getByLabelText('Try again')).toBeTruthy()
+    }, { timeout: 3000 })
+  })
+
   it('renames the active character from the switcher menu', async () => {
     const { configPatches } = await renderApp({
       config: { activeProfileId: 'pa', profiles },
@@ -1373,6 +1462,45 @@ describe('model characters', () => {
     await waitFor(() => {
       expect(screen.queryByRole('dialog', { name: 'New character' })).toBeNull()
     })
+  })
+
+  it('surfaces a rejected character create in the error bar and keeps the dialog open', async () => {
+    const { configPatches } = await renderApp({
+      config: { activeProfileId: 'pa', profiles },
+      configPutError: 'at most 12 profiles are supported',
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Switch model character' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'New character…' }))
+    const dialog = await screen.findByRole('dialog', { name: 'New character' })
+    fireEvent.change(within(dialog).getByLabelText('Character name'), { target: { value: 'One Too Many' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
+    await waitFor(() => {
+      expect(configPatches).toContainEqual({ newProfile: { name: 'One Too Many', avatar: 11 } })
+    })
+    // The server's refusal reaches the app's alert bar; the dialog survives
+    // so the name is not lost.
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('at most 12 profiles are supported')
+    expect(screen.getByRole('dialog', { name: 'New character' })).toBeTruthy()
+  })
+
+  it('saves model, base URL, and API key edits in one patch onto the active profile', async () => {
+    const { configPatches } = await renderApp({
+      config: { activeProfileId: 'pa', profiles },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /catonooka/ }))
+    const panel = await screen.findByRole('dialog', { name: 'Settings' })
+    fireEvent.change(within(panel).getByLabelText(/^Model/), { target: { value: 'glm-5.3-flash' } })
+    fireEvent.change(within(panel).getByLabelText(/^Base URL/), { target: { value: 'https://gw.example/v1' } })
+    fireEvent.change(within(panel).getByLabelText(/^API key/), { target: { value: 'sk-fresh-key' } })
+    fireEvent.click(within(panel).getByRole('button', { name: 'Save' }))
+    const patch = await waitFor(() => {
+      const found = configPatches.find(body => body.model === 'glm-5.3-flash')
+      expect(found).toBeDefined()
+      return found as Record<string, unknown>
+    })
+    expect(patch.baseUrl).toBe('https://gw.example/v1')
+    expect(patch.apiKey).toBe('sk-fresh-key')
   })
 
   it('saves the system prompt onto the character the panel switched to', async () => {
