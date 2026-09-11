@@ -29,10 +29,16 @@ export function storeAvatar(avatar: number): void {
   localStorage.setItem(AVATAR_KEY, String(avatar))
 }
 
-/** The chat bot's avatar, shown on every assistant message. */
+/** The chat bot's classic avatar, shown when a character has none picked. */
 export const BOT_AVATAR_SRC = 'bot-avatar.png'
 
 /** The served image URL of one avatar tile. */
 export function avatarSrc(avatar: number): string {
   return `avatars/avatar-${String(avatar)}.png`
+}
+
+/** The avatar the active model character answers with: its own tile when
+ * picked, else the classic bot avatar. */
+export function botAvatarSrc(avatar: number | undefined): string {
+  return avatar === undefined ? BOT_AVATAR_SRC : avatarSrc(avatar)
 }

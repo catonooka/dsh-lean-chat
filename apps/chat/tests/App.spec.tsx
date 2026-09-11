@@ -8,7 +8,7 @@
  * The network is stubbed per test — these exercise the wiring, not the API.
  */
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { SESSION_PAGE_SIZE, setActingUser } from '../src/api.ts'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App, { mergeSessionPage } from '../src/App.tsx'
@@ -57,6 +57,15 @@ interface SessionFixture {
  * Render the app against a fetch router: sessions + config on mount, message
  * history for known sessions, and a queue of SSE streams for sends.
  */
+/** A profile row as the miniature config server below reshapes it. */
+interface ConfigProfile {
+  id: string
+  name: string
+  model: string
+  persona?: string
+  avatar?: number
+}
+
 async function renderApp(options: {
   sessions?: SessionFixture[]
   activeId?: string
@@ -64,6 +73,7 @@ async function renderApp(options: {
   abilities?: { image: 'yes' | 'no' | 'unknown'; video: 'yes' | 'no' | 'unknown' }
   users?: { id: string; name: string; avatar?: number; groups?: { id: string; name: string }[] }[]
   listSessionsFor?: (userId: string | undefined, archived: boolean) => { sessions: unknown[]; total: number }
+  config?: Record<string, unknown>
 } = {}): Promise<{
   posts: { url: string; body: Record<string, unknown> }[]
   historyFetches: string[]
@@ -75,6 +85,7 @@ async function renderApp(options: {
   listHeaders: (string | undefined)[]
   sessionPatches: { id: string; body: Record<string, unknown> }[]
   sessionDeletes: string[]
+  configPatches: Record<string, unknown>[]
 }> {
   const sessions = options.sessions ?? []
   const users = options.users ?? [{ id: 'u_main', name: 'catonooka', avatar: 1 }]
@@ -88,8 +99,12 @@ async function renderApp(options: {
   const listHeaders: (string | undefined)[] = []
   const sessionPatches: { id: string; body: Record<string, unknown> }[] = []
   const sessionDeletes: string[] = []
+  const configPatches: Record<string, unknown>[] = []
   const historyFetchCount = new Map<string, number>()
   const streams = [...options.streams ?? []]
+  // A miniature settings server: PUT applies switch/avatar/persona to the
+  // active profile so the client state moves exactly like the real one.
+  let configState: Record<string, unknown> = { provider: 'p', model: 'm', persona: 'x', ...(options.config ?? {}) }
   const summaries = sessions.map(session => ({
     id: session.id,
     title: session.title,
@@ -139,7 +154,34 @@ async function renderApp(options: {
       sessionDeletes.push(sessionPatch[1] ?? '')
       return Promise.resolve(jsonResponse({ deleted: true }))
     }
-    if (url === '/api/config') return Promise.resolve(jsonResponse({ provider: 'p', model: 'm', persona: 'x' }))
+    if (url === '/api/config') {
+      if (method === 'PUT') {
+        const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
+        configPatches.push(body)
+        const profiles = ((configState.profiles as ConfigProfile[] | undefined) ?? [])
+          .map(profile => ({ ...profile }))
+        const activeId = typeof body.switchProfile === 'string' ? body.switchProfile : String(configState.activeProfileId ?? '')
+        const active = profiles.find(profile => profile.id === activeId)
+        if (active !== undefined) {
+          if (body.avatar === null) delete active.avatar
+          else if (body.avatar !== undefined) active.avatar = body.avatar as number
+          if (typeof body.persona === 'string') {
+            if (body.persona.trim() === '') delete active.persona
+            else active.persona = body.persona
+          }
+        }
+        configState = {
+          ...configState,
+          ...(active !== undefined
+            ? { model: active.model, persona: active.persona ?? 'You are a helpful assistant.', ...active.avatar !== undefined ? { avatar: active.avatar } : { avatar: undefined } }
+            : {}),
+          activeProfileId: activeId,
+          profiles,
+        }
+        return Promise.resolve(jsonResponse(configState))
+      }
+      return Promise.resolve(jsonResponse(configState))
+    }
     if (url === '/api/chrome/status') {
       return Promise.resolve(jsonResponse({ extension: true, clients: [{ client: 'work' }], cdp: false }))
     }
@@ -186,7 +228,7 @@ async function renderApp(options: {
   await new Promise((resolve) => { setTimeout(resolve, 0) })
   return {
     posts, historyFetches, uploads, attachmentFetches, sessionListFetches,
-    userPatches, userCreates, listHeaders, sessionPatches, sessionDeletes,
+    userPatches, userCreates, listHeaders, sessionPatches, sessionDeletes, configPatches,
   }
 }
 
@@ -1087,5 +1129,59 @@ describe('settings users section', () => {
     await waitFor(() => {
       expect(userPatches).toContainEqual({ id: 'u_main', body: { name: 'Renamed User' } })
     })
+  })
+})
+
+describe('model characters', () => {
+  const profiles = [
+    { id: 'pa', name: 'Helper', model: 'model-a' },
+    { id: 'pb', name: 'Robo', model: 'model-b', avatar: 22 },
+  ]
+
+  it('opens the switcher from the welcome logo and swaps the bot avatar on switch', async () => {
+    const { configPatches } = await renderApp({
+      config: { activeProfileId: 'pa', profiles },
+    })
+    const welcome = screen.getByRole('button', { name: 'Switch model character' })
+    // The active character has no tile, so the classic bot avatar shows.
+    expect(welcome.querySelector('img')?.getAttribute('src')).toBe('bot-avatar.png')
+    expect(screen.getByText('Helper · model-a')).toBeTruthy()
+    fireEvent.click(welcome)
+    const menu = await screen.findByRole('menu', { name: 'Model characters' })
+    expect(menu.textContent).toContain('Helper')
+    expect(menu.textContent).toContain('Robo')
+    fireEvent.click(within(menu).getByRole('menuitem', { name: /Robo/ }))
+    await waitFor(() => {
+      expect(configPatches).toContainEqual({ switchProfile: 'pb' })
+    })
+    const swapped = await screen.findByRole('button', { name: 'Switch model character' })
+    expect(swapped.querySelector('img')?.getAttribute('src')).toBe('avatars/avatar-22.png')
+    expect(screen.getByText('Robo · model-b')).toBeTruthy()
+  })
+
+  it('opens the switcher from an assistant message avatar and closes on Escape', async () => {
+    localStorage.setItem('dsh-chat-active', 'sess-a')
+    await renderApp({
+      sessions: [{ id: 'sess-a', title: 'A', items: [assistantItem('hello there')] }],
+      config: { activeProfileId: 'pa', profiles },
+    })
+    await screen.findByText('hello there')
+    const avatarButtons = screen.getAllByRole('button', { name: 'Switch model character' })
+    fireEvent.click(avatarButtons[0]!)
+    const menu = await screen.findByRole('menu', { name: 'Model characters' })
+    expect(menu.textContent).toContain('Robo')
+    fireEvent.keyDown(window, { key: 'Escape' })
+    await waitFor(() => {
+      expect(screen.queryByRole('menu', { name: 'Model characters' })).toBeNull()
+    })
+  })
+
+  it('edit-in-settings opens the settings panel', async () => {
+    await renderApp({
+      config: { activeProfileId: 'pa', profiles },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Switch model character' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Edit in settings' }))
+    await screen.findByRole('dialog')
   })
 })

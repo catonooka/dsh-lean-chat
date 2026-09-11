@@ -59,11 +59,14 @@ export interface SearchHit {
   updatedAt: number
 }
 
-/** One saved provider profile as the server serves it (never its key). */
+/** One saved provider profile (a "model character") as the server serves it
+ * (never its key). Persona and avatar are the character's own. */
 export interface ProfileInfo {
   id: string
   name: string
   model: string
+  persona?: string
+  avatar?: number
   baseUrl?: string
   apiKeySet?: boolean
 }
@@ -88,7 +91,10 @@ export interface SettingsPatch {
   model?: string
   reasoningEffort?: string | null
   temperature?: number | null
+  /** The active character's system prompt; empty clears to the default. */
   persona?: string
+  /** The active character's avatar tile; `null` restores the classic bot avatar. */
+  avatar?: number | null
   baseUrl?: string | null
   apiKey?: string
   searchTool?: string
@@ -97,7 +103,7 @@ export interface SettingsPatch {
   /** Make this profile active; its fields become the flat projection. */
   switchProfile?: string
   renameProfile?: { id: string; name: string }
-  newProfile?: { name?: string }
+  newProfile?: { name?: string; avatar?: number; persona?: string }
   deleteProfile?: { id: string }
 }
 

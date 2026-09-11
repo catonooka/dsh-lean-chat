@@ -1,6 +1,6 @@
 /** The chat surface: sidebar of conversations, streamed thread, composer. */
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent as ReactDragEvent, type JSX } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent as ReactDragEvent, type JSX, type MouseEvent as ReactMouseEvent } from 'react'
 import { randomUUID } from '@deepseek-ai/dsh-util-crypto'
 import {
   checkModelAbilities,
@@ -17,6 +17,7 @@ import {
   sendMessage,
   setActingUser,
   stopSession,
+  updateConfig,
   updateUser,
   SESSION_PAGE_SIZE,
   fetchAttachmentBlob,
@@ -37,8 +38,9 @@ import { AvatarModal } from './AvatarModal.tsx'
 import { AddUserModal } from './AddUserModal.tsx'
 import { ConfirmDeleteDialog, MoveGroupDialog, NewGroupDialog } from './SessionDialogs.tsx'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu.tsx'
+import { CharacterMenu } from './CharacterMenu.tsx'
 import { UserMenu } from './UserMenu.tsx'
-import { BOT_AVATAR_SRC, avatarSrc, readStoredAvatar, storeAvatar } from './avatar.ts'
+import { botAvatarSrc, avatarSrc, readStoredAvatar, storeAvatar } from './avatar.ts'
 import { StreamFeed } from './delta.ts'
 import { copyToClipboard } from './clipboard.ts'
 import { replyLabel, replyTargetFor, type ReplyContext } from './reply.ts'
@@ -370,6 +372,12 @@ interface RowActions {
   onRetry: () => void
 }
 
+/** The active character's avatar image source shared by every bot slot. */
+interface BotAvatarProps {
+  avatar: string
+  onAvatarClick: (event: ReactMouseEvent<HTMLButtonElement>) => void
+}
+
 /** One user bubble with its reply quote, attachments, and hover actions. */
 const UserRow = memo(function UserRow({ item, trailing, streaming, onReply, onRetry }: RowActions & { item: ChatItem }): JSX.Element {
   return (
@@ -403,11 +411,14 @@ const UserRow = memo(function UserRow({ item, trailing, streaming, onReply, onRe
 
 /** One assistant bubble: avatar, markdown text, and hover actions. */
 const AssistantRow = memo(function AssistantRow(
-  { item, trailing, streaming, onReply, onRetry }: RowActions & { item: ChatItem },
+  { item, trailing, streaming, onReply, onRetry, avatar, onAvatarClick }:
+    RowActions & { item: ChatItem } & BotAvatarProps,
 ): JSX.Element {
   return (
     <div className="row assistant">
-      <div className="assistant-avatar" aria-hidden="true"><img src={BOT_AVATAR_SRC} alt="" draggable={false} /></div>
+      <button type="button" className="assistant-avatar" aria-label="Switch model character" onClick={onAvatarClick}>
+        <img src={avatar} alt="" draggable={false} />
+      </button>
       <div className="assistant-col">
         <AssistantText text={item.text ?? ''} streaming={false} />
         {!streaming && trailing && item.text !== undefined && item.text !== ''
@@ -611,6 +622,8 @@ export default function App(): JSX.Element {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | undefined>(undefined)
   const [archivedView, setArchivedView] = useState(false)
   const [archivedSessions, setArchivedSessions] = useState<SessionSummary[]>([])
+  // The model character switcher, opened by clicking the bot avatar.
+  const [characterMenu, setCharacterMenu] = useState<{ x: number; y: number } | undefined>(undefined)
   const [collapsed, setCollapsed] = useState<boolean>(() =>
     typeof localStorage !== 'undefined' && localStorage.getItem(COLLAPSED_KEY) === '1')
   const [error, setError] = useState<string | undefined>(undefined)
@@ -1044,6 +1057,25 @@ export default function App(): JSX.Element {
       .catch((err: unknown) => { setError(err instanceof Error ? err.message : String(err)) })
   }, [switchUser])
 
+  // ── model characters (the provider profiles the bot avatar switches) ──────
+
+  /** The active character: the profile the server routes requests through. */
+  const activeCharacter = config?.profiles?.find(profile => profile.id === config.activeProfileId)
+  const botAvatar = botAvatarSrc(activeCharacter?.avatar)
+
+  /** Open the character switcher at a click on any bot avatar slot. */
+  const openCharacterMenu = useCallback((event: ReactMouseEvent<HTMLButtonElement>): void => {
+    setCharacterMenu({ x: event.clientX, y: event.clientY })
+  }, [])
+
+  /** Switch the model character; the running turn finishes on the old route. */
+  const switchCharacter = useCallback((id: string): void => {
+    if (id === activeCharacter?.id) return
+    updateConfig({ switchProfile: id })
+      .then(setConfig)
+      .catch((err: unknown) => { setError(err instanceof Error ? err.message : String(err)) })
+  }, [activeCharacter?.id])
+
   // ── chat management (context-menu actions) ────────────────────────────────
 
   const openArchived = useCallback((): void => {
@@ -1360,8 +1392,17 @@ export default function App(): JSX.Element {
         </div>
       )
     }
-    return <AssistantRow key={index} item={item} trailing={trailing} streaming={streaming} onReply={beginReply} onRetry={retry} />
-  }), [items, streaming, beginReply, retry])
+    return <AssistantRow
+      key={index}
+      item={item}
+      trailing={trailing}
+      streaming={streaming}
+      onReply={beginReply}
+      onRetry={retry}
+      avatar={botAvatar}
+      onAvatarClick={openCharacterMenu}
+    />
+  }), [items, streaming, beginReply, retry, botAvatar, openCharacterMenu])
 
   return (
     <div className={collapsed ? 'app collapsed' : 'app'}>
@@ -1532,8 +1573,18 @@ export default function App(): JSX.Element {
           {items.length === 0 && feed === undefined
             ? (
               <div className="welcome">
-                <div className="welcome-mark" aria-hidden="true"><img src={BOT_AVATAR_SRC} alt="" draggable={false} /></div>
+                <button
+                  type="button"
+                  className="welcome-mark"
+                  aria-label="Switch model character"
+                  onClick={openCharacterMenu}
+                >
+                  <img src={botAvatar} alt="" draggable={false} />
+                </button>
                 <div className="welcome-title">What can I help with?</div>
+                {activeCharacter !== undefined
+                  ? <div className="welcome-sub">{activeCharacter.name} · {activeCharacter.model}</div>
+                  : undefined}
               </div>
             )
             : (
@@ -1542,7 +1593,14 @@ export default function App(): JSX.Element {
                 {streaming
                   ? (
                     <div className="row assistant">
-                      <div className="assistant-avatar" aria-hidden="true"><img src={BOT_AVATAR_SRC} alt="" draggable={false} /></div>
+                      <button
+                        type="button"
+                        className="assistant-avatar"
+                        aria-label="Switch model character"
+                        onClick={openCharacterMenu}
+                      >
+                        <img src={botAvatar} alt="" draggable={false} />
+                      </button>
                       <StreamTurn feed={feed ?? new StreamFeed()} searching={toolRunning} follow={followStream} />
                     </div>
                   )
@@ -1703,6 +1761,20 @@ export default function App(): JSX.Element {
             y={chatMenu.y}
             items={chatMenuItems}
             onClose={() => { setChatMenu(undefined) }}
+          />
+        )
+        : undefined}
+      {characterMenu !== undefined && config?.profiles !== undefined
+        ? (
+          <CharacterMenu
+            x={characterMenu.x}
+            y={characterMenu.y}
+            characters={config.profiles}
+            activeId={config.activeProfileId}
+            onSwitch={switchCharacter}
+            onNew={() => { setSettingsOpen(true) }}
+            onManage={() => { setSettingsOpen(true) }}
+            onClose={() => { setCharacterMenu(undefined) }}
           />
         )
         : undefined}
