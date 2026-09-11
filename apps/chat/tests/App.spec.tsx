@@ -102,9 +102,19 @@ async function renderApp(options: {
   const configPatches: Record<string, unknown>[] = []
   const historyFetchCount = new Map<string, number>()
   const streams = [...options.streams ?? []]
-  // A miniature settings server: PUT applies switch/avatar/persona to the
-  // active profile so the client state moves exactly like the real one.
-  let configState: Record<string, unknown> = { provider: 'p', model: 'm', persona: 'x', ...(options.config ?? {}) }
+  // A miniature settings server, seeded like the real projection: the active
+  // profile supplies the flat model/persona/avatar. PUT applies
+  // switch/avatar/persona to the active profile so the client state moves
+  // exactly like the real one.
+  const seedProfiles = options.config?.profiles as ConfigProfile[] | undefined
+  const seedActive = seedProfiles?.find(profile => profile.id === options.config?.activeProfileId) ?? seedProfiles?.[0]
+  let configState: Record<string, unknown> = {
+    provider: 'p',
+    model: seedActive?.model ?? 'm',
+    persona: seedActive?.persona ?? 'x',
+    ...seedActive?.avatar !== undefined ? { avatar: seedActive.avatar } : {},
+    ...(options.config ?? {}),
+  }
   const summaries = sessions.map(session => ({
     id: session.id,
     title: session.title,
@@ -1134,8 +1144,8 @@ describe('settings users section', () => {
 
 describe('model characters', () => {
   const profiles = [
-    { id: 'pa', name: 'Helper', model: 'model-a' },
-    { id: 'pb', name: 'Robo', model: 'model-b', avatar: 22 },
+    { id: 'pa', name: 'Helper', model: 'model-a', persona: 'helper persona' },
+    { id: 'pb', name: 'Robo', model: 'model-b', persona: 'robo persona', avatar: 22 },
   ]
 
   it('opens the switcher from the welcome logo and swaps the bot avatar on switch', async () => {
@@ -1159,6 +1169,16 @@ describe('model characters', () => {
     expect(screen.getByText('Robo · model-b')).toBeTruthy()
   })
 
+  it('marks only the active character row as active', async () => {
+    await renderApp({
+      config: { activeProfileId: 'pa', profiles },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Switch model character' }))
+    const menu = await screen.findByRole('menu', { name: 'Model characters' })
+    expect(within(menu).getByRole('menuitem', { name: /Helper/ }).className).toContain('active')
+    expect(within(menu).getByRole('menuitem', { name: /Robo/ }).className).not.toContain('active')
+  })
+
   it('opens the switcher from an assistant message avatar and closes on Escape', async () => {
     localStorage.setItem('dsh-chat-active', 'sess-a')
     await renderApp({
@@ -1168,6 +1188,31 @@ describe('model characters', () => {
     await screen.findByText('hello there')
     const avatarButtons = screen.getAllByRole('button', { name: 'Switch model character' })
     fireEvent.click(avatarButtons[0]!)
+    const menu = await screen.findByRole('menu', { name: 'Model characters' })
+    expect(menu.textContent).toContain('Robo')
+    fireEvent.keyDown(window, { key: 'Escape' })
+    await waitFor(() => {
+      expect(screen.queryByRole('menu', { name: 'Model characters' })).toBeNull()
+    })
+  })
+
+  it('opens the switcher from the streaming row while a turn runs', async () => {
+    localStorage.setItem('dsh-chat-active', 'sess-a')
+    await renderApp({
+      sessions: [{ id: 'sess-a', title: 'A', items: [] }],
+      config: { activeProfileId: 'pa', profiles },
+      streams: [timedSseResponse([
+        [{ t: 'delta', text: 'mid-flight words' }, 20],
+        [{ t: 'turn-end', reason: 'completed' }, 10_000],
+      ])],
+    })
+    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    fireEvent.change(composer, { target: { value: 'go' } })
+    fireEvent.keyDown(composer, { key: 'Enter' })
+    await screen.findByText('mid-flight words', {}, { timeout: 3000 })
+    // The streaming row's avatar is the last bot slot in the thread.
+    const avatarButtons = screen.getAllByRole('button', { name: 'Switch model character' })
+    fireEvent.click(avatarButtons[avatarButtons.length - 1]!)
     const menu = await screen.findByRole('menu', { name: 'Model characters' })
     expect(menu.textContent).toContain('Robo')
     fireEvent.keyDown(window, { key: 'Escape' })
@@ -1206,6 +1251,28 @@ describe('model characters', () => {
     })
   })
 
+  it('gates the new-character dialog on a name and submits from the Enter key', async () => {
+    const { configPatches } = await renderApp({
+      config: { activeProfileId: 'pa', profiles },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Switch model character' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'New character…' }))
+    const dialog = await screen.findByRole('dialog', { name: 'New character' })
+    // No name yet: Create stays disabled and the classic tile is pre-picked.
+    const create = within(dialog).getByRole('button', { name: 'Create' }) as HTMLButtonElement
+    expect(create.disabled).toBe(true)
+    expect(within(dialog).getByRole('button', { name: 'Classic avatar' }).className).toContain('active')
+    const nameInput = within(dialog).getByLabelText('Character name')
+    fireEvent.change(nameInput, { target: { value: 'Bare' } })
+    fireEvent.keyDown(nameInput, { key: 'Enter' })
+    await waitFor(() => {
+      expect(configPatches).toContainEqual({ newProfile: { name: 'Bare' } })
+    })
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'New character' })).toBeNull()
+    })
+  })
+
   it('saves the system prompt onto the character the panel switched to', async () => {
     const { configPatches } = await renderApp({
       config: { activeProfileId: 'pa', profiles },
@@ -1223,6 +1290,23 @@ describe('model characters', () => {
     expect(patch).toMatchObject({ switchProfile: 'pb', persona: 'Be terse.' })
   })
 
+  it('re-seeds the system prompt and avatar rows when the panel switches character', async () => {
+    await renderApp({
+      config: { activeProfileId: 'pa', profiles },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /catonooka/ }))
+    const panel = await screen.findByRole('dialog', { name: 'Settings' })
+    expect(within(panel).getByLabelText<HTMLTextAreaElement>('System prompt').value).toBe('helper persona')
+    // The user-avatar grid also labels a tile "Avatar 22"; only the character
+    // grid's tile carries the active state here.
+    expect(within(panel).getAllByRole('button', { name: 'Avatar 22' })
+      .filter(button => button.className.includes('active'))).toHaveLength(0)
+    fireEvent.change(within(panel).getByLabelText('Provider profile'), { target: { value: 'pb' } })
+    expect(within(panel).getByLabelText<HTMLTextAreaElement>('System prompt').value).toBe('robo persona')
+    expect(within(panel).getAllByRole('button', { name: 'Avatar 22' })
+      .filter(button => button.className.includes('active'))).toHaveLength(1)
+  })
+
   it('applies a character avatar tile instantly from settings', async () => {
     const { configPatches } = await renderApp({
       config: { activeProfileId: 'pa', profiles },
@@ -1233,6 +1317,18 @@ describe('model characters', () => {
     fireEvent.click(grid[0]!)
     await waitFor(() => {
       expect(configPatches).toContainEqual({ avatar: 22 })
+    })
+  })
+
+  it('restores the classic avatar instantly from settings', async () => {
+    const { configPatches } = await renderApp({
+      config: { activeProfileId: 'pb', profiles },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /catonooka/ }))
+    const panel = await screen.findByRole('dialog', { name: 'Settings' })
+    fireEvent.click(within(panel).getByRole('button', { name: 'Classic avatar' }))
+    await waitFor(() => {
+      expect(configPatches).toContainEqual({ avatar: null })
     })
   })
 })

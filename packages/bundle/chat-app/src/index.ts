@@ -708,19 +708,22 @@ export function parseSettingsFile(raw: string | undefined, defaults: Config): Ch
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return base
   const record = parsed as Record<string, unknown>
+  // A legacy file's global persona never re-enters the patch (an oversized
+  // one must not sink the whole overlay); the migration below re-attaches it.
+  const { persona: legacyPersona, ...rest } = record
   try {
-    const applied = applySettingsPatch(base, record)
+    const applied = applySettingsPatch(base, rest)
     // A legacy flat file names its migrated profile after the gateway host —
     // derived only once the whole overlay proved valid.
     const migrating = applied.profiles[0]
-    if (migrating !== undefined && record.profiles === undefined && typeof record.baseUrl === 'string') {
-      migrating.name = deriveProfileName(record.baseUrl)
+    if (migrating !== undefined && rest.profiles === undefined && typeof rest.baseUrl === 'string') {
+      migrating.name = deriveProfileName(rest.baseUrl)
     }
     // Legacy files kept one global persona applying to every profile; stamp
     // it onto each profile without its own, preserving what requests used to
-    // answer with (the patch itself already covered the active one).
-    if (typeof record.persona === 'string') {
-      const legacy = record.persona.trim().slice(0, MAX_PERSONA_LENGTH)
+    // answer with.
+    if (typeof legacyPersona === 'string') {
+      const legacy = legacyPersona.trim().slice(0, MAX_PERSONA_LENGTH)
       if (legacy !== '') {
         for (const profile of applied.profiles) {
           if (profile.persona === undefined) profile.persona = legacy

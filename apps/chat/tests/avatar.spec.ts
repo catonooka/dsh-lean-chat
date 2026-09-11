@@ -4,7 +4,9 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AVATAR_COUNT, BOT_AVATAR_SRC, avatarSrc, normalizeAvatar, readStoredAvatar, storeAvatar } from '../src/avatar.ts'
+import {
+  AVATAR_COUNT, BOT_AVATAR_SRC, avatarSrc, botAvatarSrc, normalizeAvatar, readStoredAvatar, storeAvatar,
+} from '../src/avatar.ts'
 
 describe('normalizeAvatar', () => {
   it('accepts each avatar number as a stored string', () => {
@@ -57,6 +59,18 @@ describe('stored avatar', () => {
 describe('bot avatar', () => {
   it('points at the served chat bot image', () => {
     expect(BOT_AVATAR_SRC).toBe('bot-avatar.png')
+  })
+})
+
+describe('botAvatarSrc', () => {
+  it('falls back to the classic bot avatar when the character has no tile', () => {
+    expect(botAvatarSrc(undefined)).toBe('bot-avatar.png')
+  })
+
+  it('serves the character tile once picked, person or robot', () => {
+    expect(botAvatarSrc(1)).toBe('avatars/avatar-1.png')
+    expect(botAvatarSrc(11)).toBe('avatars/avatar-11.png')
+    expect(botAvatarSrc(30)).toBe('avatars/avatar-30.png')
   })
 })
 

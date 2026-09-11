@@ -444,13 +444,37 @@ describe('provider profiles', () => {
         { id: 'x', name: 'X', model: 'mx', persona: '  kept  ', avatar: 30 },
         { id: 'y', name: 'Y', model: 'my', persona: '   ', avatar: 31 },
         { id: 'z', name: 'Z', model: 'mz', persona: 'x'.repeat(4001), avatar: '3' },
+        { id: 'w', name: 'W', model: 'mw', avatar: 0 },
       ],
     })
     expect(replaced.profiles).toEqual([
       { id: 'x', name: 'X', model: 'mx', persona: 'kept', avatar: 30 },
       { id: 'y', name: 'Y', model: 'my' },
       { id: 'z', name: 'Z', model: 'mz' },
+      { id: 'w', name: 'W', model: 'mw' },
     ])
+  })
+
+  it('lands an avatar edit on the profile the same patch switches to', () => {
+    const patched = applySettingsPatch(twoProfiles, { switchProfile: 'b', avatar: 5 })
+    expect(patched.activeProfileId).toBe('b')
+    expect(patched.profiles.find(profile => profile.id === 'b')?.avatar).toBe(5)
+    expect(patched.profiles.find(profile => profile.id === 'a')?.avatar).toBeUndefined()
+  })
+
+  it('drops a blank persona off a new character instead of storing it', () => {
+    const seeded: ChatSettings = {
+      ...twoProfiles,
+      profiles: [{ id: 'a', name: 'Gateway A', model: 'model-a', persona: 'old persona' }],
+    }
+    const created = applySettingsPatch(seeded, { newProfile: { name: 'Bare', persona: '   ' } }, () => 'n2')
+    expect(created.profiles.find(profile => profile.id === 'n2')).toEqual({ id: 'n2', name: 'Bare', model: 'model-a' })
+  })
+
+  it('clamps an oversized legacy persona during migration', () => {
+    const long = 'x'.repeat(4200)
+    const parsed = parseSettingsFile(JSON.stringify({ model: 'm2', persona: long }), baseConfig)
+    expect(parsed.profiles[0]?.persona).toBe('x'.repeat(4000))
   })
 })
 
