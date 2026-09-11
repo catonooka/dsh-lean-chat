@@ -328,7 +328,13 @@ with 403 so the client can refetch the roster and self-heal.
 
 - `GET /api/config` — provider and model
 - `GET/PUT /api/config` — runtime settings (provider profiles, model,
-  persona, temperature, search tool, auto-compact)
+  persona, temperature, search tool, auto-compact). The PUT patch edits the
+  **active** profile: `persona` (that character's whole system prompt; empty
+  clears to the default) and `avatar` (tile 1-30, `null` restores the
+  classic bot avatar) are per-character, `newProfile {name?, avatar?,
+  persona?}` clones the endpoint/key/model but starts fresh, and a legacy
+  file's global persona is migrated onto every profile at load. The response
+  projects each profile's persona/avatar and never serves API keys
 - `GET /api/users` · `POST /api/users` `{name, avatar?, chromeProfile?}` ·
   `PATCH /api/users/:id` `{name?, avatar?, chromeProfile?, groups?}` — the
   user-profile roster; switching is pure client state (the header)
@@ -368,6 +374,20 @@ a turn keeps its Chrome profile across user switches. The extension is not
 involved: it keeps labeling itself per Chrome profile in its options, and
 the Settings Users row (plus the add-user dialog) picks which label each
 user prefers.
+
+## Model characters
+
+The provider profiles double as **model characters**: each carries its own
+system prompt and avatar tile alongside the endpoint/key/model. Clicking
+the bot avatar (welcome mark or any assistant message) opens a switcher —
+one `switchProfile` call, no reload; the system-prompt section resolves
+through the active profile per request, so the persona change lands on the
+very next message, while a running turn finishes on its old route. New
+characters are created from the switcher's dialog (name + avatar + system
+prompt over a clone of the current endpoint) or edited in Settings, whose
+System prompt and Character avatar rows target the selected character.
+Avatar tiles 1-10 are people, 11-30 the robot set, shared with user
+profiles; a character without a tile shows the classic bot avatar.
 
 ## Performance model
 
