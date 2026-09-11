@@ -398,6 +398,40 @@ profiles only, the robot tiles 11-30 to model characters only — the pickers
 offer their own set and the server rejects a tile from the wrong pool. A
 character without a tile shows the classic bot avatar.
 
+## Security model
+
+The app's trust model is one local user on a loopback server; anything running
+as that OS user is out of scope. Inside that model:
+
+- **Authentication**: every non-bridge `/api` route requires the boot-minted
+  session token (a 122-bit UUID persisted `0600` under `$DSH_HOME`, compared in
+  constant time via SHA-256 digests + `timingSafeEqual`). `index.html` hands it
+  out as an `HttpOnly; SameSite=Strict` cookie — and always serves in full
+  (never a 304) so the cookie reissues after a token file is re-minted.
+- **Network fence**: the server binds loopback only (`--host 0.0.0.0` is
+  rejected), and requests with a non-loopback `Host` or `Origin` are refused,
+  which blocks DNS rebinding. Static responses carry `nosniff` and frame denial.
+- **The bridge exception**: `/api/chrome/next` and `/api/chrome/result` accept
+  `chrome-extension://` origins without the token — any installed extension can
+  observe search jobs and settle them with fabricated results, but nothing
+  else. This is a deliberate trade-off for the companion extension's
+  keyless setup.
+- **Key handling**: the API key is stored only in `chat-settings.json`, written
+  atomically (temp file + rename, owner-only) so a crash can never truncate it,
+  and never serialized to the browser (`apiKeySet` is the only projection).
+  The server does send the key to whichever `baseUrl` the active profile
+  names, including plain `http://` (the panel warns) — pointing a profile at
+  an endpoint is an act of trust by the owner.
+- **Payload safety**: `PUT /api/config` rejects unknown keys (no recursive
+  merge, no prototype pollution) and bounds every field; session ids are
+  pattern-validated before any disk use; static serving resolves and
+  prefix-checks paths; assistant markdown renders through an escape-first,
+  fixed-vocabulary renderer, and every model- or search-fed link — markdown
+  and React anchors alike — is gated on http(s)-only schemes.
+- **Streams**: SSE writes track per-client backpressure and close a connection
+  past a 4MB undelivered backlog (history is durable; the client refetches),
+  and a 15s comment ping keeps idle connections alive.
+
 ## Performance model
 
 Where the hot paths spend their budget, and what keeps them flat:
@@ -416,6 +450,9 @@ Where the hot paths spend their budget, and what keeps them flat:
   only the streaming row re-renders per 50ms batch, its markdown re-parses
   at a 200ms throttle, and history rows plus the sidebar are memoized so
   typing and streaming leave them untouched.
+- **Avatars**: the 31-tile set is 128px 256-color PNGs (316KB total, down
+  from 3.6MB) and a spec caps any regrowth; non-hashed files revalidate by
+  ETag (size + mtime) so a reload answers 304 instead of re-sending bytes.
 - **Lifetime**: one plugin teardown retires every agent (per-agent effect
   closures would pin each conversation's event log for the process life);
   the in-memory activity ledger trims to its persisted 500 entries; blob
