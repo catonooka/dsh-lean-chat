@@ -4,6 +4,8 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { stat } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
 import {
   AVATAR_COUNT, BOT_AVATAR_COUNT, BOT_AVATAR_FIRST, BOT_AVATAR_SRC, avatarSrc, botAvatarSrc,
   botAvatarTiles, normalizeAvatar, readStoredAvatar, storeAvatar,
@@ -90,5 +92,23 @@ describe('avatarSrc', () => {
     expect(avatarSrc(10)).toBe('avatars/avatar-10.png')
     expect(avatarSrc(11)).toBe('avatars/avatar-11.png')
     expect(avatarSrc(30)).toBe('avatars/avatar-30.png')
+  })
+})
+
+describe('avatar tile weight', () => {
+  it('keeps every tile small enough to serve cold on a hard cache', async () => {
+    const sizeOf = async (relative: string): Promise<number> =>
+      (await stat(fileURLToPath(new URL(relative, import.meta.url)))).size
+    let total = await sizeOf('../public/bot-avatar.png')
+    expect(total).toBeLessThan(32 * 1024)
+    for (let index = 1; index <= AVATAR_COUNT + BOT_AVATAR_COUNT; index += 1) {
+      const size = await sizeOf(`../public/avatars/avatar-${String(index)}.png`)
+      // Tiles render at <=64 CSS px (128 device px); a 256-color 128px PNG
+      // lands around 14 KB. This cap catches a regression to full-color
+      // 256px sources, which once totaled 3.5 MB across the set.
+      expect(size).toBeLessThan(32 * 1024)
+      total += size
+    }
+    expect(total).toBeLessThan(512 * 1024)
   })
 })
