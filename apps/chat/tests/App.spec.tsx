@@ -1184,4 +1184,55 @@ describe('model characters', () => {
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Edit in settings' }))
     await screen.findByRole('dialog')
   })
+
+  it('creates a character with its avatar and system prompt from the dialog', async () => {
+    const { configPatches } = await renderApp({
+      config: { activeProfileId: 'pa', profiles },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Switch model character' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'New character…' }))
+    const dialog = await screen.findByRole('dialog', { name: 'New character' })
+    fireEvent.change(within(dialog).getByLabelText('Character name'), { target: { value: 'Sidekick' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Avatar 20' }))
+    fireEvent.change(within(dialog).getByLabelText('Character system prompt'), { target: { value: 'Answer in one line.' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
+    await waitFor(() => {
+      expect(configPatches).toContainEqual({
+        newProfile: { name: 'Sidekick', avatar: 20, persona: 'Answer in one line.' },
+      })
+    })
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'New character' })).toBeNull()
+    })
+  })
+
+  it('saves the system prompt onto the character the panel switched to', async () => {
+    const { configPatches } = await renderApp({
+      config: { activeProfileId: 'pa', profiles },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /catonooka/ }))
+    const panel = await screen.findByRole('dialog', { name: 'Settings' })
+    fireEvent.change(within(panel).getByLabelText('Provider profile'), { target: { value: 'pb' } })
+    fireEvent.change(within(panel).getByLabelText('System prompt'), { target: { value: 'Be terse.' } })
+    fireEvent.click(within(panel).getByRole('button', { name: 'Save' }))
+    const patch = await waitFor(() => {
+      const found = configPatches.find(body => typeof body.persona === 'string')
+      expect(found).toBeDefined()
+      return found
+    })
+    expect(patch).toMatchObject({ switchProfile: 'pb', persona: 'Be terse.' })
+  })
+
+  it('applies a character avatar tile instantly from settings', async () => {
+    const { configPatches } = await renderApp({
+      config: { activeProfileId: 'pa', profiles },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /catonooka/ }))
+    const panel = await screen.findByRole('dialog', { name: 'Settings' })
+    const grid = within(panel).getAllByRole('button', { name: 'Avatar 22' })
+    fireEvent.click(grid[0]!)
+    await waitFor(() => {
+      expect(configPatches).toContainEqual({ avatar: 22 })
+    })
+  })
 })

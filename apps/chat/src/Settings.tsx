@@ -1,7 +1,7 @@
 /** The settings panel: every runtime-configurable option of the chat surface. */
 
 import { useEffect, useState, type JSX } from 'react'
-import { AVATAR_COUNT, avatarSrc } from './avatar.ts'
+import { AVATAR_COUNT, BOT_AVATAR_SRC, avatarSrc } from './avatar.ts'
 import {
   checkModelAbilities,
   fetchChromeStatus,
@@ -60,7 +60,7 @@ interface SettingsProps {
   config: AppConfig
   theme: Theme
   onTheme: (theme: Theme) => void
-  /** The chosen avatar (1..10); picked instantly, like the theme. */
+  /** The chosen user avatar (1..30); picked instantly, like the theme. */
   avatar: number | null
   onAvatar: (avatar: number) => void
   /** The user-profile roster, when it has loaded. */
@@ -88,6 +88,7 @@ export function SettingsPanel({
   const [effort, setEffort] = useState<'off' | 'low' | 'high' | 'max'>(effortOf(config.reasoningEffort))
   const [temperature, setTemperature] = useState<number | undefined>(config.temperature)
   const [persona, setPersona] = useState(config.persona)
+  const [characterAvatar, setCharacterAvatar] = useState<number | undefined>(config.avatar)
   const [baseUrl, setBaseUrl] = useState(config.baseUrl ?? '')
   const [apiKey, setApiKey] = useState('')
   const [searchTool, setSearchTool] = useState<'tiny-metasearch' | 'user-chrome'>(
@@ -150,6 +151,8 @@ export function SettingsPanel({
     setActiveId(next.activeProfileId ?? active?.id ?? '')
     setModel(active?.model ?? next.model)
     setBaseUrl(active?.baseUrl ?? next.baseUrl ?? '')
+    setCharacterAvatar(next.avatar)
+    setPersona(active?.persona ?? next.persona)
     setApiKey('')
     setModels([])
   }
@@ -209,6 +212,8 @@ export function SettingsPanel({
     const target = profiles.find(profile => profile.id === id)
     setModel(target?.model ?? model)
     setBaseUrl(target?.baseUrl ?? '')
+    setPersona(target?.persona ?? config.persona)
+    setCharacterAvatar(target?.avatar)
     setApiKey('')
     setModels([])
     setRenaming(false)
@@ -230,6 +235,17 @@ export function SettingsPanel({
     if (name === '') return
     setRenaming(false)
     await runProfileOp({ renameProfile: { id: activeId, name } })
+  }
+
+  /** The character avatar applies instantly, like the user avatar. */
+  const applyCharacterAvatar = async (option: number | undefined): Promise<void> => {
+    try {
+      const next = await updateConfig({ avatar: option ?? null })
+      onApplied(next)
+      setCharacterAvatar(next.avatar)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
   }
 
   const runChromeTest = async (): Promise<void> => {
@@ -550,11 +566,42 @@ export function SettingsPanel({
           <textarea
             value={persona}
             rows={2}
+            aria-label="System prompt"
             placeholder="You are a helpful assistant."
             onChange={(event) => { setPersona(event.target.value) }}
           />
-          <span className="settings-hint">The whole system prompt. Empty means the default persona.</span>
+          <span className="settings-hint">
+            Each character keeps its own system prompt; switching characters switches it.
+            {' '}Empty means the default persona.
+          </span>
         </label>
+
+        <div className="settings-row">
+          <span className="settings-label">Character avatar</span>
+          <div className="avatar-grid small">
+            <button
+              type="button"
+              className={characterAvatar === undefined ? 'avatar-option active' : 'avatar-option'}
+              aria-label="Classic avatar"
+              aria-pressed={characterAvatar === undefined}
+              onClick={() => { void applyCharacterAvatar(undefined) }}
+            >
+              <img src={BOT_AVATAR_SRC} alt="" draggable={false} />
+            </button>
+            {Array.from({ length: AVATAR_COUNT }, (_, index) => index + 1).map(option => (
+              <button
+                key={option}
+                type="button"
+                className={characterAvatar === option ? 'avatar-option active' : 'avatar-option'}
+                aria-label={`Avatar ${String(option)}`}
+                aria-pressed={characterAvatar === option}
+                onClick={() => { void applyCharacterAvatar(option) }}
+              >
+                <img src={avatarSrc(option)} alt="" draggable={false} />
+              </button>
+            ))}
+          </div>
+        </div>
 
         <div className="settings-row">
           <span className="settings-label">Auto-compact</span>
@@ -670,7 +717,7 @@ export function SettingsPanel({
           : undefined}
 
         <div className="settings-row">
-          <span className="settings-label">Avatar</span>
+          <span className="settings-label">Your avatar</span>
           <div className="avatar-grid small">
             {Array.from({ length: AVATAR_COUNT }, (_, index) => index + 1).map(option => (
               <button

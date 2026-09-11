@@ -39,6 +39,7 @@ import { AddUserModal } from './AddUserModal.tsx'
 import { ConfirmDeleteDialog, MoveGroupDialog, NewGroupDialog } from './SessionDialogs.tsx'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu.tsx'
 import { CharacterMenu } from './CharacterMenu.tsx'
+import { NewCharacterModal } from './NewCharacterModal.tsx'
 import { UserMenu } from './UserMenu.tsx'
 import { botAvatarSrc, avatarSrc, readStoredAvatar, storeAvatar } from './avatar.ts'
 import { StreamFeed } from './delta.ts'
@@ -624,6 +625,7 @@ export default function App(): JSX.Element {
   const [archivedSessions, setArchivedSessions] = useState<SessionSummary[]>([])
   // The model character switcher, opened by clicking the bot avatar.
   const [characterMenu, setCharacterMenu] = useState<{ x: number; y: number } | undefined>(undefined)
+  const [newCharacterOpen, setNewCharacterOpen] = useState(false)
   const [collapsed, setCollapsed] = useState<boolean>(() =>
     typeof localStorage !== 'undefined' && localStorage.getItem(COLLAPSED_KEY) === '1')
   const [error, setError] = useState<string | undefined>(undefined)
@@ -1075,6 +1077,16 @@ export default function App(): JSX.Element {
       .then(setConfig)
       .catch((err: unknown) => { setError(err instanceof Error ? err.message : String(err)) })
   }, [activeCharacter?.id])
+
+  /** Create a character from the dialog and switch straight to it. */
+  const createCharacter = useCallback((input: { name: string; avatar?: number; persona?: string }): void => {
+    updateConfig({ newProfile: input })
+      .then((next) => {
+        setConfig(next)
+        setNewCharacterOpen(false)
+      })
+      .catch((err: unknown) => { setError(err instanceof Error ? err.message : String(err)) })
+  }, [])
 
   // ── chat management (context-menu actions) ────────────────────────────────
 
@@ -1754,6 +1766,9 @@ export default function App(): JSX.Element {
       {addUserOpen
         ? <AddUserModal onCreate={addUser} onClose={() => { setAddUserOpen(false) }} />
         : undefined}
+      {newCharacterOpen
+        ? <NewCharacterModal onCreate={createCharacter} onClose={() => { setNewCharacterOpen(false) }} />
+        : undefined}
       {chatMenu !== undefined
         ? (
           <ContextMenu
@@ -1772,7 +1787,7 @@ export default function App(): JSX.Element {
             characters={config.profiles}
             activeId={config.activeProfileId}
             onSwitch={switchCharacter}
-            onNew={() => { setSettingsOpen(true) }}
+            onNew={() => { setNewCharacterOpen(true) }}
             onManage={() => { setSettingsOpen(true) }}
             onClose={() => { setCharacterMenu(undefined) }}
           />

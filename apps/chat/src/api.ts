@@ -77,6 +77,8 @@ export interface AppConfig {
   reasoningEffort?: string
   temperature?: number
   persona: string
+  /** The active character's avatar tile; absent = the classic bot avatar. */
+  avatar?: number
   baseUrl?: string
   apiKeySet?: boolean
   searchTool?: string
