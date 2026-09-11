@@ -135,6 +135,8 @@ export interface ProviderProfile {
   apiKey?: string
   /** This character's own system prompt; absent = the default persona. */
   persona?: string
+  /** This character's welcome question; absent = the default greeting. */
+  greeting?: string
   /** Robot tile 11-30; absent = the classic bot avatar. */
   avatar?: number
 }
@@ -200,6 +202,17 @@ export function personaOf(profile: ProviderProfile): string {
   return persona === undefined || persona === '' ? DEFAULT_PERSONA : persona
 }
 
+/**
+ * The question a character greets an empty thread with: its own when set,
+ * else the default one-line title.
+ * @param profile - the profile the welcome screen renders for.
+ * @returns the welcome question text.
+ */
+export function greetingOf(profile: ProviderProfile): string {
+  const greeting = profile.greeting?.trim()
+  return greeting === undefined || greeting === '' ? DEFAULT_GREETING : greeting
+}
+
 /** A migrated profile's display name: the endpoint's host, else plain. */
 function deriveProfileName(baseUrl: string | undefined): string {
   if (baseUrl === undefined) return 'Default'
@@ -213,6 +226,12 @@ function deriveProfileName(baseUrl: string | undefined): string {
 
 /** Longest accepted persona text; the persona is the whole system prompt. */
 const MAX_PERSONA_LENGTH = 4000
+
+/** Welcome question shown above an empty thread; empty input means this. */
+export const DEFAULT_GREETING = 'What can I help with?'
+
+/** Longest accepted welcome question; it is a one-line title. */
+const MAX_GREETING_LENGTH = 120
 
 /**
  * Resolve a usable provider route: keep the current one when an adapter
@@ -535,6 +554,17 @@ export function applySettingsPatch(
         else target.persona = trimmed
         break
       }
+      case 'greeting': {
+        if (typeof value !== 'string') throw new Error('greeting must be a string')
+        if (value.length > MAX_GREETING_LENGTH) {
+          throw new Error(`greeting must be at most ${String(MAX_GREETING_LENGTH)} characters`)
+        }
+        const trimmed = value.trim().replace(/\s+/g, ' ')
+        const target = activeProfile(next)
+        if (trimmed === '') delete target.greeting
+        else target.greeting = trimmed
+        break
+      }
       case 'avatar': {
         const target = activeProfile(next)
         if (value === null) {
@@ -620,6 +650,7 @@ function coerceProfiles(value: unknown): ProviderProfile[] {
       ...typeof candidate.baseUrl === 'string' && candidate.baseUrl.trim() !== '' ? { baseUrl: candidate.baseUrl } : {},
       ...typeof candidate.apiKey === 'string' && candidate.apiKey.trim() !== '' ? { apiKey: candidate.apiKey } : {},
       ...personaField(candidate.persona),
+      ...greetingField(candidate.greeting),
       ...avatarField(candidate.avatar),
     }
   }).filter((entry): entry is ProviderProfile => entry !== undefined)
@@ -635,6 +666,14 @@ function personaField(raw: unknown): { persona?: string } {
   if (typeof raw !== 'string' || raw.length > MAX_PERSONA_LENGTH) return {}
   const trimmed = raw.trim()
   return trimmed === '' ? {} : { persona: trimmed }
+}
+
+/** Sanitize a per-profile welcome question from a raw file entry; invalid,
+ * blank, or multi-line values drop out. */
+function greetingField(raw: unknown): { greeting?: string } {
+  if (typeof raw !== 'string' || raw.length > MAX_GREETING_LENGTH) return {}
+  const collapsed = raw.trim().replace(/\s+/g, ' ')
+  return collapsed === '' ? {} : { greeting: collapsed }
 }
 
 /** Sanitize a per-character avatar tile from a raw file entry; anything
@@ -761,6 +800,7 @@ export function settingsJson(settings: ChatSettings): Record<string, unknown> {
     ...settings.reasoningEffort !== undefined ? { reasoningEffort: settings.reasoningEffort } : {},
     ...settings.temperature !== undefined ? { temperature: settings.temperature } : {},
     persona: personaOf(active),
+    greeting: greetingOf(active),
     ...active.baseUrl !== undefined ? { baseUrl: active.baseUrl } : {},
     ...active.avatar !== undefined ? { avatar: active.avatar } : {},
     apiKeySet: active.apiKey !== undefined,
@@ -772,6 +812,7 @@ export function settingsJson(settings: ChatSettings): Record<string, unknown> {
       name: profile.name,
       model: profile.model,
       persona: personaOf(profile),
+      greeting: greetingOf(profile),
       ...profile.avatar !== undefined ? { avatar: profile.avatar } : {},
       ...profile.baseUrl !== undefined ? { baseUrl: profile.baseUrl } : {},
       apiKeySet: profile.apiKey !== undefined,
@@ -791,6 +832,7 @@ async function persistSettings(path: string, settings: ChatSettings): Promise<vo
       ...profile.baseUrl !== undefined ? { baseUrl: profile.baseUrl } : {},
       ...profile.apiKey !== undefined ? { apiKey: profile.apiKey } : {},
       ...profile.persona !== undefined ? { persona: profile.persona } : {},
+      ...profile.greeting !== undefined ? { greeting: profile.greeting } : {},
       ...profile.avatar !== undefined ? { avatar: profile.avatar } : {},
     })),
     activeProfileId: settings.activeProfileId,

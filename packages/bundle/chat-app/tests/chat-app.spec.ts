@@ -8,6 +8,7 @@ import {
   activeProfile,
   applySettingsPatch,
   DEFAULT_PERSONA,
+  DEFAULT_GREETING,
   RateLimiter,
   attachmentDescriptors,
   cachePolicyFor,
@@ -19,6 +20,7 @@ import {
   isLocalOrBridgeRequest,
   isLocalRequest,
   personaOf,
+  greetingOf,
   sortSessionsByActivity,
   SessionListingCache,
   normalizeSearchQuery,
@@ -498,6 +500,43 @@ describe('model characters — persona and avatar', () => {
     expect(personaOf({ id: 'x', name: 'X', model: 'm' })).toBe(DEFAULT_PERSONA)
   })
 
+  it('edits the welcome question of the active profile, one line, capped', () => {
+    const edited = applySettingsPatch(twoProfiles, { greeting: '  What  does the dark side want? ' })
+    expect(edited.profiles.find(profile => profile.id === 'a')?.greeting).toBe('What does the dark side want?')
+    expect(edited.profiles.find(profile => profile.id === 'b')?.greeting).toBeUndefined()
+    const switched = applySettingsPatch(twoProfiles, { greeting: 'Ask me', switchProfile: 'b' })
+    expect(switched.profiles.find(profile => profile.id === 'b')?.greeting).toBe('Ask me')
+    expect(switched.profiles.find(profile => profile.id === 'a')?.greeting).toBeUndefined()
+    expect(applySettingsPatch(edited, { greeting: '  ' }).profiles.find(profile => profile.id === 'a')?.greeting).toBeUndefined()
+    expect(applySettingsPatch(twoProfiles, { greeting: 'two\nlines' }).profiles[0]?.greeting).toBe('two lines')
+    expect(() => applySettingsPatch(twoProfiles, { greeting: 'x'.repeat(121) })).toThrow('at most 120')
+    expect(() => applySettingsPatch(twoProfiles, { greeting: 7 })).toThrow('greeting must be a string')
+  })
+
+  it('resolves each profile welcome question with a default fallback', () => {
+    expect(greetingOf({ id: 'x', name: 'X', model: 'm', greeting: ' p ' })).toBe('p')
+    expect(greetingOf({ id: 'x', name: 'X', model: 'm', greeting: '   ' })).toBe(DEFAULT_GREETING)
+    expect(greetingOf({ id: 'x', name: 'X', model: 'm' })).toBe(DEFAULT_GREETING)
+    expect(DEFAULT_GREETING).toBe('What can I help with?')
+  })
+
+  it('sanitizes per-profile greetings on a wholesale replace', () => {
+    const replaced = applySettingsPatch(twoProfiles, {
+      profiles: [
+        { id: 'x', name: 'X', model: 'mx', greeting: '  kept  question ' },
+        { id: 'y', name: 'Y', model: 'my', greeting: '   ' },
+        { id: 'z', name: 'Z', model: 'mz', greeting: 'x'.repeat(121) },
+        { id: 'w', name: 'W', model: 'mw', greeting: 'two\nlines' },
+      ],
+    })
+    expect(replaced.profiles).toEqual([
+      { id: 'x', name: 'X', model: 'mx', greeting: 'kept question' },
+      { id: 'y', name: 'Y', model: 'my' },
+      { id: 'z', name: 'Z', model: 'mz' },
+      { id: 'w', name: 'W', model: 'mw', greeting: 'two lines' },
+    ])
+  })
+
   it('sets and clears the active character avatar within the robot tiles only', () => {
     const set = applySettingsPatch(twoProfiles, { avatar: 11 })
     expect(set.profiles.find(profile => profile.id === 'a')?.avatar).toBe(11)
@@ -553,7 +592,7 @@ describe('model characters — persona and avatar', () => {
     const seeded: ChatSettings = {
       ...twoProfiles,
       profiles: [
-        { id: 'a', name: 'Gateway A', model: 'model-a', apiKey: 'key-a', persona: 'persona a', avatar: 12 },
+        { id: 'a', name: 'Gateway A', model: 'model-a', apiKey: 'key-a', persona: 'persona a', greeting: 'ask away', avatar: 12 },
         { id: 'b', name: 'Gateway B', model: 'model-b' },
       ],
     }
@@ -561,14 +600,15 @@ describe('model characters — persona and avatar', () => {
       provider: 'deepseek-official',
       model: 'model-a',
       persona: 'persona a',
+      greeting: 'ask away',
       avatar: 12,
       apiKeySet: true,
       searchTool: 'tiny-metasearch',
       autoCompact: true,
       activeProfileId: 'a',
       profiles: [
-        { id: 'a', name: 'Gateway A', model: 'model-a', persona: 'persona a', avatar: 12, apiKeySet: true },
-        { id: 'b', name: 'Gateway B', model: 'model-b', persona: DEFAULT_PERSONA, apiKeySet: false },
+        { id: 'a', name: 'Gateway A', model: 'model-a', persona: 'persona a', greeting: 'ask away', avatar: 12, apiKeySet: true },
+        { id: 'b', name: 'Gateway B', model: 'model-b', persona: DEFAULT_PERSONA, greeting: DEFAULT_GREETING, apiKeySet: false },
       ],
     })
     expect(JSON.stringify(settingsJson(seeded))).not.toContain('key-a')
