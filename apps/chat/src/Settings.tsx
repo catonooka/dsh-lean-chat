@@ -1,7 +1,7 @@
 /** The settings panel: every runtime-configurable option of the chat surface. */
 
 import { useEffect, useState, type JSX } from 'react'
-import { AVATAR_COUNT, BOT_AVATAR_SRC, avatarSrc } from './avatar.ts'
+import { AVATAR_COUNT, BOT_AVATAR_SRC, avatarSrc, botAvatarTiles } from './avatar.ts'
 import {
   checkModelAbilities,
   fetchChromeStatus,
@@ -588,7 +588,7 @@ export function SettingsPanel({
             >
               <img src={BOT_AVATAR_SRC} alt="" draggable={false} />
             </button>
-            {Array.from({ length: AVATAR_COUNT }, (_, index) => index + 1).map(option => (
+            {botAvatarTiles().map(option => (
               <button
                 key={option}
                 type="button"
@@ -601,6 +601,7 @@ export function SettingsPanel({
               </button>
             ))}
           </div>
+          <span className="settings-hint">Robot tiles for characters; your cat tiles belong to user profiles.</span>
         </div>
 
         <div className="settings-row">

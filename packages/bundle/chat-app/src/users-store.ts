@@ -28,9 +28,10 @@ export const MAX_GROUP_NAME_LENGTH = 60
 /** Most groups worth keeping per user. */
 export const MAX_GROUPS_PER_USER = 20
 
-/** Avatar tiles shipped with the frontend (`apps/chat/public/avatars`):
- * tiles 1-10 are the original person tiles, 11-30 the robot characters. */
-export const AVATAR_COUNT = 30
+/** User-profile avatar tiles shipped with the frontend
+ * (`apps/chat/public/avatars`): the ten cat tiles. The robot tiles
+ * (11-30) are model-character avatars and never valid for a user. */
+export const AVATAR_COUNT = 10
 
 /** The bridge clamps client labels to 64 chars; match it for saved profiles. */
 const MAX_CHROME_PROFILE_LENGTH = 64

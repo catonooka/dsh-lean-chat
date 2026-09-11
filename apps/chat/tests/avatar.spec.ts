@@ -5,19 +5,20 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  AVATAR_COUNT, BOT_AVATAR_SRC, avatarSrc, botAvatarSrc, normalizeAvatar, readStoredAvatar, storeAvatar,
+  AVATAR_COUNT, BOT_AVATAR_COUNT, BOT_AVATAR_FIRST, BOT_AVATAR_SRC, avatarSrc, botAvatarSrc,
+  botAvatarTiles, normalizeAvatar, readStoredAvatar, storeAvatar,
 } from '../src/avatar.ts'
 
 describe('normalizeAvatar', () => {
-  it('accepts each avatar number as a stored string', () => {
+  it('accepts each cat tile number as a stored string', () => {
     expect(normalizeAvatar('1')).toBe(1)
     expect(normalizeAvatar(String(AVATAR_COUNT))).toBe(AVATAR_COUNT)
   })
 
-  it('rejects unset, out-of-range, fractional, and garbage values', () => {
+  it('rejects unset, out-of-range, robot, fractional, and garbage values', () => {
     expect(normalizeAvatar(null)).toBeNull()
     expect(normalizeAvatar('0')).toBeNull()
-    expect(normalizeAvatar('31')).toBeNull()
+    expect(normalizeAvatar('11')).toBeNull()
     expect(normalizeAvatar('-1')).toBeNull()
     expect(normalizeAvatar('2.5')).toBeNull()
     expect(normalizeAvatar('avatar-3')).toBeNull()
@@ -67,10 +68,19 @@ describe('botAvatarSrc', () => {
     expect(botAvatarSrc(undefined)).toBe('bot-avatar.png')
   })
 
-  it('serves the character tile once picked, person or robot', () => {
-    expect(botAvatarSrc(1)).toBe('avatars/avatar-1.png')
+  it('serves the character robot tile once picked', () => {
     expect(botAvatarSrc(11)).toBe('avatars/avatar-11.png')
+    expect(botAvatarSrc(22)).toBe('avatars/avatar-22.png')
     expect(botAvatarSrc(30)).toBe('avatars/avatar-30.png')
+  })
+})
+
+describe('avatar pools', () => {
+  it('keeps the pools apart: ten cats for users, twenty robots for characters', () => {
+    expect(AVATAR_COUNT).toBe(10)
+    expect(BOT_AVATAR_FIRST).toBe(11)
+    expect(BOT_AVATAR_COUNT).toBe(20)
+    expect(botAvatarTiles()).toEqual(Array.from({ length: 20 }, (_, index) => index + 11))
   })
 })
 
@@ -80,9 +90,5 @@ describe('avatarSrc', () => {
     expect(avatarSrc(10)).toBe('avatars/avatar-10.png')
     expect(avatarSrc(11)).toBe('avatars/avatar-11.png')
     expect(avatarSrc(30)).toBe('avatars/avatar-30.png')
-  })
-
-  it('serves thirty tiles: ten people plus twenty robot characters', () => {
-    expect(AVATAR_COUNT).toBe(30)
   })
 })

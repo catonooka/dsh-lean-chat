@@ -1297,14 +1297,38 @@ describe('model characters', () => {
     fireEvent.click(screen.getByRole('button', { name: /catonooka/ }))
     const panel = await screen.findByRole('dialog', { name: 'Settings' })
     expect(within(panel).getByLabelText<HTMLTextAreaElement>('System prompt').value).toBe('helper persona')
-    // The user-avatar grid also labels a tile "Avatar 22"; only the character
-    // grid's tile carries the active state here.
-    expect(within(panel).getAllByRole('button', { name: 'Avatar 22' })
-      .filter(button => button.className.includes('active'))).toHaveLength(0)
+    expect(within(panel).getByRole('button', { name: 'Avatar 22' }).className).not.toContain('active')
     fireEvent.change(within(panel).getByLabelText('Provider profile'), { target: { value: 'pb' } })
     expect(within(panel).getByLabelText<HTMLTextAreaElement>('System prompt').value).toBe('robo persona')
-    expect(within(panel).getAllByRole('button', { name: 'Avatar 22' })
-      .filter(button => button.className.includes('active'))).toHaveLength(1)
+    expect(within(panel).getByRole('button', { name: 'Avatar 22' }).className).toContain('active')
+  })
+
+  it('keeps the avatar pools apart: cats for users, robots for characters', async () => {
+    await renderApp({
+      config: { activeProfileId: 'pa', profiles },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /catonooka/ }))
+    const panel = await screen.findByRole('dialog', { name: 'Settings' })
+    // Every tile appears in exactly one grid: cats (1-10) in the user grid,
+    // robots (11-30) in the character grid — never in both.
+    expect(within(panel).getAllByRole('button', { name: 'Avatar 10' })).toHaveLength(1)
+    expect(within(panel).getAllByRole('button', { name: 'Avatar 22' })).toHaveLength(1)
+    expect(within(panel).getAllByRole('button', { name: 'Avatar 30' })).toHaveLength(1)
+    // User grid (10 cats) + character grid (20 robots) = 30 numbered tiles;
+    // the classic bot avatar is an extra unnumbered option.
+    expect(within(panel).getAllByRole('button', { name: /^Avatar \d+$/ })).toHaveLength(30)
+  })
+
+  it('offers only robot tiles in the new-character dialog', async () => {
+    await renderApp({
+      config: { activeProfileId: 'pa', profiles },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Switch model character' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'New character…' }))
+    const dialog = await screen.findByRole('dialog', { name: 'New character' })
+    expect(within(dialog).getByRole('button', { name: 'Avatar 11' })).toBeTruthy()
+    expect(within(dialog).getByRole('button', { name: 'Avatar 30' })).toBeTruthy()
+    expect(within(dialog).queryByRole('button', { name: 'Avatar 10' })).toBeNull()
   })
 
   it('applies a character avatar tile instantly from settings', async () => {
@@ -1313,8 +1337,7 @@ describe('model characters', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: /catonooka/ }))
     const panel = await screen.findByRole('dialog', { name: 'Settings' })
-    const grid = within(panel).getAllByRole('button', { name: 'Avatar 22' })
-    fireEvent.click(grid[0]!)
+    fireEvent.click(within(panel).getByRole('button', { name: 'Avatar 22' }))
     await waitFor(() => {
       expect(configPatches).toContainEqual({ avatar: 22 })
     })

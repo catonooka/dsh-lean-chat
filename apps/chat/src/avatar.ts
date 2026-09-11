@@ -1,8 +1,19 @@
-/** The fixed avatar set: the user picks exactly one of the served tiles
- * (tiles 1-10 are people, 11-30 the robot characters). */
+/** Two fixed avatar sets: cat tiles 1-10 are user-profile avatars, robot
+ * tiles 11-30 are model-character avatars — the pools never mix. */
 
-/** How many avatars the app offers. */
-export const AVATAR_COUNT = 30
+/** How many cat tiles the app offers for user profiles. */
+export const AVATAR_COUNT = 10
+
+/** First robot tile; model characters pick from tiles 11-30. */
+export const BOT_AVATAR_FIRST = 11
+
+/** How many robot tiles the app offers for model characters. */
+export const BOT_AVATAR_COUNT = 20
+
+/** Every robot tile a model character can wear, in grid order. */
+export function botAvatarTiles(): number[] {
+  return Array.from({ length: BOT_AVATAR_COUNT }, (_, index) => BOT_AVATAR_FIRST + index)
+}
 
 const AVATAR_KEY = 'dsh-chat-avatar'
 
@@ -37,8 +48,8 @@ export function avatarSrc(avatar: number): string {
   return `avatars/avatar-${String(avatar)}.png`
 }
 
-/** The avatar the active model character answers with: its own tile when
- * picked, else the classic bot avatar. */
+/** The avatar the active model character answers with: its own robot
+ * tile when picked, else the classic bot avatar. */
 export function botAvatarSrc(avatar: number | undefined): string {
   return avatar === undefined ? BOT_AVATAR_SRC : avatarSrc(avatar)
 }

@@ -51,13 +51,12 @@ describe('normalizeUserName', () => {
 })
 
 describe('normalizeAvatar / normalizeChromeProfile / normalizeGroupName', () => {
-  it('accepts tiles 1-30 (people and robot characters) and refuses everything else', () => {
+  it('accepts cat tiles 1-10 for users and refuses robots and everything else', () => {
     expect(normalizeAvatar(1)).toBe(1)
     expect(normalizeAvatar(10)).toBe(10)
-    expect(normalizeAvatar(11)).toBe(11)
-    expect(normalizeAvatar(30)).toBe(30)
     expect(normalizeAvatar(0)).toBeUndefined()
-    expect(normalizeAvatar(31)).toBeUndefined()
+    expect(normalizeAvatar(11)).toBeUndefined()
+    expect(normalizeAvatar(30)).toBeUndefined()
     expect(normalizeAvatar(3.5)).toBeUndefined()
     expect(normalizeAvatar('3')).toBeUndefined()
   })

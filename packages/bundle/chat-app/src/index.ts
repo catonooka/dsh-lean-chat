@@ -36,7 +36,6 @@ import {
   activeUserFromHeader,
   applyUserGroups,
   assignUnownedSessions,
-  AVATAR_COUNT,
   createUser,
   ensureSessionOwner,
   parseUsersFile,
@@ -136,7 +135,7 @@ export interface ProviderProfile {
   apiKey?: string
   /** This character's own system prompt; absent = the default persona. */
   persona?: string
-  /** Avatar tile 1..AVATAR_COUNT; absent = the classic bot avatar. */
+  /** Robot tile 11-30; absent = the classic bot avatar. */
   avatar?: number
 }
 
@@ -162,6 +161,20 @@ const MAX_PROFILE_NAME_LENGTH = 60
 
 /** Most profiles worth keeping in one panel. */
 const MAX_PROFILES = 20
+
+/** First robot tile: model-character avatars are tiles 11-30. The cat
+ * tiles 1-10 are user-profile avatars and never valid for a character. */
+const BOT_AVATAR_FIRST = 11
+
+/** How many robot tiles the frontend ships for model characters. */
+const BOT_AVATAR_COUNT = 20
+
+/** Whether a number is a robot tile a model character may wear. */
+function isBotAvatar(value: number): boolean {
+  return Number.isInteger(value)
+    && value >= BOT_AVATAR_FIRST
+    && value < BOT_AVATAR_FIRST + BOT_AVATAR_COUNT
+}
 
 /**
  * The profile settings edits apply to: the active one, else the first — the
@@ -528,8 +541,8 @@ export function applySettingsPatch(
           delete target.avatar
           break
         }
-        if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > AVATAR_COUNT) {
-          throw new Error(`avatar must be an integer 1-${String(AVATAR_COUNT)}, or null`)
+        if (typeof value !== 'number' || !isBotAvatar(value)) {
+          throw new Error(`avatar must be a robot tile ${String(BOT_AVATAR_FIRST)}-${String(BOT_AVATAR_FIRST + BOT_AVATAR_COUNT - 1)}, or null`)
         }
         target.avatar = value
         break
@@ -624,9 +637,10 @@ function personaField(raw: unknown): { persona?: string } {
   return trimmed === '' ? {} : { persona: trimmed }
 }
 
-/** Sanitize a per-profile avatar tile from a raw file entry; invalid numbers drop out. */
+/** Sanitize a per-character avatar tile from a raw file entry; anything
+ * outside the robot range (including the user cat tiles) drops out. */
 function avatarField(raw: unknown): { avatar?: number } {
-  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 1 || raw > AVATAR_COUNT) return {}
+  if (typeof raw !== 'number' || !isBotAvatar(raw)) return {}
   return { avatar: raw }
 }
 
@@ -657,8 +671,8 @@ function profileOpAvatar(value: unknown, op: string): number | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error(`${op} must be an object`)
   const avatar = (value as { avatar?: unknown }).avatar
   if (avatar === undefined) return undefined
-  if (typeof avatar !== 'number' || !Number.isInteger(avatar) || avatar < 1 || avatar > AVATAR_COUNT) {
-    throw new Error(`${op} avatar must be an integer 1-${String(AVATAR_COUNT)}`)
+  if (typeof avatar !== 'number' || !isBotAvatar(avatar)) {
+    throw new Error(`${op} avatar must be a robot tile ${String(BOT_AVATAR_FIRST)}-${String(BOT_AVATAR_FIRST + BOT_AVATAR_COUNT - 1)}`)
   }
   return avatar
 }

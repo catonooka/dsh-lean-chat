@@ -386,8 +386,10 @@ very next message, while a running turn finishes on its old route. New
 characters are created from the switcher's dialog (name + avatar + system
 prompt over a clone of the current endpoint) or edited in Settings, whose
 System prompt and Character avatar rows target the selected character.
-Avatar tiles 1-10 are people, 11-30 the robot set, shared with user
-profiles; a character without a tile shows the classic bot avatar.
+Avatar tiles come in two disjoint pools: the cat tiles 1-10 belong to user
+profiles only, the robot tiles 11-30 to model characters only — the pickers
+offer their own set and the server rejects a tile from the wrong pool. A
+character without a tile shows the classic bot avatar.
 
 ## Performance model
 

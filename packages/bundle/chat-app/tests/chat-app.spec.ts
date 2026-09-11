@@ -445,6 +445,7 @@ describe('provider profiles', () => {
         { id: 'y', name: 'Y', model: 'my', persona: '   ', avatar: 31 },
         { id: 'z', name: 'Z', model: 'mz', persona: 'x'.repeat(4001), avatar: '3' },
         { id: 'w', name: 'W', model: 'mw', avatar: 0 },
+        { id: 'v', name: 'V', model: 'mv', avatar: 10 },
       ],
     })
     expect(replaced.profiles).toEqual([
@@ -452,13 +453,14 @@ describe('provider profiles', () => {
       { id: 'y', name: 'Y', model: 'my' },
       { id: 'z', name: 'Z', model: 'mz' },
       { id: 'w', name: 'W', model: 'mw' },
+      { id: 'v', name: 'V', model: 'mv' },
     ])
   })
 
   it('lands an avatar edit on the profile the same patch switches to', () => {
-    const patched = applySettingsPatch(twoProfiles, { switchProfile: 'b', avatar: 5 })
+    const patched = applySettingsPatch(twoProfiles, { switchProfile: 'b', avatar: 15 })
     expect(patched.activeProfileId).toBe('b')
-    expect(patched.profiles.find(profile => profile.id === 'b')?.avatar).toBe(5)
+    expect(patched.profiles.find(profile => profile.id === 'b')?.avatar).toBe(15)
     expect(patched.profiles.find(profile => profile.id === 'a')?.avatar).toBeUndefined()
   })
 
@@ -496,14 +498,17 @@ describe('model characters — persona and avatar', () => {
     expect(personaOf({ id: 'x', name: 'X', model: 'm' })).toBe(DEFAULT_PERSONA)
   })
 
-  it('sets and clears the active character avatar within the tile pool', () => {
+  it('sets and clears the active character avatar within the robot tiles only', () => {
     const set = applySettingsPatch(twoProfiles, { avatar: 11 })
     expect(set.profiles.find(profile => profile.id === 'a')?.avatar).toBe(11)
     expect(set.profiles.find(profile => profile.id === 'b')?.avatar).toBeUndefined()
+    expect(applySettingsPatch(twoProfiles, { avatar: 30 }).profiles.find(profile => profile.id === 'a')?.avatar).toBe(30)
     expect(applySettingsPatch(set, { avatar: null }).profiles.find(profile => profile.id === 'a')?.avatar).toBeUndefined()
-    expect(() => applySettingsPatch(twoProfiles, { avatar: 31 })).toThrow('avatar must be an integer 1-30')
-    expect(() => applySettingsPatch(twoProfiles, { avatar: 1.5 })).toThrow('avatar must be an integer 1-30')
-    expect(() => applySettingsPatch(twoProfiles, { avatar: '11' })).toThrow('avatar must be an integer 1-30')
+    // The cat tiles 1-10 belong to user profiles, never to a character.
+    expect(() => applySettingsPatch(twoProfiles, { avatar: 10 })).toThrow('avatar must be a robot tile 11-30')
+    expect(() => applySettingsPatch(twoProfiles, { avatar: 31 })).toThrow('avatar must be a robot tile 11-30')
+    expect(() => applySettingsPatch(twoProfiles, { avatar: 1.5 })).toThrow('avatar must be a robot tile 11-30')
+    expect(() => applySettingsPatch(twoProfiles, { avatar: '11' })).toThrow('avatar must be a robot tile 11-30')
   })
 
   it('creates a character with its own persona and avatar, cloning only the endpoint', () => {
@@ -538,7 +543,8 @@ describe('model characters — persona and avatar', () => {
   })
 
   it('rejects a new character with an invalid avatar or persona', () => {
-    expect(() => applySettingsPatch(twoProfiles, { newProfile: { avatar: 31 } })).toThrow('newProfile avatar must be an integer 1-30')
+    expect(() => applySettingsPatch(twoProfiles, { newProfile: { avatar: 31 } })).toThrow('newProfile avatar must be a robot tile 11-30')
+    expect(() => applySettingsPatch(twoProfiles, { newProfile: { avatar: 10 } })).toThrow('newProfile avatar must be a robot tile 11-30')
     expect(() => applySettingsPatch(twoProfiles, { newProfile: { persona: 7 } })).toThrow('newProfile persona must be a string')
     expect(() => applySettingsPatch(twoProfiles, { newProfile: { persona: 'x'.repeat(4001) } })).toThrow('at most 4000')
   })

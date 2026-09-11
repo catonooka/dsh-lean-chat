@@ -1,7 +1,7 @@
 /** The new-character dialog: name, an avatar tile, and a system prompt. */
 
 import { useEffect, useState, type JSX } from 'react'
-import { AVATAR_COUNT, BOT_AVATAR_SRC, avatarSrc } from './avatar.ts'
+import { BOT_AVATAR_SRC, avatarSrc, botAvatarTiles } from './avatar.ts'
 
 /**
  * A cancellable character form. The panel is presentational: App creates the
@@ -65,7 +65,7 @@ export function NewCharacterModal({ onCreate, onClose }: {
           >
             <img src={BOT_AVATAR_SRC} alt="" draggable={false} />
           </button>
-          {Array.from({ length: AVATAR_COUNT }, (_, index) => index + 1).map(tile => (
+          {botAvatarTiles().map(tile => (
             <button
               key={tile}
               type="button"
