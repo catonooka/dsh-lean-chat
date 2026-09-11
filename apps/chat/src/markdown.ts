@@ -15,11 +15,17 @@ function escapeHtml(value: string): string {
     .replace(/'/gu, '&#39;')
 }
 
-/** Escape text for placement inside a markdown link URL, rejecting non-http(s) schemes. */
+/** Whether a URL may be navigated to: http(s) only, so tool- and model-fed
+ * links can never smuggle `javascript:` or other schemes into the page. */
+export function isSafeHref(url: string): boolean {
+  return /^https?:\/\//iu.test(url.trim())
+}
+
+/** Validate a markdown link URL for placement in an href. The input arrives
+ * already HTML-escaped (renderMarkdown escapes first), so no further escaping
+ * happens — re-escaping would corrupt `&` into `&amp;amp;` in the href. */
 function safeHref(url: string): string | undefined {
-  const trimmed = url.trim()
-  if (!/^https?:\/\//iu.test(trimmed)) return undefined
-  return escapeHtml(trimmed)
+  return isSafeHref(url) ? url.trim() : undefined
 }
 
 /** Inline transforms over one already-escaped line. */

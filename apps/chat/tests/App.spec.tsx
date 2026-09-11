@@ -652,6 +652,35 @@ describe('streaming turn', () => {
     expect(screen.getByLabelText('Try again')).toBeTruthy()
   })
 
+  it('renders search sources with unsafe schemes as plain text, not links', async () => {
+    localStorage.setItem('dsh-chat-active', 'sess-a')
+    await renderApp({
+      sessions: [{ id: 'sess-a', title: 'A', items: [] }],
+      streams: [delayedSseResponse([
+        { t: 'delta', text: 'Here is what I found.' },
+        { t: 'tool-start', name: 'web_search', query: 'node 25' },
+        { t: 'tool-end', name: 'web_search', query: 'node 25', searchedAt: '2026-09-08T00:00:00.000Z', sources: [
+          { url: 'https://nodejs.org', title: 'Node.js' },
+          { url: 'javascript:alert(1)', title: 'Hostile' },
+        ] },
+        { t: 'assistant', text: 'done' },
+        { t: 'turn-end', reason: 'completed' },
+      ], 30)],
+    })
+    const composer = screen.getByPlaceholderText<HTMLTextAreaElement>('Message dsh chat…')
+    fireEvent.change(composer, { target: { value: 'search node' } })
+    fireEvent.keyDown(composer, { key: 'Enter' })
+    await screen.findByText('Searched · node 25', {}, { timeout: 3000 })
+    fireEvent.click(screen.getByText('Searched · node 25'))
+    // The https source stays a link; the javascript: one renders as text only.
+    const safe = screen.getByText('Node.js').closest('a')
+    expect(safe?.getAttribute('href')).toBe('https://nodejs.org')
+    const hostile = screen.getByText('Hostile')
+    expect(hostile.tagName).toBe('SPAN')
+    expect(hostile.closest('a')).toBeNull()
+    await screen.findByText('done', {}, { timeout: 3000 })
+  })
+
   it('lands the streamed text as the committed row when no frame supersedes it', async () => {
     localStorage.setItem('dsh-chat-active', 'sess-a')
     await renderApp({

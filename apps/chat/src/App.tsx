@@ -32,7 +32,7 @@ import {
   type UploadedAttachment,
   type UserInfo,
 } from './api.ts'
-import { renderMarkdown } from './markdown.ts'
+import { isSafeHref, renderMarkdown } from './markdown.ts'
 import { SettingsPanel, applyTheme, readStoredTheme, storeTheme, type Theme } from './Settings.tsx'
 import { AvatarModal } from './AvatarModal.tsx'
 import { AddUserModal } from './AddUserModal.tsx'
@@ -264,7 +264,9 @@ const ToolChip = memo(function ToolChip({ item }: { item: ChatItem }): JSX.Eleme
             <div className="tool-sources">
               <div className="tool-excerpt">{item.excerpt}</div>
               {item.url !== undefined
-                ? <a href={item.url} target="_blank" rel="noopener noreferrer">{item.url}</a>
+                ? (isSafeHref(item.url)
+                  ? <a href={item.url} target="_blank" rel="noopener noreferrer">{item.url}</a>
+                  : <span>{item.url}</span>)
                 : undefined}
             </div>
           )
@@ -298,9 +300,9 @@ const ToolChip = memo(function ToolChip({ item }: { item: ChatItem }): JSX.Eleme
           <ul className="tool-sources">
             {item.sources.map(source => (
               <li key={source.url}>
-                <a href={source.url} target="_blank" rel="noopener noreferrer">
-                  {source.title ?? source.url}
-                </a>
+                {isSafeHref(source.url)
+                  ? <a href={source.url} target="_blank" rel="noopener noreferrer">{source.title ?? source.url}</a>
+                  : <span>{source.title ?? source.url}</span>}
                 {source.publishedAt !== undefined ? <span className="tool-time"> · {source.publishedAt}</span> : undefined}
               </li>
             ))}
