@@ -42,6 +42,8 @@ import {
   isExtensionBridgePath,
   sessionVisibleToUser,
   serveStatic,
+  STREAM_BACKLOG_CAP,
+  writeSseLine,
   toolCallSummary,
   resolveProviderFallback,
   TitleSnapshotCache,
@@ -1666,5 +1668,42 @@ describe('serveStatic', () => {
       await serveStatic(request(method, url), refused.res, root, 'tok')
       expect(refused.state.status).toBe(status)
     }
+  })
+})
+
+describe('writeSseLine', () => {
+  function sseRes(drains: boolean) {
+    const written: string[] = []
+    const state = { ended: false }
+    const res = {
+      write(chunk: string) {
+        written.push(chunk)
+        return drains
+      },
+      end() {
+        state.ended = true
+      },
+    }
+    return { res: res as unknown as ServerResponse, written, state }
+  }
+
+  it('clears the backlog whenever the socket drains', () => {
+    const { res, state } = sseRes(true)
+    expect(writeSseLine(res, 'data: {}\n\n', 1024)).toEqual({ closed: false, backlog: 0 })
+    expect(state.ended).toBe(false)
+  })
+
+  it('accumulates undelivered bytes across stalled writes', () => {
+    const { res } = sseRes(false)
+    expect(writeSseLine(res, 'data: a\n\n', 0)).toEqual({ closed: false, backlog: 9 })
+    expect(writeSseLine(res, 'data: b\n\n', 9)).toEqual({ closed: false, backlog: 18 })
+  })
+
+  it('closes the stream once the backlog passes the cap', () => {
+    const { res, state } = sseRes(false)
+    const outcome = writeSseLine(res, 'data: x\n\n', STREAM_BACKLOG_CAP)
+    expect(outcome.closed).toBe(true)
+    expect(outcome.backlog).toBe(0)
+    expect(state.ended).toBe(true)
   })
 })

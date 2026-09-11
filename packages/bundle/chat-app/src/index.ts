@@ -1653,6 +1653,28 @@ export async function serveStatic(
   }
 }
 
+/** Undelivered bytes a single SSE stream may accumulate before it is closed:
+ * the history is durable, so a client that stops draining (parked tab, dead
+ * network) recovers by refetching instead of pinning a whole turn in RAM. */
+export const STREAM_BACKLOG_CAP = 4 * 1024 * 1024
+
+/**
+ * Write one SSE line to a response under a write-backpressure policy.
+ * @param res - the SSE response.
+ * @param line - the fully framed `data: …\n\n` line.
+ * @param backlog - this response's undelivered byte count so far.
+ * @returns whether the response was closed at the cap, and the next backlog.
+ */
+export function writeSseLine(res: ServerResponse, line: string, backlog: number): { closed: boolean; backlog: number } {
+  if (res.write(line)) return { closed: false, backlog: 0 }
+  const next = backlog + line.length
+  if (next > STREAM_BACKLOG_CAP) {
+    res.end()
+    return { closed: true, backlog: 0 }
+  }
+  return { closed: false, backlog: next }
+}
+
 /**
  * Mount the chat surface: the `/api` routes, the SSE hub, the static fallback,
  * the URL line, and the default-browser handoff.
@@ -1953,19 +1975,50 @@ export function apply(ctx: Context, config: Config): void {
   })
 
   /** Send one SSE payload to every open stream of one session. */
+  const streamBacklog = new WeakMap<ServerResponse, number>()
   function broadcast(sessionId: string, payload: Record<string, unknown>): void {
     const open = streams.get(sessionId)
     if (open === undefined || open.size === 0) return
     const line = `data: ${JSON.stringify(payload)}\n\n`
     for (const res of [...open]) {
       try {
-        res.write(line)
+        const outcome = writeSseLine(res, line, streamBacklog.get(res) ?? 0)
+        if (outcome.closed) {
+          open.delete(res)
+          continue
+        }
+        if (outcome.backlog === 0) {
+          streamBacklog.delete(res)
+        } else {
+          const firstStall = !streamBacklog.has(res)
+          streamBacklog.set(res, outcome.backlog)
+          // One listener from the first stalled write clears the debt when
+          // the socket finally drains; later stalls must not stack listeners.
+          if (firstStall) res.once('drain', () => { streamBacklog.delete(res) })
+        }
       } catch {
         open.delete(res)
       }
     }
     if (open.size === 0) streams.delete(sessionId)
   }
+
+  // SSE carries no inherent liveness signal: while a turn sits in a long
+  // tool phase nothing flows and an intermediary may quietly drop the
+  // connection. A comment frame every 15 s keeps it alive; comment frames
+  // are ignored by every SSE parser, including this app's client.
+  const streamPingTimer = setInterval(() => {
+    for (const open of streams.values()) {
+      for (const res of [...open]) {
+        try {
+          res.write(': ping\n\n')
+        } catch {
+          open.delete(res)
+        }
+      }
+    }
+  }, 15_000)
+  ctx.effect(() => () => { clearInterval(streamPingTimer) }, 'chat-app.stream-ping')
 
   /** Fold title snapshots for the given records into id → title info,
    * reading from disk only for sessions whose snapshot is not cached fresh. */
@@ -2040,9 +2093,11 @@ export function apply(ctx: Context, config: Config): void {
     if (existing !== undefined && ctx.agents.get(existing.handle.agent.id) === existing.handle.agent) {
       existing.lastUsed = Date.now()
       if (sameConversationOptions(existing.options, options)) return existing.handle
-      // The model route changed in settings: retire the stale agent. Session
-      // history is durable, so the replacement resumes this conversation on
-      // the new route; a running turn finishes on the old one.
+      // The model route changed in settings: retire the stale agent — but
+      // never mid-turn. With a stream still open, the running turn finishes
+      // on the old route (the same busy rule the eviction sweep applies) and
+      // the first send after it closes performs the swap.
+      if ((streams.get(sessionId)?.size ?? 0) > 0) return existing.handle
       handles.delete(sessionId)
       await existing.handle.dispose()
       listingCache.clear()
