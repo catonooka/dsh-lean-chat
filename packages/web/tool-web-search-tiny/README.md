@@ -1,9 +1,26 @@
+---
+description: "A tiny single-query, model-facing web_search tool with a search-question generator and time-stamp fallback, for chat-only compositions."
+kind: "package-reference"
+---
+
 # @deepseek-ai/dsh-tool-web-search-tiny
+
+## Summary
 
 A tiny single-query, model-facing `web_search` tool over the DeepSeek Harness
 web capability seam (`ctx.web`). Built for chat-only compositions that want
 exactly one search tool with the smallest possible tool-schema footprint in
-the initial context.
+the initial context: one required `query` parameter, a small optional
+search-question generator call, and compact model-facing output with
+timestamped sources.
+
+## Table of Contents
+
+- [What it does](#what-it-does)
+- [Composition](#composition)
+- [Config](#config)
+- [Limitations](#limitations)
+- [Dev Note](#dev-note)
 
 ## What it does
 
@@ -58,3 +75,10 @@ mounted for `ctx.web`; this tool never performs network access itself.
 - One query per call by design; no fan-out and no `web_fetch`.
 - The generator call costs one extra small request per search (skippable via
   `generateQuestion: false`).
+
+## Dev Note
+
+The tool performs no network access itself: `ctx.web` owns the search. The
+generator and the time-stamp fallback are deliberately independent — disabling
+the generator keeps the keyless stamping path active. Unit coverage lives in
+`tests/` beside the source.

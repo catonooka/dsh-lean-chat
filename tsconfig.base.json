@@ -246,6 +246,10 @@
       // util/ folders are role-named without the util- prefix their npm names carry,
       // so these aliases stay hand-written like dsh-util-crypto above.
       "@deepseek-ai/dsh-util-time": ["./packages/util/time/src"],
+      // Deep-import alias: the chat bundle and the tool-catalog generator
+      // import this package's modules by path; the generated region covers
+      // bare package names only.
+      "@deepseek-ai/dsh-web-search-chrome/src/*": ["./packages/web/web-search-chrome/src/*"],
       // BEGIN generated package aliases — pnpm run gen-tsconfig-paths
       "@deepseek-ai/dsh-acp": ["./packages/acp/acp/src"],
       "@deepseek-ai/dsh-acp-app": ["./packages/bundle/acp-app/src"],
@@ -268,6 +272,7 @@
       "@deepseek-ai/dsh-bash-local": ["./packages/shell/bash-local/src"],
       "@deepseek-ai/dsh-bash-sandbox": ["./packages/shell/bash-sandbox/src"],
       "@deepseek-ai/dsh-brand": ["./packages/util/brand/src"],
+      "@deepseek-ai/dsh-chat-app": ["./packages/bundle/chat-app/src"],
       "@deepseek-ai/dsh-cmdline": ["./packages/boot/cmdline/src"],
       "@deepseek-ai/dsh-code-runtime": ["./packages/code-runtime/code-runtime/src"],
       "@deepseek-ai/dsh-code-runtime-worker-thread": ["./packages/code-runtime/code-runtime-worker-thread/src"],
@@ -408,6 +413,7 @@
       "@deepseek-ai/dsh-tool-ask-user": ["./packages/interaction/tool-ask-user/src"],
       "@deepseek-ai/dsh-tool-bash": ["./packages/shell/tool-bash/src"],
       "@deepseek-ai/dsh-tool-bash-persistent": ["./packages/shell/tool-bash-persistent/src"],
+      "@deepseek-ai/dsh-tool-browser-chrome": ["./packages/web/tool-browser-chrome/src"],
       "@deepseek-ai/dsh-tool-cordis": ["./packages/extensions/tool-cordis/src"],
       "@deepseek-ai/dsh-tool-fs": ["./packages/fs/tool-fs/src"],
       "@deepseek-ai/dsh-tool-fs-search": ["./packages/fs/tool-fs-search/src"],
@@ -426,10 +432,7 @@
       "@deepseek-ai/dsh-tool-todo": ["./packages/todo/tool-todo/src"],
       "@deepseek-ai/dsh-tool-todo/invariant": ["./packages/todo/tool-todo/src/invariant.ts"],
       "@deepseek-ai/dsh-tool-web": ["./packages/web/tool-web/src"],
-      "@deepseek-ai/dsh-tool-browser-chrome": ["./packages/web/tool-browser-chrome/src"],
       "@deepseek-ai/dsh-tool-web-search-tiny": ["./packages/web/tool-web-search-tiny/src"],
-      "@deepseek-ai/dsh-web-search-chrome": ["./packages/web/web-search-chrome/src"],
-      "@deepseek-ai/dsh-web-search-chrome/src/*": ["./packages/web/web-search-chrome/src/*"],
       "@deepseek-ai/dsh-tool-workflow": ["./packages/workflow/tool-workflow/src"],
       "@deepseek-ai/dsh-tool-workflow/invariant": ["./packages/workflow/tool-workflow/src/invariant.ts"],
       "@deepseek-ai/dsh-tools": ["./packages/core/tools/src"],
@@ -440,9 +443,11 @@
       "@deepseek-ai/dsh-web": ["./packages/web/web/src"],
       "@deepseek-ai/dsh-web-app": ["./packages/bundle/web-app/src"],
       "@deepseek-ai/dsh-web-fetch-http": ["./packages/web/web-fetch-http/src"],
+      "@deepseek-ai/dsh-web-search-chrome": ["./packages/web/web-search-chrome/src"],
       "@deepseek-ai/dsh-web-search-deepseek": ["./packages/web/web-search-deepseek/src"],
       "@deepseek-ai/dsh-web-search-exa": ["./packages/web/web-search-exa/src"],
       "@deepseek-ai/dsh-web-search-perplexity": ["./packages/web/web-search-perplexity/src"],
+      "@deepseek-ai/dsh-web-search-tiny": ["./packages/web/web-search-tiny/src"],
       "@deepseek-ai/dsh-webhook": ["./packages/webhook/webhook/src"],
       "@deepseek-ai/dsh-webhook/invariant": ["./packages/webhook/webhook/src/invariant.ts"],
       "@deepseek-ai/dsh-webhook-github": ["./packages/webhook/webhook-github/src"],

@@ -1,9 +1,25 @@
+---
+description: "A keyless metasearch provider merging DuckDuckGo HTML results with Wikipedia search, for web seams that need search without credentials."
+kind: "package-reference"
+---
+
 # @deepseek-ai/dsh-web-search-tiny
+
+## Summary
 
 A keyless, SearXNG-style metasearch provider for the DeepSeek Harness web
 seam (`ctx.web`), reduced to searching: **DuckDuckGo's HTML results endpoint
 merged with Wikipedia's search API** — no API key, no per-search model call,
-no result-page fetching.
+no result-page fetching. Either engine failing degrades to the other's
+results, so the chat keeps a working search path with zero configuration.
+
+## Table of Contents
+
+- [How it works](#how-it-works)
+- [Composition](#composition)
+- [Config](#config)
+- [Limitations](#limitations)
+- [Dev Note](#dev-note)
 
 ## How it works
 
@@ -46,3 +62,9 @@ no result-page fetching.
 - DuckDuckGo sources carry no publication date; only Wikipedia sources set
   `publishedAt` (last revision).
 - English Wikipedia only; no fetch, no images, no ranking beyond source order.
+
+## Dev Note
+
+The DuckDuckGo parser reads anchors in document order and tolerates markup
+drift — a changed page yields fewer results, not an error. Unit coverage
+lives in `tests/` beside the source, with fixture HTML for both engines.
