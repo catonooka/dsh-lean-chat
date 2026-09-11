@@ -1,7 +1,7 @@
 /** The settings panel: every runtime-configurable option of the chat surface. */
 
 import { useEffect, useState, type JSX } from 'react'
-import { AVATAR_COUNT, BOT_AVATAR_SRC, avatarSrc, botAvatarTiles } from './avatar.ts'
+import { AVATAR_COUNT, avatarSrc, botAvatarTiles } from './avatar.ts'
 import {
   checkModelAbilities,
   fetchChromeStatus,
@@ -241,9 +241,9 @@ export function SettingsPanel({
   }
 
   /** The character avatar applies instantly, like the user avatar. */
-  const applyCharacterAvatar = async (option: number | undefined): Promise<void> => {
+  const applyCharacterAvatar = async (option: number): Promise<void> => {
     try {
-      const next = await updateConfig({ avatar: option ?? null })
+      const next = await updateConfig({ avatar: option })
       onApplied(next)
       setCharacterAvatar(next.avatar)
     } catch (err: unknown) {
@@ -597,15 +597,6 @@ export function SettingsPanel({
         <div className="settings-row">
           <span className="settings-label">Character avatar</span>
           <div className="avatar-grid small">
-            <button
-              type="button"
-              className={characterAvatar === undefined ? 'avatar-option active' : 'avatar-option'}
-              aria-label="Classic avatar"
-              aria-pressed={characterAvatar === undefined}
-              onClick={() => { void applyCharacterAvatar(undefined) }}
-            >
-              <img src={BOT_AVATAR_SRC} alt="" draggable={false} />
-            </button>
             {botAvatarTiles().map(option => (
               <button
                 key={option}

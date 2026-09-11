@@ -1331,15 +1331,15 @@ describe('model characters', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Switch model character' }))
     fireEvent.click(await screen.findByRole('menuitem', { name: 'New character…' }))
     const dialog = await screen.findByRole('dialog', { name: 'New character' })
-    // No name yet: Create stays disabled and the classic tile is pre-picked.
+    // No name yet: Create stays disabled and the first robot tile is pre-picked.
     const create = within(dialog).getByRole('button', { name: 'Create' }) as HTMLButtonElement
     expect(create.disabled).toBe(true)
-    expect(within(dialog).getByRole('button', { name: 'Classic avatar' }).className).toContain('active')
+    expect(within(dialog).getByRole('button', { name: 'Avatar 11' }).className).toContain('active')
     const nameInput = within(dialog).getByLabelText('Character name')
     fireEvent.change(nameInput, { target: { value: 'Bare' } })
     fireEvent.keyDown(nameInput, { key: 'Enter' })
     await waitFor(() => {
-      expect(configPatches).toContainEqual({ newProfile: { name: 'Bare' } })
+      expect(configPatches).toContainEqual({ newProfile: { name: 'Bare', avatar: 11 } })
     })
     await waitFor(() => {
       expect(screen.queryByRole('dialog', { name: 'New character' })).toBeNull()
@@ -1394,7 +1394,7 @@ describe('model characters', () => {
     expect(within(panel).getAllByRole('button', { name: /^Avatar \d+$/ })).toHaveLength(30)
   })
 
-  it('offers only robot tiles in the new-character dialog', async () => {
+  it('offers exactly the twenty robot tiles in the new-character dialog', async () => {
     await renderApp({
       config: { activeProfileId: 'pa', profiles },
     })
@@ -1404,6 +1404,8 @@ describe('model characters', () => {
     expect(within(dialog).getByRole('button', { name: 'Avatar 11' })).toBeTruthy()
     expect(within(dialog).getByRole('button', { name: 'Avatar 30' })).toBeTruthy()
     expect(within(dialog).queryByRole('button', { name: 'Avatar 10' })).toBeNull()
+    expect(within(dialog).queryByRole('button', { name: 'Classic avatar' })).toBeNull()
+    expect(within(dialog).getAllByRole('button', { name: /^Avatar \d+$/ })).toHaveLength(20)
   })
 
   it('applies a character avatar tile instantly from settings', async () => {
@@ -1415,18 +1417,6 @@ describe('model characters', () => {
     fireEvent.click(within(panel).getByRole('button', { name: 'Avatar 22' }))
     await waitFor(() => {
       expect(configPatches).toContainEqual({ avatar: 22 })
-    })
-  })
-
-  it('restores the classic avatar instantly from settings', async () => {
-    const { configPatches } = await renderApp({
-      config: { activeProfileId: 'pb', profiles },
-    })
-    fireEvent.click(screen.getByRole('button', { name: /catonooka/ }))
-    const panel = await screen.findByRole('dialog', { name: 'Settings' })
-    fireEvent.click(within(panel).getByRole('button', { name: 'Classic avatar' }))
-    await waitFor(() => {
-      expect(configPatches).toContainEqual({ avatar: null })
     })
   })
 })

@@ -1,7 +1,7 @@
 /** The new-character dialog: name, an avatar tile, and a system prompt. */
 
 import { useEffect, useState, type JSX } from 'react'
-import { BOT_AVATAR_SRC, avatarSrc, botAvatarTiles } from './avatar.ts'
+import { BOT_AVATAR_FIRST, avatarSrc, botAvatarTiles } from './avatar.ts'
 
 /**
  * A cancellable character form. The panel is presentational: App creates the
@@ -13,7 +13,7 @@ export function NewCharacterModal({ onCreate, onClose }: {
   onClose: () => void
 }): JSX.Element {
   const [name, setName] = useState('')
-  const [avatar, setAvatar] = useState<number | undefined>(undefined)
+  const [avatar, setAvatar] = useState<number>(BOT_AVATAR_FIRST)
   const [persona, setPersona] = useState('')
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
@@ -56,15 +56,6 @@ export function NewCharacterModal({ onCreate, onClose }: {
           />
         </label>
         <div className="avatar-grid add-user-grid">
-          <button
-            type="button"
-            className={avatar === undefined ? 'avatar-option active' : 'avatar-option'}
-            aria-label="Classic avatar"
-            aria-pressed={avatar === undefined}
-            onClick={() => { setAvatar(undefined) }}
-          >
-            <img src={BOT_AVATAR_SRC} alt="" draggable={false} />
-          </button>
           {botAvatarTiles().map(tile => (
             <button
               key={tile}
