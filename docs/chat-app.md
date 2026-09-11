@@ -384,8 +384,9 @@ one `switchProfile` call, no reload; the system-prompt section resolves
 through the active profile per request, so the persona change lands on the
 very next message, while a running turn finishes on its old route. New
 characters are created from the switcher's dialog (name + avatar + system
-prompt over a clone of the current endpoint) or edited in Settings, whose
-System prompt and Character avatar rows target the selected character.
+prompt over a clone of the current endpoint), renamed in place from the
+switcher's "Rename…", or edited in Settings, whose System prompt and
+Character avatar rows target the selected character.
 Avatar tiles come in two disjoint pools: the cat tiles 1-10 belong to user
 profiles only, the robot tiles 11-30 to model characters only — the pickers
 offer their own set and the server rejects a tile from the wrong pool. A

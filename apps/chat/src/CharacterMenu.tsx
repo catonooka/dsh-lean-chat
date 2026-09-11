@@ -7,16 +7,17 @@ import type { ProfileInfo } from './api.ts'
 /**
  * Presentational character menu: lists the provider profiles ("characters")
  * with their avatar, name, and model, marks the active one, and offers
- * creating or editing in settings. Positioned at the click, clamped to the
- * viewport, closed by outside press, Escape, or scroll — the same contract
- * as the chat context menu.
+ * renaming, creating, or editing in settings. Positioned at the click,
+ * clamped to the viewport, closed by outside press, Escape, or scroll — the
+ * same contract as the chat context menu.
  */
-export function CharacterMenu({ x, y, characters, activeId, onSwitch, onNew, onManage, onClose }: {
+export function CharacterMenu({ x, y, characters, activeId, onSwitch, onRename, onNew, onManage, onClose }: {
   x: number
   y: number
   characters: readonly ProfileInfo[]
   activeId: string | undefined
   onSwitch: (id: string) => void
+  onRename: () => void
   onNew: () => void
   onManage: () => void
   onClose: () => void
@@ -86,12 +87,74 @@ export function CharacterMenu({ x, y, characters, activeId, onSwitch, onNew, onM
         </button>
       ))}
       <div className="user-menu-sep" aria-hidden="true" />
+      <button type="button" role="menuitem" className="character-menu-item" onClick={() => { onClose(); onRename() }}>
+        Rename…
+      </button>
       <button type="button" role="menuitem" className="character-menu-item" onClick={() => { onClose(); onNew() }}>
         New character…
       </button>
       <button type="button" role="menuitem" className="character-menu-item" onClick={() => { onClose(); onManage() }}>
         Edit in settings
       </button>
+    </div>
+  )
+}
+
+/** Rename the active character; App applies it through the config API. */
+export function RenameCharacterDialog({ current, onRename, onClose }: {
+  current: string
+  onRename: (name: string) => void
+  onClose: () => void
+}): JSX.Element {
+  const [name, setName] = useState(current)
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => { window.removeEventListener('keydown', onKey, true) }
+  }, [onClose])
+  const trimmed = name.trim()
+  const submit = (): void => {
+    if (trimmed === '' || trimmed === current) {
+      onClose()
+      return
+    }
+    onRename(trimmed)
+  }
+  return (
+    <div className="settings-overlay" role="presentation" onClick={onClose}>
+      <div
+        className="settings-panel session-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Rename character"
+        onClick={(event) => { event.stopPropagation() }}
+      >
+        <div className="settings-head">
+          <span className="settings-title">Rename character</span>
+        </div>
+        <label className="settings-row">
+          <span className="settings-label">Name</span>
+          <input
+            type="text"
+            value={name}
+            aria-label="Character name"
+            autoFocus
+            spellCheck={false}
+            onChange={(event) => { setName(event.target.value) }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') submit()
+            }}
+          />
+        </label>
+        <div className="settings-actions">
+          <button type="button" className="btn" onClick={onClose}>Cancel</button>
+          <button type="button" className="btn primary" disabled={trimmed === ''} onClick={submit}>
+            Rename
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

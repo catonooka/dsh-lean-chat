@@ -171,6 +171,11 @@ async function renderApp(options: {
         const profiles = ((configState.profiles as ConfigProfile[] | undefined) ?? [])
           .map(profile => ({ ...profile }))
         const activeId = typeof body.switchProfile === 'string' ? body.switchProfile : String(configState.activeProfileId ?? '')
+        const rename = body.renameProfile as { id?: unknown; name?: unknown } | undefined
+        if (rename !== undefined && typeof rename === 'object') {
+          const target = profiles.find(profile => profile.id === rename.id)
+          if (target !== undefined && typeof rename.name === 'string') target.name = rename.name
+        }
         const active = profiles.find(profile => profile.id === activeId)
         if (active !== undefined) {
           if (body.avatar === null) delete active.avatar
@@ -1218,6 +1223,26 @@ describe('model characters', () => {
     fireEvent.keyDown(window, { key: 'Escape' })
     await waitFor(() => {
       expect(screen.queryByRole('menu', { name: 'Model characters' })).toBeNull()
+    })
+  })
+
+  it('renames the active character from the switcher menu', async () => {
+    const { configPatches } = await renderApp({
+      config: { activeProfileId: 'pa', profiles },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Switch model character' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Rename…' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Rename character' })
+    const input = within(dialog).getByLabelText<HTMLInputElement>('Character name')
+    expect(input.value).toBe('Helper')
+    fireEvent.change(input, { target: { value: 'Helper II' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Rename' }))
+    await waitFor(() => {
+      expect(configPatches).toContainEqual({ renameProfile: { id: 'pa', name: 'Helper II' } })
+    })
+    expect(await screen.findByText('Helper II · model-a')).toBeTruthy()
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Rename character' })).toBeNull()
     })
   })
 
