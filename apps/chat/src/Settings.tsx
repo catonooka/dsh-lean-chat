@@ -88,6 +88,7 @@ export function SettingsPanel({
   const [effort, setEffort] = useState<'off' | 'low' | 'high' | 'max'>(effortOf(config.reasoningEffort))
   const [temperature, setTemperature] = useState<number | undefined>(config.temperature)
   const [persona, setPersona] = useState(config.persona)
+  const [greeting, setGreeting] = useState(config.greeting ?? 'What can I help with?')
   const [characterAvatar, setCharacterAvatar] = useState<number | undefined>(config.avatar)
   const [baseUrl, setBaseUrl] = useState(config.baseUrl ?? '')
   const [apiKey, setApiKey] = useState('')
@@ -153,6 +154,7 @@ export function SettingsPanel({
     setBaseUrl(active?.baseUrl ?? next.baseUrl ?? '')
     setCharacterAvatar(next.avatar)
     setPersona(active?.persona ?? next.persona)
+    setGreeting(active?.greeting ?? next.greeting ?? 'What can I help with?')
     setApiKey('')
     setModels([])
   }
@@ -213,6 +215,7 @@ export function SettingsPanel({
     setModel(target?.model ?? model)
     setBaseUrl(target?.baseUrl ?? '')
     setPersona(target?.persona ?? config.persona)
+    setGreeting(target?.greeting ?? 'What can I help with?')
     setCharacterAvatar(target?.avatar)
     setApiKey('')
     setModels([])
@@ -267,7 +270,7 @@ export function SettingsPanel({
   const save = async (): Promise<void> => {
     setSaving(true)
     try {
-      const patch: SettingsPatch = { model, reasoningEffort: effort, persona, searchTool, autoCompact }
+      const patch: SettingsPatch = { model, reasoningEffort: effort, persona, greeting, searchTool, autoCompact }
       if (activeId !== (config.activeProfileId ?? config.profiles?.[0]?.id)) patch.switchProfile = activeId
       if (temperature === undefined) patch.temperature = null
       else patch.temperature = temperature
@@ -573,6 +576,21 @@ export function SettingsPanel({
           <span className="settings-hint">
             Each character keeps its own system prompt; switching characters switches it.
             {' '}Empty means the default persona.
+          </span>
+        </label>
+
+        <label className="settings-row">
+          <span className="settings-label">Welcome question</span>
+          <input
+            type="text"
+            value={greeting}
+            aria-label="Welcome question"
+            placeholder="What can I help with?"
+            spellCheck={false}
+            onChange={(event) => { setGreeting(event.target.value) }}
+          />
+          <span className="settings-hint">
+            What an empty chat asks for this character. Empty means the default.
           </span>
         </label>
 

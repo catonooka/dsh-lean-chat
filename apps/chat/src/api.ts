@@ -60,12 +60,13 @@ export interface SearchHit {
 }
 
 /** One saved provider profile (a "model character") as the server serves it
- * (never its key). Persona and avatar are the character's own. */
+ * (never its key). Persona, greeting, and avatar are the character's own. */
 export interface ProfileInfo {
   id: string
   name: string
   model: string
   persona?: string
+  greeting?: string
   avatar?: number
   baseUrl?: string
   apiKeySet?: boolean
@@ -77,6 +78,8 @@ export interface AppConfig {
   reasoningEffort?: string
   temperature?: number
   persona: string
+  /** The active character's welcome question on an empty chat. */
+  greeting?: string
   /** The active character's avatar tile; absent = the classic bot avatar. */
   avatar?: number
   baseUrl?: string
@@ -95,6 +98,8 @@ export interface SettingsPatch {
   temperature?: number | null
   /** The active character's system prompt; empty clears to the default. */
   persona?: string
+  /** The active character's welcome question; empty clears to the default. */
+  greeting?: string
   /** The active character's avatar tile; `null` restores the classic bot avatar. */
   avatar?: number | null
   baseUrl?: string | null

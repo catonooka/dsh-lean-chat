@@ -63,6 +63,7 @@ interface ConfigProfile {
   name: string
   model: string
   persona?: string
+  greeting?: string
   avatar?: number
 }
 
@@ -112,6 +113,7 @@ async function renderApp(options: {
     provider: 'p',
     model: seedActive?.model ?? 'm',
     persona: seedActive?.persona ?? 'x',
+    greeting: seedActive?.greeting ?? 'What can I help with?',
     ...seedActive?.avatar !== undefined ? { avatar: seedActive.avatar } : {},
     ...(options.config ?? {}),
   }
@@ -184,11 +186,20 @@ async function renderApp(options: {
             if (body.persona.trim() === '') delete active.persona
             else active.persona = body.persona
           }
+          if (typeof body.greeting === 'string') {
+            if (body.greeting.trim() === '') delete active.greeting
+            else active.greeting = body.greeting
+          }
         }
         configState = {
           ...configState,
           ...(active !== undefined
-            ? { model: active.model, persona: active.persona ?? 'You are a helpful assistant.', ...active.avatar !== undefined ? { avatar: active.avatar } : { avatar: undefined } }
+            ? {
+              model: active.model,
+              persona: active.persona ?? 'You are a helpful assistant.',
+              greeting: active.greeting ?? 'What can I help with?',
+              ...active.avatar !== undefined ? { avatar: active.avatar } : { avatar: undefined },
+            }
             : {}),
           activeProfileId: activeId,
           profiles,
@@ -1149,9 +1160,44 @@ describe('settings users section', () => {
 
 describe('model characters', () => {
   const profiles = [
-    { id: 'pa', name: 'Helper', model: 'model-a', persona: 'helper persona' },
+    { id: 'pa', name: 'Helper', model: 'model-a', persona: 'helper persona', greeting: 'What shall we build?' },
     { id: 'pb', name: 'Robo', model: 'model-b', persona: 'robo persona', avatar: 22 },
   ]
+
+  it('asks the character\'s own welcome question and shows only its name', async () => {
+    await renderApp({
+      config: { activeProfileId: 'pa', profiles },
+    })
+    expect(screen.getByText('What shall we build?')).toBeTruthy()
+    expect(screen.queryByText('What can I help with?')).toBeNull()
+    expect(screen.getByText('Helper')).toBeTruthy()
+    expect(screen.queryByText(/model-a/)).toBeNull()
+  })
+
+  it('falls back to the default question when the character sets none', async () => {
+    await renderApp({
+      config: { activeProfileId: 'pb', profiles },
+    })
+    expect(screen.getByText('What can I help with?')).toBeTruthy()
+    expect(screen.getByText('Robo')).toBeTruthy()
+  })
+
+  it('saves a custom welcome question for the selected character', async () => {
+    const { configPatches } = await renderApp({
+      config: { activeProfileId: 'pa', profiles },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /catonooka/ }))
+    const panel = await screen.findByRole('dialog', { name: 'Settings' })
+    expect(within(panel).getByLabelText<HTMLInputElement>('Welcome question').value).toBe('What shall we build?')
+    fireEvent.change(within(panel).getByLabelText('Welcome question'), { target: { value: 'Ask me anything' } })
+    fireEvent.click(within(panel).getByRole('button', { name: 'Save' }))
+    const patch = await waitFor(() => {
+      const found = configPatches.find(body => typeof body.greeting === 'string')
+      expect(found).toBeDefined()
+      return found
+    })
+    expect(patch).toMatchObject({ greeting: 'Ask me anything' })
+  })
 
   it('opens the switcher from the welcome logo and swaps the bot avatar on switch', async () => {
     const { configPatches } = await renderApp({
@@ -1160,7 +1206,8 @@ describe('model characters', () => {
     const welcome = screen.getByRole('button', { name: 'Switch model character' })
     // The active character has no tile, so the classic bot avatar shows.
     expect(welcome.querySelector('img')?.getAttribute('src')).toBe('bot-avatar.png')
-    expect(screen.getByText('Helper · model-a')).toBeTruthy()
+    expect(screen.getByText('Helper')).toBeTruthy()
+    expect(screen.queryByText(/model-a/)).toBeNull()
     fireEvent.click(welcome)
     const menu = await screen.findByRole('menu', { name: 'Model characters' })
     expect(menu.textContent).toContain('Helper')
@@ -1171,7 +1218,8 @@ describe('model characters', () => {
     })
     const swapped = await screen.findByRole('button', { name: 'Switch model character' })
     expect(swapped.querySelector('img')?.getAttribute('src')).toBe('avatars/avatar-22.png')
-    expect(screen.getByText('Robo · model-b')).toBeTruthy()
+    expect(screen.getByText('Robo')).toBeTruthy()
+    expect(screen.queryByText(/model-b/)).toBeNull()
   })
 
   it('marks only the active character row as active', async () => {
@@ -1240,7 +1288,7 @@ describe('model characters', () => {
     await waitFor(() => {
       expect(configPatches).toContainEqual({ renameProfile: { id: 'pa', name: 'Helper II' } })
     })
-    expect(await screen.findByText('Helper II · model-a')).toBeTruthy()
+    expect(await screen.findByText('Helper II')).toBeTruthy()
     await waitFor(() => {
       expect(screen.queryByRole('dialog', { name: 'Rename character' })).toBeNull()
     })
@@ -1322,9 +1370,11 @@ describe('model characters', () => {
     fireEvent.click(screen.getByRole('button', { name: /catonooka/ }))
     const panel = await screen.findByRole('dialog', { name: 'Settings' })
     expect(within(panel).getByLabelText<HTMLTextAreaElement>('System prompt').value).toBe('helper persona')
+    expect(within(panel).getByLabelText<HTMLInputElement>('Welcome question').value).toBe('What shall we build?')
     expect(within(panel).getByRole('button', { name: 'Avatar 22' }).className).not.toContain('active')
     fireEvent.change(within(panel).getByLabelText('Provider profile'), { target: { value: 'pb' } })
     expect(within(panel).getByLabelText<HTMLTextAreaElement>('System prompt').value).toBe('robo persona')
+    expect(within(panel).getByLabelText<HTMLInputElement>('Welcome question').value).toBe('What can I help with?')
     expect(within(panel).getByRole('button', { name: 'Avatar 22' }).className).toContain('active')
   })
 

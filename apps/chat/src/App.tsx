@@ -1606,9 +1606,9 @@ export default function App(): JSX.Element {
                 >
                   <img src={botAvatar} alt="" draggable={false} />
                 </button>
-                <div className="welcome-title">What can I help with?</div>
+                <div className="welcome-title">{config?.greeting ?? 'What can I help with?'}</div>
                 {activeCharacter !== undefined
-                  ? <div className="welcome-sub">{activeCharacter.name} · {activeCharacter.model}</div>
+                  ? <div className="welcome-sub">{activeCharacter.name}</div>
                   : undefined}
               </div>
             )

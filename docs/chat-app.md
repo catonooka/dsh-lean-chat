@@ -330,11 +330,13 @@ with 403 so the client can refetch the roster and self-heal.
 - `GET/PUT /api/config` — runtime settings (provider profiles, model,
   persona, temperature, search tool, auto-compact). The PUT patch edits the
   **active** profile: `persona` (that character's whole system prompt; empty
-  clears to the default) and `avatar` (tile 1-30, `null` restores the
-  classic bot avatar) are per-character, `newProfile {name?, avatar?,
-  persona?}` clones the endpoint/key/model but starts fresh, and a legacy
-  file's global persona is migrated onto every profile at load. The response
-  projects each profile's persona/avatar and never serves API keys
+  clears to the default), `greeting` (its welcome question, one line ≤120
+  chars; empty clears to the default), and `avatar` (robot tile 11-30,
+  `null` restores the classic bot avatar) are per-character, `newProfile
+  {name?, avatar?, persona?}` clones the endpoint/key/model but starts
+  fresh, and a legacy file's global persona is migrated onto every profile
+  at load. The response projects each profile's persona/greeting/avatar and
+  never serves API keys
 - `GET /api/users` · `POST /api/users` `{name, avatar?, chromeProfile?}` ·
   `PATCH /api/users/:id` `{name?, avatar?, chromeProfile?, groups?}` — the
   user-profile roster; switching is pure client state (the header)
@@ -378,11 +380,15 @@ user prefers.
 ## Model characters
 
 The provider profiles double as **model characters**: each carries its own
-system prompt and avatar tile alongside the endpoint/key/model. Clicking
-the bot avatar (welcome mark or any assistant message) opens a switcher —
-one `switchProfile` call, no reload; the system-prompt section resolves
-through the active profile per request, so the persona change lands on the
-very next message, while a running turn finishes on its old route. New
+system prompt, avatar tile, and welcome question alongside the
+endpoint/key/model. Clicking the bot avatar (welcome mark or any assistant
+message) opens a switcher — one `switchProfile` call, no reload; the
+system-prompt section resolves through the active profile per request, so
+the persona change lands on the very next message, while a running turn
+finishes on its old route. The welcome screen asks the active character's
+own question (Settings' "Welcome question" row; empty means the default
+"What can I help with?") and shows the character's name only, never the
+model. New
 characters are created from the switcher's dialog (name + avatar + system
 prompt over a clone of the current endpoint), renamed in place from the
 switcher's "Rename…", or edited in Settings, whose System prompt and
