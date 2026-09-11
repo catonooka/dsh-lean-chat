@@ -15,7 +15,7 @@ describe('normalizeAvatar', () => {
   it('rejects unset, out-of-range, fractional, and garbage values', () => {
     expect(normalizeAvatar(null)).toBeNull()
     expect(normalizeAvatar('0')).toBeNull()
-    expect(normalizeAvatar('11')).toBeNull()
+    expect(normalizeAvatar('31')).toBeNull()
     expect(normalizeAvatar('-1')).toBeNull()
     expect(normalizeAvatar('2.5')).toBeNull()
     expect(normalizeAvatar('avatar-3')).toBeNull()
@@ -64,5 +64,11 @@ describe('avatarSrc', () => {
   it('points every avatar at its served tile', () => {
     expect(avatarSrc(1)).toBe('avatars/avatar-1.png')
     expect(avatarSrc(10)).toBe('avatars/avatar-10.png')
+    expect(avatarSrc(11)).toBe('avatars/avatar-11.png')
+    expect(avatarSrc(30)).toBe('avatars/avatar-30.png')
+  })
+
+  it('serves thirty tiles: ten people plus twenty robot characters', () => {
+    expect(AVATAR_COUNT).toBe(30)
   })
 })

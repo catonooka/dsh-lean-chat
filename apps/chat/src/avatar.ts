@@ -1,7 +1,8 @@
-/** The fixed avatar set: the user picks exactly one of the ten served tiles. */
+/** The fixed avatar set: the user picks exactly one of the served tiles
+ * (tiles 1-10 are people, 11-30 the robot characters). */
 
 /** How many avatars the app offers. */
-export const AVATAR_COUNT = 10
+export const AVATAR_COUNT = 30
 
 const AVATAR_KEY = 'dsh-chat-avatar'
 
