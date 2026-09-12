@@ -1109,6 +1109,30 @@ describe('user profiles', () => {
     })
     await waitFor(() => { expect(userPatches).toEqual([{ id: 'u_main', body: { avatar: 3 } }] ) })
   })
+
+  it('onboards a fresh user with their name and avatar in one pick', async () => {
+    // No stored avatar: the required onboarding dialog opens.
+    localStorage.removeItem('dsh-chat-avatar')
+    const { userPatches } = await renderApp({
+      users: [{ id: 'u_main', name: 'You' }],
+    })
+    const dialog = await screen.findByRole('dialog', { name: 'Choose your avatar' })
+    fireEvent.change(within(dialog).getByLabelText('Your name'), { target: { value: 'Ada' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Avatar 4' }))
+    // One patch carries both the avatar and the chosen name.
+    await waitFor(() => { expect(userPatches).toEqual([{ id: 'u_main', body: { avatar: 4, name: 'Ada' } }]) })
+    await waitFor(() => { expect(screen.queryByRole('dialog', { name: 'Choose your avatar' })).toBeNull() })
+  })
+
+  it('onboards without a name, keeping the default', async () => {
+    localStorage.removeItem('dsh-chat-avatar')
+    const { userPatches } = await renderApp({
+      users: [{ id: 'u_main', name: 'You' }],
+    })
+    const dialog = await screen.findByRole('dialog', { name: 'Choose your avatar' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Avatar 7' }))
+    await waitFor(() => { expect(userPatches).toEqual([{ id: 'u_main', body: { avatar: 7 } }]) })
+  })
 })
 
 describe('chat context menu', () => {

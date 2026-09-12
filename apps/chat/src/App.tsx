@@ -1042,11 +1042,12 @@ export default function App(): JSX.Element {
     selectSession(remembered ?? newSessionId())
   }, [activeUserId, selectSession])
 
-  /** Apply an avatar pick to the acting profile (and keep the legacy seed). */
-  const applyAvatar = useCallback((picked: number): void => {
+  /** Apply an avatar pick to the acting profile (and keep the legacy seed).
+   * Onboarding rides a name along so the first user is named on day one. */
+  const applyAvatar = useCallback((picked: number, name = ''): void => {
     storeAvatar(picked)
     if (activeUserId === '') return
-    void updateUser(activeUserId, { avatar: picked })
+    void updateUser(activeUserId, { avatar: picked, ...name !== '' ? { name } : {} })
       .then((body) => { setUsers(body.users) })
       .catch((err: unknown) => { setError(err instanceof Error ? err.message : String(err)) })
   }, [activeUserId])

@@ -85,7 +85,7 @@ describe('parseUsersFile', () => {
     for (const raw of [undefined, 'not json', '[]', '{"users":"nope"}', '{"users":[null,42]}']) {
       const users = parseUsersFile(raw)
       expect(users.users).toHaveLength(1)
-      expect(users.users[0]?.name).toBe('catonooka')
+      expect(users.users[0]?.name).toBe('You')
       expect(users.users[0]?.groups).toEqual([])
       expect(Object.keys(users.sessions)).toHaveLength(0)
     }
@@ -112,7 +112,7 @@ describe('parseUsersFile', () => {
       id: 'u_a', name: 'Alice', avatar: 3, chromeProfile: 'work', groups: [{ id: 'g1', name: 'X' }],
     })
     // An unusable name keeps the default name rather than dropping the user.
-    expect(users.users[1]?.name).toBe('catonooka')
+    expect(users.users[1]?.name).toBe('You')
     expect(Object.keys(users.sessions).sort()).toEqual(['sess-1', 'sess-2'])
     expect(users.sessions['sess-1']).toEqual({ owner: 'u_a', archivedAt: 123, groupId: 'g1' })
     expect(users.sessions['sess-2']).toEqual({ owner: 'u_b' })

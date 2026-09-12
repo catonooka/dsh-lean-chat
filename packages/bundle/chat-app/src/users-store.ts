@@ -13,8 +13,9 @@ import { randomUUID } from 'node:crypto'
 import { chmod, mkdir, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 
-/** Name given to the first user on a fresh store (matches the pre-users UI). */
-export const DEFAULT_USER_NAME = 'catonooka'
+/** Name given to the first user on a fresh store; onboarding offers to
+ * replace it, and Settings renames it any time. */
+export const DEFAULT_USER_NAME = 'You'
 
 /** Longest accepted user display name. */
 export const MAX_USER_NAME_LENGTH = 40
