@@ -273,9 +273,22 @@ export function fetchConfig(): Promise<AppConfig> {
   return fetchJson<AppConfig>('/api/config')
 }
 
-/** Model ids advertised by the currently configured endpoint. */
-export function fetchModels(): Promise<string[]> {
-  return fetchJson<{ models: string[] }>('/api/models').then(body => body.models)
+/** The panel's unsaved endpoint edits, so a probe interrogates what is on
+ * screen instead of the last saved profile. Absent fields mean "not typed" —
+ * the server falls back to the saved profile, then the launch environment. */
+export interface EndpointProbe {
+  baseUrl?: string
+  apiKey?: string
+}
+
+/** Model ids advertised by an endpoint — the panel's edits when given,
+ * otherwise the saved profile. */
+export function fetchModels(probe?: EndpointProbe): Promise<string[]> {
+  return fetchJson<{ models: string[] }>('/api/models', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(probe ?? {}),
+  }).then(body => body.models)
 }
 
 /** Input modalities of one model, as probed server-side. */
@@ -285,12 +298,16 @@ export interface ModelAbilities {
   video: 'yes' | 'no' | 'unknown'
 }
 
-/** Probe whether a model accepts image and video input parts. */
-export function checkModelAbilities(model?: string): Promise<ModelAbilities> {
+/** Probe whether a model accepts image and video input parts — against the
+ * panel's edits when given, otherwise the saved endpoint. */
+export function checkModelAbilities(model?: string, probe?: EndpointProbe): Promise<ModelAbilities> {
   return fetchJson<ModelAbilities>('/api/capabilities', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(model === undefined ? {} : { model }),
+    body: JSON.stringify({
+      ...(model === undefined ? {} : { model }),
+      ...(probe ?? {}),
+    }),
   })
 }
 

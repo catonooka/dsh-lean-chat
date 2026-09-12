@@ -185,10 +185,23 @@ export function SettingsPanel({
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
+  /** The endpoint as the panel shows it, unsaved edits included: probes must
+   * interrogate what is on screen, so a fresh setup can load its model list
+   * before saving anything. A blank key stays absent — "unchanged" — so the
+   * saved key keeps authenticating until a new one is typed. */
+  const endpointProbe = (): { baseUrl?: string; apiKey?: string } => {
+    const base = baseUrl.trim()
+    const key = apiKey.trim()
+    return {
+      ...(base !== '' ? { baseUrl: base } : {}),
+      ...(key !== '' ? { apiKey: key } : {}),
+    }
+  }
+
   const loadModels = async (): Promise<void> => {
     setLoadingModels(true)
     try {
-      setModels(await fetchModels())
+      setModels(await fetchModels(endpointProbe()))
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -199,7 +212,7 @@ export function SettingsPanel({
   const runAbilityCheck = async (): Promise<void> => {
     setCheckingAbilities(true)
     try {
-      setAbilities(await checkModelAbilities(model))
+      setAbilities(await checkModelAbilities(model, endpointProbe()))
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {

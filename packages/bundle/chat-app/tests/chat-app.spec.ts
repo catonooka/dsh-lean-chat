@@ -35,6 +35,8 @@ import {
   parseSessionToken,
   parseSettingsFile,
   persistSettings,
+  probeCacheKey,
+  resolveProbeTarget,
   projectSurfaceEvent,
   requestChunks,
   bridgeClientOf,
@@ -1705,5 +1707,48 @@ describe('writeSseLine', () => {
     expect(outcome.closed).toBe(true)
     expect(outcome.backlog).toBe(0)
     expect(state.ended).toBe(true)
+  })
+})
+
+describe('resolveProbeTarget', () => {
+  it('prefers the panel edits over the saved profile and the environment', () => {
+    expect(resolveProbeTarget(
+      { baseUrl: 'http://localhost:11434/v1/', apiKey: 'typed' },
+      'https://saved.example/v1',
+      'https://env.example/v1',
+      'env-key',
+    )).toEqual({ base: 'http://localhost:11434/v1', apiKey: 'typed' })
+  })
+
+  it('falls back field by field: saved base, then env, then the public default', () => {
+    expect(resolveProbeTarget({}, 'https://saved.example/v1', 'https://env.example/v1', 'env-key'))
+      .toEqual({ base: 'https://saved.example/v1', apiKey: 'env-key' })
+    expect(resolveProbeTarget({}, undefined, 'https://env.example/v1', 'env-key'))
+      .toEqual({ base: 'https://env.example/v1', apiKey: 'env-key' })
+    expect(resolveProbeTarget({}, undefined, undefined, undefined).base).toBe('https://api.deepseek.com')
+  })
+
+  it('lets a keyless probe say so explicitly and trims what it takes', () => {
+    expect(resolveProbeTarget({ apiKey: '  ' }, 'https://saved.example', undefined, 'env-key').apiKey).toBe('')
+    expect(resolveProbeTarget({ apiKey: '  k  ' }, undefined, undefined, undefined).apiKey).toBe('k')
+  })
+
+  it('refuses base URLs that are not http(s)', () => {
+    expect(() => resolveProbeTarget({ baseUrl: 'ftp://x/v1' }, undefined, undefined, undefined))
+      .toThrow('baseUrl must be a valid http(s) URL')
+    expect(() => resolveProbeTarget({ baseUrl: 'not a url' }, undefined, undefined, undefined))
+      .toThrow('baseUrl must be a valid http(s) URL')
+  })
+})
+
+describe('probeCacheKey', () => {
+  it('separates endpoints and keys without embedding the key material', () => {
+    const a = probeCacheKey('https://one.example/v1', 'sk-one')
+    const b = probeCacheKey('https://two.example/v1', 'sk-one')
+    const c = probeCacheKey('https://one.example/v1', 'sk-two')
+    expect(a).not.toEqual(b)
+    expect(a).not.toEqual(c)
+    expect(a).not.toContain('sk-one')
+    expect(probeCacheKey('https://one.example/v1', 'sk-one')).toBe(a)
   })
 })

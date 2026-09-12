@@ -180,6 +180,50 @@ function isBotAvatar(value: number): boolean {
 }
 
 /**
+ * Resolve the endpoint a panel probe (model list, ability check) should hit.
+ * The settings panel lets the user type a base URL and key before saving
+ * them; probing must use what is on screen, or "Load list" interrogates the
+ * previously saved endpoint and a fresh setup can never pick its model. An
+ * explicit probe body wins field-by-field; anything absent falls back to the
+ * saved profile, then the launch environment.
+ * @param body - the probe request body (may be an empty object).
+ * @param savedBase - the active profile's saved base URL, if any.
+ * @param envBase - the launch environment's base URL, if any.
+ * @param envKey - the launch environment's API key, if any.
+ * @returns the resolved base (no trailing slash) and bearer key ('' = none).
+ * @throws when a supplied base URL is not a valid http(s) URL.
+ */
+export function resolveProbeTarget(
+  body: Record<string, unknown>,
+  savedBase: string | undefined,
+  envBase: string | undefined,
+  envKey: string | undefined,
+): { base: string; apiKey: string } {
+  let base: string
+  if (typeof body.baseUrl === 'string' && body.baseUrl.trim() !== '') {
+    const trimmed = body.baseUrl.trim().replace(/\/+$/, '')
+    try {
+      const parsed = new URL(trimmed)
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('bad protocol')
+    } catch {
+      throw new Error('baseUrl must be a valid http(s) URL')
+    }
+    base = trimmed
+  } else {
+    base = (savedBase ?? envBase ?? PUBLIC_BASE_URL).replace(/\/+$/, '')
+  }
+  const apiKey = typeof body.apiKey === 'string' ? body.apiKey.trim() : (envKey ?? '')
+  return { base, apiKey }
+}
+
+/** Short stable fingerprint for a probe cache key, so the key material never
+ * becomes the cache's identity. */
+export function probeCacheKey(base: string, apiKey: string): string {
+  const digest = createHash('sha256').update(apiKey).digest('hex').slice(0, 16)
+  return `${base}\u0000${digest}`
+}
+
+/**
  * The profile settings edits apply to: the active one, else the first — the
  * settings file always holds at least one, so this never misses.
  * @param settings - the settings in force.
@@ -1898,24 +1942,37 @@ export function apply(ctx: Context, config: Config): void {
    * which ride the same machinery) claims image input for the uncatalogued
    * model; anything else restores upstream's conservative text-only default.
    */
-  function ensureModelAbilities(model: string): Promise<ModelAbilities> {
-    const cached = abilityCache.get(model)
+  function ensureModelAbilities(
+    model: string,
+    probe?: { base: string; apiKey: string },
+  ): Promise<ModelAbilities> {
+    const base = probe?.base
+      ?? (activeProfile(settings).baseUrl ?? process.env.DEEPSEEK_BASE_URL ?? PUBLIC_BASE_URL).replace(/\/+$/, '')
+    const apiKey = probe?.apiKey ?? process.env.DEEPSEEK_API_KEY ?? ''
+    // Keyed by endpoint + model: the same model id on a different endpoint
+    // (a local server vs a gateway) can answer differently.
+    const cacheKey = `${base}\u0000${model}`
+    const cached = abilityCache.get(cacheKey)
     if (cached !== undefined) return Promise.resolve(cached)
-    return abilityInFlight.run(model, async () => {
+    return abilityInFlight.run(cacheKey, async () => {
       const outcome = await probeModelAbilities({
-        base: (activeProfile(settings).baseUrl ?? process.env.DEEPSEEK_BASE_URL ?? PUBLIC_BASE_URL).replace(/\/+$/, ''),
-        apiKey: process.env.DEEPSEEK_API_KEY ?? '',
+        base,
+        apiKey,
         model,
         timeoutMs: 15_000,
       })
-      abilityCache.set(model, outcome)
-      const settingsService = ctx.get('settings')
-      if (settingsService !== undefined) {
-        try {
-          await settingsService.update('llm-deepseek', { uncataloguedImageInput: modalityClaim(outcome) })
-        } catch (error: unknown) {
-          const reason = error instanceof Error ? error.message : String(error)
-          console.error(`chat-app: could not sync the model's modality claim because ${reason}`)
+      abilityCache.set(cacheKey, outcome)
+      // Only a probe of the live endpoint may reconfigure the adapter; a
+      // panel probe against unsaved edits must not touch live settings.
+      if (probe === undefined) {
+        const settingsService = ctx.get('settings')
+        if (settingsService !== undefined) {
+          try {
+            await settingsService.update('llm-deepseek', { uncataloguedImageInput: modalityClaim(outcome) })
+          } catch (error: unknown) {
+            const reason = error instanceof Error ? error.message : String(error)
+            console.error(`chat-app: could not sync the model's modality claim because ${reason}`)
+          }
         }
       }
       return outcome
@@ -2407,18 +2464,26 @@ export function apply(ctx: Context, config: Config): void {
       return
     }
 
-    if (req.method === 'GET' && parts.length === 1 && parts[0] === 'models') {
+    if ((req.method === 'GET' || req.method === 'POST') && parts.length === 1 && parts[0] === 'models') {
+      // POST carries the panel's unsaved edits ({baseUrl, apiKey}) so "Load
+      // list" interrogates the endpoint on screen, not the last saved one.
+      let probeBody: Record<string, unknown> = {}
+      if (req.method === 'POST') probeBody = await readJsonBody(req)
+      const active = activeProfile(settings)
+      const { base, apiKey } = resolveProbeTarget(
+        probeBody,
+        active.baseUrl,
+        process.env.DEEPSEEK_BASE_URL,
+        process.env.DEEPSEEK_API_KEY,
+      )
       // The picker opens per panel visit; a short TTL keeps repeated visits
       // off the endpoint without hiding a genuinely new model for long.
-      const cacheKey = `${settings.provider}\u0000${activeProfile(settings).model}\u0000${activeProfile(settings).baseUrl ?? process.env.DEEPSEEK_BASE_URL ?? ''}`
+      const cacheKey = probeCacheKey(base, apiKey)
       const cachedModels = modelsCache.get(cacheKey)
       if (cachedModels !== undefined && Date.now() - cachedModels.at < MODELS_TTL_MS) {
         sendJson(res, 200, { models: cachedModels.models })
         return
       }
-      const active = activeProfile(settings)
-      const base = (active.baseUrl ?? process.env.DEEPSEEK_BASE_URL ?? PUBLIC_BASE_URL).replace(/\/+$/, '')
-      const apiKey = process.env.DEEPSEEK_API_KEY ?? ''
       const response = await fetch(`${base}/models`, {
         ...apiKey !== '' ? { headers: { authorization: `Bearer ${apiKey}` } } : {},
         signal: AbortSignal.timeout(8000),
@@ -3025,7 +3090,12 @@ export function apply(ctx: Context, config: Config): void {
       const body = await readJsonBody(req)
       const active = activeProfile(settings)
       const model = typeof body.model === 'string' && body.model.trim() !== '' ? body.model.trim() : active.model
-      sendJson(res, 200, await ensureModelAbilities(model))
+      // The panel's unsaved endpoint edits ride along, mirroring /api/models.
+      const hasProbe = typeof body.baseUrl === 'string' || typeof body.apiKey === 'string'
+      const probe = hasProbe
+        ? resolveProbeTarget(body, active.baseUrl, process.env.DEEPSEEK_BASE_URL, process.env.DEEPSEEK_API_KEY)
+        : undefined
+      sendJson(res, 200, await ensureModelAbilities(model, probe))
       return
     }
 

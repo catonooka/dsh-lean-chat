@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   SESSION_PAGE_SIZE,
   compactSession,
+  checkModelAbilities,
   fetchMessages,
   fetchModels,
   fetchProviders,
@@ -96,7 +97,11 @@ describe('request builders', () => {
   it('sends updateConfig as a JSON PUT and unwraps model and provider lists', async () => {
     const mock = stubFetch(() => jsonResponse(200, { models: ['b', 'a', 'b'] }))
     await fetchModels()
-    expect(mock).toHaveBeenCalledWith('/api/models', undefined)
+    expect(mock).toHaveBeenCalledWith('/api/models', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    })
     stubFetch(() => jsonResponse(200, { providers: [{ id: 'deepseek-official', name: 'DeepSeek' }] }))
     await expect(fetchProviders()).resolves.toEqual([{ id: 'deepseek-official', name: 'DeepSeek' }])
     stubFetch((_url, init) => {
@@ -106,6 +111,22 @@ describe('request builders', () => {
       return jsonResponse(200, {})
     })
     await updateConfig({ model: 'm' })
+  })
+
+  it('rides the panel endpoint probe on model lists and ability checks', async () => {
+    const mock = stubFetch(() => jsonResponse(200, { models: ['local-model'] }))
+    await fetchModels({ baseUrl: 'http://localhost:11434/v1', apiKey: 'typed-key' })
+    const init = mock.mock.calls[0]?.[1] as RequestInit
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(String(init.body))).toEqual({ baseUrl: 'http://localhost:11434/v1', apiKey: 'typed-key' })
+    stubFetch((_url, callInit) => {
+      expect(JSON.parse(String(callInit?.body))).toEqual({
+        model: 'm2',
+        baseUrl: 'http://localhost:11434/v1',
+      })
+      return jsonResponse(200, { model: 'm2', image: 'no', video: 'no' })
+    })
+    await checkModelAbilities('m2', { baseUrl: 'http://localhost:11434/v1' })
   })
 
   it('stops a session with a bare POST', async () => {

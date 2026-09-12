@@ -146,7 +146,7 @@ describe('createUser / updateUser', () => {
     expect(created.name).toBe('Bob')
     expect(users.users).toHaveLength(2)
     const body = usersJson(users.users) as { users: { id: string; name: string }[]; defaultUserId: string }
-    expect(body.users.map(user => user.name)).toEqual(['catonooka', 'Bob'])
+    expect(body.users.map(user => user.name)).toEqual(['You', 'Bob'])
     expect(body.defaultUserId).toBe(users.users[0]?.id)
   })
 
